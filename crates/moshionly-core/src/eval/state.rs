@@ -1,10 +1,11 @@
 //! The state of one layer at one time: every animatable property resolved.
 
+use super::preset::{Expansion, WHOLE_BOX, expand};
 use super::tween::{
     BoxState, NO_SHADOW, ResizeStep, ShadowStep, Span, StrokeState, StrokeStep, Tween, additive,
     replacing,
 };
-use crate::geometry::{Affine, Point};
+use crate::geometry::{Affine, Point, Rect};
 use crate::model::{LayerProps, Node, NodeData, Paint, Shadow, Stroke};
 
 /// The animations of one layer, sorted into the properties they act on.
@@ -23,6 +24,60 @@ pub(crate) struct Channels {
     shadows: Vec<ShadowStep>,
     /// `(time, becomes visible)` for every `show` and `hide`.
     instants: Vec<(f64, bool)>,
+    /// What presets lay on top of the layer's own values. See
+    /// [`super::preset`].
+    pose_opacity: Pose<f64>,
+    pose_scale: Pose<f64>,
+    pose_offset: Pose<Point>,
+    pose_rotation: Pose<f64>,
+    pose_blur: Pose<f64>,
+    pose_reveal: Pose<[f64; 4]>,
+}
+
+/// One pose channel: what presets do to one aspect of a layer.
+#[derive(Debug)]
+struct Pose<V> {
+    steps: Vec<Tween<V>>,
+    /// Whether the last step was laid by an exit, which leaves the channel
+    /// away from neutral.
+    exited: bool,
+}
+
+impl<V> Default for Pose<V> {
+    fn default() -> Self {
+        Self {
+            steps: Vec::new(),
+            exited: false,
+        }
+    }
+}
+
+impl<V: Clone> Pose<V> {
+    /// Lays one preset onto the channel. `values` are the start and end the
+    /// preset gives this channel, if it uses it.
+    ///
+    /// An entrance starts from its own start value, which therefore also
+    /// holds before it begins. An exit starts from wherever the channel is,
+    /// so it takes over smoothly from an entrance that is still running. An
+    /// entrance that does not use the channel snaps it back to `neutral` if
+    /// an exit left it elsewhere, so that the layer comes in from a clean
+    /// pose.
+    fn lay(&mut self, span: Span, values: Option<(V, V)>, entrance: bool, neutral: V) {
+        match values {
+            Some((from, to)) => {
+                self.steps
+                    .push(Tween::new(span, entrance.then_some(from), Some(to)));
+                self.exited = !entrance;
+            }
+            None if entrance && self.exited => {
+                let at_start = Span::new(span.start, span.start, span.easing);
+                self.steps
+                    .push(Tween::new(at_start, Some(neutral.clone()), Some(neutral)));
+                self.exited = false;
+            }
+            None => {}
+        }
+    }
 }
 
 impl Channels {
@@ -80,8 +135,28 @@ impl Channels {
             }),
             (NodeData::Show(a), _) => self.instants.push((a.start, true)),
             (NodeData::Hide(a), _) => self.instants.push((a.start, false)),
+            (preset, Some(span)) => {
+                if let Some(expansion) = expand(preset) {
+                    self.add_preset(span, expansion);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Lays a preset onto the pose channels.
+    fn add_preset(&mut self, span: Span, expansion: Expansion) {
+        let entrance = expansion.entrance;
+        self.pose_opacity
+            .lay(span, expansion.opacity, entrance, 1.0);
+        self.pose_scale.lay(span, expansion.scale, entrance, 1.0);
+        self.pose_offset
+            .lay(span, expansion.offset, entrance, Point::ZERO);
+        self.pose_rotation
+            .lay(span, expansion.rotation, entrance, 0.0);
+        self.pose_blur.lay(span, expansion.blur, entrance, 0.0);
+        self.pose_reveal
+            .lay(span, expansion.reveal, entrance, WHOLE_BOX);
     }
 
     /// Whether the layer is visible at `time`.
@@ -132,17 +207,25 @@ impl Channels {
         let blur = replacing(&layer.blur, &self.blurs, time).max(0.0);
         let shadow = replacing(&layer.shadow.unwrap_or(NO_SHADOW), &self.shadows, time);
 
+        let pose_opacity = replacing(&1.0, &self.pose_opacity.steps, time).clamp(0.0, 1.0);
+        let pose_scale = replacing(&1.0, &self.pose_scale.steps, time).max(0.0);
+        let pose_offset = replacing(&Point::ZERO, &self.pose_offset.steps, time);
+        let pose_rotation = replacing(&0.0, &self.pose_rotation.steps, time);
+        let pose_blur = replacing(&0.0, &self.pose_blur.steps, time).max(0.0);
+        let reveal =
+            replacing(&WHOLE_BOX, &self.pose_reveal.steps, time).map(|edge| edge.clamp(0.0, 1.0));
+
         Some(LayerState {
             visible: self.visible(layer.hidden, time),
             rest: RestFrame::of(layer),
-            offset,
+            offset: Point::new(offset.x + pose_offset.x, offset.y + pose_offset.y),
             width: size.width.max(0.0),
             height: size.height.max(0.0),
             shift: size.shift,
-            rotation: layer.rotation + turn,
-            scale: layer.scale * multiplier,
-            opacity: opacity / 100.0,
-            blur,
+            rotation: layer.rotation + turn + pose_rotation,
+            scale: layer.scale * multiplier * pose_scale,
+            opacity: opacity / 100.0 * pose_opacity,
+            blur: blur + pose_blur,
             fill,
             stroke: stroke
                 .paint
@@ -154,6 +237,7 @@ impl Channels {
                 }),
             radii: radii.unwrap_or_default(),
             shadow: (shadow.color.a > 0).then_some(shadow),
+            reveal,
         })
     }
 }
@@ -183,7 +267,8 @@ impl RestFrame {
 pub(crate) struct LayerState {
     pub visible: bool,
     rest: RestFrame,
-    /// Movement in the parent's coordinates, from `move` animations.
+    /// Movement in the parent's coordinates, from `move` animations and
+    /// sliding presets.
     pub offset: Point,
     pub width: f64,
     pub height: f64,
@@ -205,6 +290,9 @@ pub(crate) struct LayerState {
     /// without corners.
     pub radii: [f64; 4],
     pub shadow: Option<Shadow>,
+    /// The part of the box that reveal presets leave showing, as
+    /// `[left, top, right, bottom]` fractions of it.
+    pub reveal: [f64; 4],
 }
 
 impl LayerState {
@@ -255,8 +343,44 @@ impl LayerState {
         )
     }
 
+    /// The region that reveal presets leave showing, in the layer's own
+    /// coordinates, or `None` when they leave everything showing.
+    ///
+    /// Only the edge that is wiping cuts. The other sides reach far past
+    /// the box, so that a stroke or a shadow outside it is not cut off.
+    pub(crate) fn reveal_rect(&self) -> Option<Rect> {
+        /// How far the sides that are not wiping reach past the box.
+        const REACH: f64 = 100_000.0;
+        if self.reveal == WHOLE_BOX {
+            return None;
+        }
+        let [left, top, right, bottom] = self.reveal;
+        let x0 = if left <= 0.0 {
+            -REACH
+        } else {
+            left * self.width
+        };
+        let y0 = if top <= 0.0 {
+            -REACH
+        } else {
+            top * self.height
+        };
+        let x1 = if right >= 1.0 {
+            self.width + REACH
+        } else {
+            right * self.width
+        };
+        let y1 = if bottom >= 1.0 {
+            self.height + REACH
+        } else {
+            bottom * self.height
+        };
+        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+    }
+
     /// Whether anything of the layer can be seen.
     pub(crate) fn is_drawn(&self) -> bool {
-        self.visible && self.opacity > 0.0 && self.scale > 0.0
+        let [left, top, right, bottom] = self.reveal;
+        self.visible && self.opacity > 0.0 && self.scale > 0.0 && right > left && bottom > top
     }
 }

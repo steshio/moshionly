@@ -152,8 +152,10 @@ pub(crate) fn additive<V: Blend, S: Step<V>>(
     sum
 }
 
+/// Linear interpolation that lands exactly on `to` at the end, so a value
+/// that has finished animating is the value that was asked for.
 fn mix(from: f64, to: f64, t: f64) -> f64 {
-    from + (to - from) * t
+    if t == 1.0 { to } else { from + (to - from) * t }
 }
 
 impl Blend for f64 {

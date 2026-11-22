@@ -827,3 +827,371 @@ fn a_frame_depends_only_on_the_document_and_the_time() {
     assert_eq!(at(&document, f64::NAN), at(&document, 0.0));
     assert_eq!(at(&document, 1e9).time_ms, 1e9);
 }
+
+/// A 100 by 100 rect "r" at (100, 100) with the given extra fields, and the
+/// given animations, which target it unless they say otherwise and are
+/// linear unless they say otherwise.
+fn animated(layer: Value, animations: Value) -> Document {
+    let mut rect = json!({ "id": "r", "type": "rect", "x": 100, "y": 100, "fill": "#000000" });
+    rect.as_object_mut()
+        .unwrap()
+        .extend(layer.as_object().unwrap().clone());
+    let mut nodes = vec![rect];
+    for (position, animation) in animations.as_array().unwrap().iter().enumerate() {
+        let mut node = json!({ "id": format!("a{position}"), "target": "r", "easing": linear() });
+        node.as_object_mut()
+            .unwrap()
+            .extend(animation.as_object().unwrap().clone());
+        nodes.push(node);
+    }
+    document(Value::Array(nodes))
+}
+
+fn samples(document: &Document, property: Property, times: &[f64]) -> Vec<f64> {
+    times
+        .iter()
+        .map(|time| number(document, "r", property, *time))
+        .collect()
+}
+
+#[test]
+fn fades_multiply_the_layers_own_opacity() {
+    let document = animated(
+        json!({ "opacity": 50 }),
+        json!([
+            { "type": "fade_in", "start": 200, "end": 600 },
+            { "type": "fade_out", "start": 1000, "end": 1400 }
+        ]),
+    );
+    assert_eq!(
+        samples(
+            &document,
+            Property::Opacity,
+            &[0.0, 200.0, 400.0, 600.0, 900.0, 1200.0, 1400.0, 1900.0]
+        ),
+        [0.0, 0.0, 25.0, 50.0, 50.0, 25.0, 0.0, 0.0]
+    );
+    assert!(
+        at(&document, 100.0).nodes.is_empty(),
+        "invisible until its cue"
+    );
+    assert_eq!(node(&at(&document, 400.0), "r").opacity, 0.25);
+    assert!(at(&document, 1500.0).nodes.is_empty());
+
+    // With an opacity animation on the same layer both take effect.
+    let both = animated(
+        json!({}),
+        json!([
+            { "type": "fade_in", "start": 0, "end": 1000 },
+            { "type": "opacity", "start": 0, "end": 1000, "from": 100, "to": 50 }
+        ]),
+    );
+    assert_eq!(
+        samples(&both, Property::Opacity, &[500.0, 1000.0]),
+        [37.5, 50.0]
+    );
+}
+
+#[test]
+fn a_slide_and_a_move_both_take_effect() {
+    let document = animated(
+        json!({}),
+        json!([
+            { "type": "slide_in", "start": 0, "end": 1000, "direction": "left", "distance": 200, "fade": false },
+            { "type": "move", "start": 0, "end": 1000, "to": { "y": 50 } }
+        ]),
+    );
+    // Sliding in toward the left starts 200 to the right of rest.
+    assert_eq!(
+        samples(&document, Property::X, &[0.0, 500.0, 1000.0]),
+        [300.0, 200.0, 100.0]
+    );
+    assert_eq!(
+        samples(&document, Property::Y, &[0.0, 500.0, 1000.0]),
+        [100.0, 125.0, 150.0]
+    );
+    assert_eq!(
+        node(&at(&document, 0.0), "r").opacity,
+        1.0,
+        "without the fade it shows throughout"
+    );
+
+    let faded = animated(
+        json!({}),
+        json!([{ "type": "slide_in", "start": 400, "end": 800 }]),
+    );
+    assert_eq!(
+        samples(&faded, Property::Y, &[0.0, 400.0, 600.0, 800.0]),
+        [200.0, 200.0, 150.0, 100.0]
+    );
+    assert_eq!(
+        samples(&faded, Property::Opacity, &[0.0, 600.0, 800.0]),
+        [0.0, 50.0, 100.0]
+    );
+    let out = animated(
+        json!({}),
+        json!([{ "type": "slide_out", "start": 400, "end": 800, "direction": "down", "distance": 40 }]),
+    );
+    assert_eq!(
+        samples(&out, Property::Y, &[0.0, 600.0, 800.0, 1500.0]),
+        [100.0, 120.0, 140.0, 140.0]
+    );
+    assert_eq!(
+        samples(&out, Property::Opacity, &[0.0, 600.0, 800.0]),
+        [100.0, 50.0, 0.0]
+    );
+}
+
+#[test]
+fn growing_and_spinning_compose_with_scale_and_rotation() {
+    let grow = animated(
+        json!({ "scale": 2 }),
+        json!([
+            { "type": "grow_in", "start": 0, "end": 1000, "scale": 0.5, "fade": false },
+            { "type": "scale", "start": 0, "end": 1000, "to": 3 }
+        ]),
+    );
+    // Resting scale 2, the scale animation at 2 of 1..3, the preset at 0.75.
+    assert_eq!(
+        samples(&grow, Property::Scale, &[0.0, 500.0, 1000.0]),
+        [1.0, 3.0, 6.0]
+    );
+
+    let spin = animated(
+        json!({ "rotation": 10 }),
+        json!([
+            { "type": "spin_in", "start": 0, "end": 1000, "angle": 180 },
+            { "type": "rotate", "start": 0, "end": 1000, "to": 90 }
+        ]),
+    );
+    assert_eq!(
+        samples(&spin, Property::Rotation, &[0.0, 500.0, 1000.0]),
+        [-170.0, -35.0, 100.0]
+    );
+    assert_eq!(
+        samples(&spin, Property::Scale, &[0.0, 500.0, 1000.0]),
+        [0.0, 0.5, 1.0]
+    );
+    assert!(at(&spin, 0.0).nodes.is_empty(), "scaled to nothing");
+
+    let shrink = animated(
+        json!({}),
+        json!([
+            { "type": "shrink_in", "start": 0, "end": 1000 },
+            { "type": "grow_out", "start": 1000, "end": 2000, "scale": 3 }
+        ]),
+    );
+    assert_eq!(
+        samples(
+            &shrink,
+            Property::Scale,
+            &[0.0, 500.0, 1000.0, 1500.0, 2000.0]
+        ),
+        [1.5, 1.25, 1.0, 2.0, 3.0]
+    );
+    assert_eq!(
+        samples(&shrink, Property::Opacity, &[0.0, 500.0, 1500.0, 2000.0]),
+        [0.0, 50.0, 50.0, 0.0]
+    );
+    let spin_out = animated(
+        json!({}),
+        json!([{ "type": "spin_out", "start": 0, "end": 1000, "angle": -90 }]),
+    );
+    assert_eq!(
+        samples(&spin_out, Property::Rotation, &[0.0, 500.0, 1000.0]),
+        [0.0, -45.0, -90.0]
+    );
+    assert_eq!(
+        samples(&spin_out, Property::Opacity, &[500.0]),
+        [100.0],
+        "spins do not fade unless asked"
+    );
+}
+
+#[test]
+fn blur_presets_add_to_the_layers_blur() {
+    let document = animated(
+        json!({ "blur": 4 }),
+        json!([
+            { "type": "blur_in", "start": 0, "end": 1000 },
+            { "type": "blur_out", "start": 1000, "end": 2000, "blur": 10 }
+        ]),
+    );
+    assert_eq!(
+        samples(
+            &document,
+            Property::Blur,
+            &[0.0, 500.0, 1000.0, 1500.0, 2000.0]
+        ),
+        [24.0, 14.0, 4.0, 9.0, 14.0]
+    );
+    assert_eq!(
+        samples(&document, Property::Opacity, &[0.0, 500.0, 1000.0, 1500.0]),
+        [0.0, 50.0, 100.0, 50.0]
+    );
+    assert_eq!(node(&at(&document, 500.0), "r").blur, 14.0);
+}
+
+#[test]
+fn an_exit_takes_over_smoothly_from_an_unfinished_entrance() {
+    let document = animated(
+        json!({}),
+        json!([
+            { "type": "fade_in", "start": 0, "end": 1000 },
+            { "type": "fade_out", "start": 500, "end": 1500 }
+        ]),
+    );
+    assert_eq!(
+        samples(
+            &document,
+            Property::Opacity,
+            &[250.0, 500.0, 1000.0, 1500.0]
+        ),
+        [25.0, 50.0, 25.0, 0.0]
+    );
+}
+
+#[test]
+fn an_entrance_brings_the_layer_back_in_place() {
+    let document = animated(
+        json!({}),
+        json!([
+            { "type": "slide_out", "start": 0, "end": 500, "direction": "right", "distance": 300 },
+            { "type": "blur_out", "start": 0, "end": 500, "blur": 30 },
+            { "type": "shrink_out", "start": 0, "end": 500, "scale": 0.2, "fade": false },
+            { "type": "fade_in", "start": 1000, "end": 1500 }
+        ]),
+    );
+    let pose = |time: f64| {
+        (
+            number(&document, "r", Property::X, time),
+            number(&document, "r", Property::Blur, time),
+            number(&document, "r", Property::Scale, time),
+            number(&document, "r", Property::Opacity, time),
+        )
+    };
+    assert_eq!(
+        pose(750.0),
+        (400.0, 30.0, 0.2, 0.0),
+        "gone, and left where the exits put it"
+    );
+    assert_eq!(
+        pose(1000.0),
+        (100.0, 0.0, 1.0, 0.0),
+        "the entrance starts from a clean pose"
+    );
+    assert_eq!(pose(1250.0), (100.0, 0.0, 1.0, 50.0));
+    assert_eq!(pose(1500.0), (100.0, 0.0, 1.0, 100.0));
+    // A second exit does not reset anything: it adds to what is there.
+    let twice = animated(
+        json!({}),
+        json!([
+            { "type": "slide_out", "start": 0, "end": 500, "direction": "right", "distance": 300, "fade": false },
+            { "type": "fade_out", "start": 600, "end": 900 }
+        ]),
+    );
+    assert_eq!(
+        samples(&twice, Property::X, &[750.0, 900.0]),
+        [400.0, 400.0]
+    );
+}
+
+#[test]
+fn reveals_clip_along_the_wipe() {
+    let reach = 100_000.0;
+    let clip_at = |document: &Document, time: f64| {
+        let scene = at(document, time);
+        scene
+            .find(&id("r"))
+            .map(|node| node.clip.map(|clip| (clip.rect, clip.radii)))
+    };
+    let layer = json!({ "width": 200, "height": 100 });
+
+    let right = animated(
+        layer.clone(),
+        json!([{ "type": "reveal_in", "start": 0, "end": 1000 }]),
+    );
+    assert_eq!(clip_at(&right, 0.0), None, "nothing is uncovered yet");
+    assert_eq!(
+        clip_at(&right, 250.0),
+        Some(Some((
+            Rect::new(-reach, -reach, 50.0 + reach, 100.0 + 2.0 * reach),
+            [0.0; 4]
+        )))
+    );
+    assert_eq!(
+        clip_at(&right, 1000.0),
+        Some(None),
+        "fully uncovered: no clip at all"
+    );
+
+    let left = animated(
+        layer.clone(),
+        json!([{ "type": "reveal_in", "start": 0, "end": 1000, "direction": "left" }]),
+    );
+    let (rect, _) = clip_at(&left, 250.0).unwrap().unwrap();
+    assert_eq!((rect.x, rect.right()), (150.0, 200.0 + reach));
+
+    let down = animated(
+        layer.clone(),
+        json!([{ "type": "reveal_out", "start": 1000, "end": 2000, "direction": "down" }]),
+    );
+    assert_eq!(
+        clip_at(&down, 500.0),
+        Some(None),
+        "whole until the cover starts"
+    );
+    let (rect, _) = clip_at(&down, 1500.0).unwrap().unwrap();
+    assert_eq!(
+        (rect.y, rect.bottom(), rect.x),
+        (50.0, 100.0 + reach, -reach)
+    );
+    assert_eq!(clip_at(&down, 2000.0), None, "fully covered");
+
+    let up = animated(
+        layer,
+        json!([{ "type": "reveal_out", "start": 0, "end": 1000, "direction": "up" }]),
+    );
+    let (rect, _) = clip_at(&up, 250.0).unwrap().unwrap();
+    assert_eq!((rect.y, rect.bottom()), (-reach, 75.0));
+}
+
+#[test]
+fn presets_on_a_group_carry_its_children() {
+    let document = document(json!([
+        { "id": "g", "type": "group", "x": 50, "y": 50, "width": 100, "height": 100, "clip": true },
+        { "id": "child", "type": "rect", "parent": "g", "x": 10, "y": 10 },
+        { "id": "in", "type": "slide_in", "target": "g", "start": 0, "end": 1000, "direction": "right",
+          "distance": 80, "easing": linear() },
+        { "id": "wipe", "type": "reveal_in", "target": "g", "start": 0, "end": 1000, "easing": linear() }
+    ]));
+    let scene = at(&document, 500.0);
+    let group = node(&scene, "g");
+    assert_eq!(group.opacity, 0.5);
+    let corner = scene.transform_of(&id("child")).unwrap().apply(Point::ZERO);
+    assert_eq!(
+        (corner.x, corner.y),
+        (20.0, 60.0),
+        "40 short of its place at (60, 60)"
+    );
+    // The reveal clips the group as a whole; its own clip sits inside.
+    assert_eq!(group.clip.unwrap().rect.right(), 50.0);
+    assert!(group.children()[0].clip.is_some());
+}
+
+#[test]
+fn presets_do_not_apply_at_rest() {
+    let document = animated(
+        json!({}),
+        json!([
+            { "type": "fade_in", "start": 500, "end": 900 },
+            { "type": "spin_in", "start": 500, "end": 900 },
+            { "type": "reveal_in", "start": 500, "end": 900 }
+        ]),
+    );
+    assert!(at(&document, 0.0).nodes.is_empty());
+    let rest = evaluate_at_rest(&document, &id("ab"), &MonospaceMeasurer::default()).unwrap();
+    assert_eq!(rest.nodes[0].opacity, 1.0);
+    assert_eq!(rest.nodes[0].transform, Affine::translate(100.0, 100.0));
+    assert!(rest.nodes[0].clip.is_none());
+}

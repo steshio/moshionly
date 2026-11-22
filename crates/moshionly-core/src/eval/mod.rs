@@ -25,7 +25,19 @@
 //!
 //! `scale` values multiply the layer's resting scale. `opacity`, sizes,
 //! colours, radii, blur and shadows are absolute.
+//!
+//! # Presets
+//!
+//! A preset (`fade_in`, `slide_out`, ...) is expanded while evaluating into
+//! what it does to the layer, and that is laid on top of the layer's own
+//! values instead of replacing them: its fade multiplies the opacity, its
+//! scale multiplies the scale, its slide adds to the position, its turn adds
+//! to the rotation, its blur adds to the blur, and a reveal clips. So a
+//! preset and a property animation on the same layer both take effect.
+//! Among themselves presets follow the replacing rule, and an entrance
+//! clears what earlier presets left behind.
 
+mod preset;
 mod state;
 mod tween;
 
@@ -441,7 +453,10 @@ impl<'a> Evaluator<'a> {
             blend_mode: layer.blend_mode,
             blur: state.blur,
             shadow: state.shadow,
-            clip: None,
+            clip: state.reveal_rect().map(|rect| Clip {
+                rect,
+                radii: [0.0; 4],
+            }),
             mask,
             content,
         })
