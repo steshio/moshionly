@@ -10,14 +10,17 @@
 
 pub mod color;
 mod defaults;
+pub mod document;
 pub mod easing;
 pub mod geometry;
 pub mod id;
 pub mod index;
 mod json;
 pub mod model;
+pub mod tree;
 
 pub use color::Color;
+pub use document::Document;
 pub use easing::{Easing, ease};
 pub use geometry::{Affine, Point, Rect};
 pub use id::NodeId;
