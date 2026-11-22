@@ -30,3 +30,5 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "0.4"

@@ -188,19 +188,20 @@ pub fn set_mode(ctx: &Context, mode: ThemeMode) {
 /// Translates a [`Theme`] into the style egui's built-in widgets use.
 fn egui_style(theme: &Theme) -> egui::Style {
     let c = &theme.color;
-    let mut style = egui::Style::default();
-
-    style.text_styles = [
-        (TextStyle::Small, theme.small()),
-        (TextStyle::Body, theme.body()),
-        (TextStyle::Button, theme.body()),
-        (TextStyle::Heading, theme.heading()),
-        (TextStyle::Monospace, theme.mono()),
-    ]
-    .into();
-    style.drag_value_text_style = TextStyle::Body;
-    style.animation_time = 0.1;
-    style.explanation_tooltips = false;
+    let mut style = egui::Style {
+        text_styles: [
+            (TextStyle::Small, theme.small()),
+            (TextStyle::Body, theme.body()),
+            (TextStyle::Button, theme.body()),
+            (TextStyle::Heading, theme.heading()),
+            (TextStyle::Monospace, theme.mono()),
+        ]
+        .into(),
+        drag_value_text_style: TextStyle::Body,
+        animation_time: 0.1,
+        explanation_tooltips: false,
+        ..egui::Style::default()
+    };
     style.interaction.selectable_labels = false;
     style.interaction.tooltip_delay = 0.5;
 

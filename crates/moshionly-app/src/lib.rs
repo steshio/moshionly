@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod theme;
+pub mod widgets;
 
 /// The name shown in the window title and used for the app's settings folder.
 pub const APP_NAME: &str = "Moshionly";
