@@ -104,6 +104,11 @@ impl Shell {
         self.title_inset = Some(inset);
     }
 
+    /// The name of the open project.
+    pub fn project_name(&self) -> &str {
+        &self.sample.project_name
+    }
+
     /// The active tool.
     pub fn tool(&self) -> Tool {
         self.tool
