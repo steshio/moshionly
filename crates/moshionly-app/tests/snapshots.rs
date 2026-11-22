@@ -291,6 +291,62 @@ fn inputs_gallery(ui: &mut egui::Ui) {
     });
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    Mp4,
+    Gif,
+    Png,
+}
+
+/// A dialog and a stack of toasts over a dimmed backdrop.
+fn overlays_gallery() -> impl FnMut(&mut egui::Ui) {
+    let mut toasts = Toasts::default();
+    toasts.push(Toast::success("Exported launch-teaser.mp4"));
+    toasts.push(Toast::error("Could not read hero.png"));
+    move |ui| {
+        let mut format = Format::Mp4;
+        let (mut width, mut height, mut fps) = (1080.0, 1080.0, 60.0);
+        let anchor = ui.max_rect().center_bottom() - vec2(0.0, 16.0);
+        toasts.show(ui.ctx(), anchor);
+        let _ = ModalFrame::new("Export").width(360.0).show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            property_row(ui, "Format", |ui| {
+                Dropdown::new(
+                    &mut format,
+                    "Format",
+                    &[
+                        (Format::Mp4, "MP4 video"),
+                        (Format::Gif, "Animated GIF"),
+                        (Format::Png, "PNG sequence"),
+                    ],
+                )
+                .show(ui);
+            });
+            property_row(ui, "Size", |ui| {
+                pair(
+                    ui,
+                    |ui| {
+                        NumericField::new(&mut width, "Width").label("W").show(ui);
+                    },
+                    |ui| {
+                        NumericField::new(&mut height, "Height").label("H").show(ui);
+                    },
+                );
+            });
+            property_row(ui, "Frame rate", |ui| {
+                NumericField::new(&mut fps, "Frame rate")
+                    .unit("fps")
+                    .width(96.0)
+                    .show(ui);
+            });
+            modal_footer(ui, |ui| {
+                ui.add(TextButton::primary("Export").icon(icons::EXPORT));
+                ui.add(TextButton::new("Cancel"));
+            });
+        });
+    }
+}
+
 #[test]
 fn controls() {
     if !can_render() {
@@ -312,6 +368,19 @@ fn inputs() {
     let size = vec2(280.0, 960.0);
     for variant in Variant::ALL {
         let (path, image) = snapshot("inputs", size, variant, inputs_gallery);
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+#[test]
+fn overlays() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(560.0, 400.0);
+    for variant in Variant::ALL {
+        let (path, image) = snapshot("overlays", size, variant, overlays_gallery());
         assert_rendered(&image, size, variant);
         println!("wrote {}", path.display());
     }
