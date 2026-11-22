@@ -13,6 +13,7 @@ mod defaults;
 pub mod easing;
 pub mod geometry;
 pub mod id;
+pub mod index;
 mod json;
 pub mod model;
 
