@@ -132,7 +132,7 @@ fn shared_fields(types: &[NodeType]) -> Vec<String> {
     for ty in types {
         let names = super::field_names(*ty);
         shared = Some(match shared {
-            None => names,
+            None => names.to_vec(),
             Some(shared) => shared
                 .into_iter()
                 .filter(|name| names.contains(name))

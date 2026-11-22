@@ -13,7 +13,7 @@
 
 mod reference;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
@@ -136,6 +136,20 @@ fn ref_name(schema: &Value) -> Option<&str> {
 /// fields are not allowed. Shared value types such as paints and easings are
 /// under `$defs`.
 pub fn node_schema(ty: NodeType) -> Value {
+    built(ty).clone()
+}
+
+/// The schema of every node type, built once.
+fn built(ty: NodeType) -> &'static Value {
+    static BUILT: OnceLock<HashMap<NodeType, Value>> = OnceLock::new();
+    static NOTHING: Value = Value::Null;
+    BUILT
+        .get_or_init(|| NodeType::ALL.iter().map(|ty| (*ty, build(*ty))).collect())
+        .get(&ty)
+        .unwrap_or(&NOTHING)
+}
+
+fn build(ty: NodeType) -> Value {
     let raw = raw();
     let branch = raw["oneOf"]
         .as_array()
@@ -346,12 +360,28 @@ fn fields_of_object(schema: &Value) -> Vec<FieldInfo> {
 
 /// The fields of one node type, in the order they are written to files.
 pub fn fields(ty: NodeType) -> Vec<FieldInfo> {
-    fields_of_object(&node_schema(ty))
+    fields_of_object(built(ty))
 }
 
-/// The names of the fields of one node type.
-pub fn field_names(ty: NodeType) -> Vec<String> {
-    fields(ty).into_iter().map(|field| field.name).collect()
+/// The names of the fields of one node type, in the order they are written
+/// to files.
+pub fn field_names(ty: NodeType) -> &'static [String] {
+    static NAMES: OnceLock<HashMap<NodeType, Vec<String>>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            NodeType::ALL
+                .iter()
+                .map(|ty| {
+                    let names = built(*ty)["properties"]
+                        .as_object()
+                        .map(|properties| properties.keys().cloned().collect())
+                        .unwrap_or_default();
+                    (*ty, names)
+                })
+                .collect()
+        })
+        .get(&ty)
+        .map_or(&[], Vec::as_slice)
 }
 
 fn write_field(text: &mut String, field: &FieldInfo) {

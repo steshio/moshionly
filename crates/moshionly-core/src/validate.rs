@@ -684,12 +684,19 @@ fn check_index(document: &Document, node: &Node) -> Result<(), Problem> {
             format!("{label}: {error}. {}", suggest_index(document, node)),
         ));
     }
+    // Siblings are kept sorted by index and then id, so one with the same
+    // index sits right next to this node.
     let siblings = document.child_list(node.parent.as_ref(), node.family());
-    let clash = siblings
-        .iter()
-        .filter(|sibling| **sibling != node.id)
-        .filter_map(|sibling| document.get(sibling))
-        .find(|sibling| sibling.index == node.index);
+    let position = siblings.partition_point(|sibling| {
+        document.get(sibling).is_some_and(|sibling| {
+            (sibling.index.as_str(), &sibling.id) < (node.index.as_str(), &node.id)
+        })
+    });
+    let clash = [position.checked_sub(1), Some(position + 1)]
+        .into_iter()
+        .flatten()
+        .filter_map(|neighbour| document.get(siblings.get(neighbour)?))
+        .find(|sibling| sibling.id != node.id && sibling.index == node.index);
     match clash {
         None => Ok(()),
         Some(sibling) => Err(Problem::new(
