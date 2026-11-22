@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bab20b0ed1f9b9e5567992dfdd4f12ec6b87241de618e1fdc1351ad3c5281393 # shrinks to edits = [Update { id: NodeId("ab"), patch: {"parent": String("grp"), "index": String("a1")} }, Remove { id: NodeId("ab") }]

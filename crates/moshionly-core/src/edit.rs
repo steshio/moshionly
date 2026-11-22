@@ -408,10 +408,19 @@ impl Document {
 
     /// The ids that go when `id` is removed: the node, its descendants of
     /// both families, and every animation that targets one of those.
-    fn removed_with(&self, id: &NodeId) -> Vec<NodeId> {
-        let mut doomed: HashSet<&NodeId> = HashSet::from([id]);
-        doomed.extend(self.walk(id, Family::Layer).map(|(_, node)| &node.id));
-        doomed.extend(self.walk(id, Family::Animation).map(|(_, node)| &node.id));
+    ///
+    /// In the middle of a batch the parents may form a loop (which the batch
+    /// will be refused for unless this removal breaks it), so this keeps
+    /// track of what it has seen instead of trusting the tree to end.
+    fn removed_with<'a>(&'a self, id: &'a NodeId) -> Vec<NodeId> {
+        let mut doomed: HashSet<&NodeId> = HashSet::new();
+        let mut pending = vec![id];
+        while let Some(next) = pending.pop() {
+            if doomed.insert(next) {
+                pending.extend(self.children(next, Family::Layer));
+                pending.extend(self.children(next, Family::Animation));
+            }
+        }
         let orphaned: Vec<&NodeId> = self
             .nodes_unordered()
             .filter(|node| node.target().is_some_and(|target| doomed.contains(target)))
@@ -1038,6 +1047,17 @@ mod tests {
                 Edit::remove("grp"),
             ],
         );
+        // Removing a node from inside a loop takes everything below it,
+        // however the loop winds: here the artboard is put inside its own
+        // group and then removed, and no layer may be left without a parent.
+        round_trip(
+            &mut document,
+            &[
+                update("ab", json!({ "parent": "grp", "index": "a1" })),
+                Edit::remove("ab"),
+            ],
+        );
+        assert!(document.is_empty());
     }
 
     #[test]
@@ -1211,7 +1231,7 @@ mod tests {
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(600))]
+            #![proptest_config(ProptestConfig::with_cases(2000))]
 
             /// Whatever the batch, it either applies and can be undone and
             /// redone exactly, or it is refused and changes nothing. Either
