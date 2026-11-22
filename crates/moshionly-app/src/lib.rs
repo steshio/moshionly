@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod commands;
+pub mod dialogs;
 pub mod theme;
 pub mod widgets;
 
