@@ -10,10 +10,12 @@
 
 pub mod color;
 mod defaults;
+pub mod easing;
 pub mod geometry;
 pub mod id;
 pub mod model;
 
 pub use color::Color;
+pub use easing::{Easing, ease};
 pub use geometry::{Affine, Point, Rect};
 pub use id::NodeId;

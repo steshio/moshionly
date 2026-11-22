@@ -80,3 +80,10 @@ named_default!(
     [f64; 2],
     [0.5, 0.5]
 );
+named_default!(
+    /// Easing intensity that every curve is tuned around.
+    intensity,
+    is_intensity,
+    f64,
+    50.0
+);
