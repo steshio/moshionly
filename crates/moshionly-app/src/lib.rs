@@ -14,6 +14,7 @@ pub mod raster;
 pub mod settings;
 pub mod shell;
 pub mod theme;
+pub mod timeline;
 pub mod viewport;
 pub mod widgets;
 

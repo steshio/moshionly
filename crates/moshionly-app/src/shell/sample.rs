@@ -13,6 +13,7 @@ use super::sample_art;
 use crate::{
     key::Key,
     theme::{Tone, icons},
+    timeline::{Bar, Group, TimelineEvent},
     viewport::{Artboard, OrientedBox, Overlays},
     widgets::Rgba,
 };
@@ -166,6 +167,8 @@ pub struct Sample {
     pub actions: Vec<SampleAction>,
     /// The selected actions.
     pub selected_actions: Vec<Key>,
+    /// The layers whose actions are folded away in the timeline.
+    pub collapsed_groups: Vec<Key>,
     /// The Design tab's values.
     pub design: SampleDesign,
     /// The easing chosen in the Animate tab.
@@ -425,6 +428,7 @@ impl Default for Sample {
             selected_layer: Some(Key::new("card")),
             actions,
             selected_actions: vec![Key::new("a-card-move")],
+            collapsed_groups: Vec::new(),
             design: SampleDesign {
                 x: 240.0,
                 y: 340.0,
@@ -537,6 +541,84 @@ impl Sample {
             show_size: true,
             hover: hover.and_then(frame),
             ..Overlays::default()
+        }
+    }
+
+    /// The actions as the timeline takes them: one group per layer that has
+    /// actions, in layer order.
+    pub fn timeline_groups(&self) -> Vec<Group> {
+        self.layers
+            .iter()
+            .filter_map(|layer| {
+                let bars: Vec<Bar> = self
+                    .actions
+                    .iter()
+                    .filter(|action| action.layer == layer.key)
+                    .map(|action| Bar {
+                        key: action.key.clone(),
+                        label: action.name.to_owned(),
+                        icon: Some(action.icon),
+                        tone: action.tone,
+                        start: action.start,
+                        end: action.end,
+                    })
+                    .collect();
+                (!bars.is_empty()).then(|| Group {
+                    key: layer.key.clone(),
+                    label: layer.name.to_owned(),
+                    icon: Some(layer.icon),
+                    collapsed: self.collapsed_groups.contains(&layer.key),
+                    hidden: layer.hidden,
+                    locked: layer.locked,
+                    bars,
+                })
+            })
+            .collect()
+    }
+
+    /// Applies what the user did in the timeline to the sample scene. Events
+    /// about playback are not the scene's business and are ignored.
+    pub fn apply(&mut self, event: &TimelineEvent) {
+        match event {
+            TimelineEvent::BarMoved { key, start, end }
+            | TimelineEvent::BarResized {
+                key, start, end, ..
+            } => {
+                if let Some(action) = self.actions.iter_mut().find(|a| a.key == *key) {
+                    action.start = *start;
+                    action.end = *end;
+                }
+            }
+            TimelineEvent::DurationChanged { duration } => self.duration = *duration,
+            TimelineEvent::SelectionChanged { bars } => {
+                self.selected_actions.clone_from(bars);
+                // Show the layer of the selected action in the inspector.
+                let layer = bars
+                    .first()
+                    .and_then(|key| self.actions.iter().find(|a| a.key == *key))
+                    .map(|action| action.layer.clone());
+                if layer.is_some() {
+                    self.select(layer);
+                }
+            }
+            TimelineEvent::GroupClicked { key } => self.select(Some(key.clone())),
+            TimelineEvent::GroupCollapsed { key, collapsed } => {
+                self.collapsed_groups.retain(|k| k != key);
+                if *collapsed {
+                    self.collapsed_groups.push(key.clone());
+                }
+            }
+            TimelineEvent::GroupHidden { key, hidden } => {
+                if let Some(layer) = self.layers.iter_mut().find(|l| l.key == *key) {
+                    layer.hidden = *hidden;
+                }
+            }
+            TimelineEvent::GroupLocked { key, locked } => {
+                if let Some(layer) = self.layers.iter_mut().find(|l| l.key == *key) {
+                    layer.locked = *locked;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -660,5 +742,62 @@ mod tests {
         assert_eq!(overlays.hover.unwrap().size, vec2(184.0, 184.0));
         sample.select(None);
         assert!(sample.overlays(None).selection.is_none());
+    }
+
+    #[test]
+    fn the_timeline_groups_actions_under_their_layers() {
+        let sample = Sample::default();
+        let groups = sample.timeline_groups();
+        let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["Headline", "Badge", "Photo", "Card"]);
+        assert_eq!(groups[3].bars.len(), 3);
+        let bars: usize = groups.iter().map(|g| g.bars.len()).sum();
+        assert_eq!(bars, sample.actions.len());
+    }
+
+    #[test]
+    fn timeline_events_change_the_sample() {
+        let mut sample = Sample::default();
+        let key = Key::new("a-badge-in");
+        sample.apply(&TimelineEvent::BarMoved {
+            key: key.clone(),
+            start: 1000.0,
+            end: 1600.0,
+        });
+        let action = sample.actions.iter().find(|a| a.key == key).unwrap();
+        assert_eq!((action.start, action.end), (1000.0, 1600.0));
+
+        sample.apply(&TimelineEvent::SelectionChanged {
+            bars: vec![key.clone()],
+        });
+        assert_eq!(sample.selected_actions, [key]);
+        assert_eq!(sample.selected_layer, Some(Key::new("badge")));
+
+        let badge = Key::new("badge");
+        sample.apply(&TimelineEvent::GroupCollapsed {
+            key: badge.clone(),
+            collapsed: true,
+        });
+        sample.apply(&TimelineEvent::GroupHidden {
+            key: badge.clone(),
+            hidden: true,
+        });
+        let group = &sample.timeline_groups()[1];
+        assert!(group.collapsed && group.hidden && !group.locked);
+        sample.apply(&TimelineEvent::GroupCollapsed {
+            key: badge,
+            collapsed: false,
+        });
+        assert!(!sample.timeline_groups()[1].collapsed);
+
+        sample.apply(&TimelineEvent::DurationChanged { duration: 5000.0 });
+        assert_eq!(sample.duration, 5000.0);
+        // Unknown keys and playback events are ignored.
+        sample.apply(&TimelineEvent::BarMoved {
+            key: Key::new("nope"),
+            start: 0.0,
+            end: 1.0,
+        });
+        sample.apply(&TimelineEvent::JumpedToStart);
     }
 }

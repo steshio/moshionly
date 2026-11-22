@@ -19,7 +19,9 @@ pub struct ListRow<'a> {
     selected: bool,
     parent_selected: bool,
     dimmed: bool,
+    quiet: bool,
     strong: bool,
+    height: Option<f32>,
     id_salt: Option<egui::IdSalt>,
 }
 
@@ -45,7 +47,9 @@ impl<'a> ListRow<'a> {
             selected: false,
             parent_selected: false,
             dimmed: false,
+            quiet: false,
             strong: false,
+            height: None,
             id_salt: None,
         }
     }
@@ -86,6 +90,20 @@ impl<'a> ListRow<'a> {
         self
     }
 
+    /// Draws the label in the secondary text colour, for rows that are a
+    /// detail of the row above them.
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
+    /// The row's height, when it has to line up with something other than
+    /// a list (the list row height by default).
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
     /// Draws the label semibold, for top-level containers.
     pub fn strong(mut self, strong: bool) -> Self {
         self.strong = strong;
@@ -106,7 +124,10 @@ impl<'a> ListRow<'a> {
         let c = &theme.color;
         let inset = theme.space.md;
         let (outer, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), theme.size.list_row),
+            Vec2::new(
+                ui.available_width(),
+                self.height.unwrap_or(theme.size.list_row),
+            ),
             Sense::hover(),
         );
         let rect = Rect::from_min_max(
@@ -154,6 +175,8 @@ impl<'a> ListRow<'a> {
             (c.text_tertiary, c.text_tertiary)
         } else if self.selected {
             (c.text, c.accent_text)
+        } else if self.quiet {
+            (c.text_secondary, c.text_secondary)
         } else {
             (c.text, c.text_secondary)
         };

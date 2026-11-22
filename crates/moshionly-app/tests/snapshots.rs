@@ -13,8 +13,9 @@ use egui::vec2;
 use moshionly_app::{
     key::Key,
     settings::Settings,
-    shell::{InspectorTab, Shell},
+    shell::{InspectorTab, Shell, sample::Sample},
     theme::{Theme, icons},
+    timeline::{Timeline, TimelineState},
     viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, Viewport},
     widgets::*,
 };
@@ -481,6 +482,35 @@ fn viewport() {
             Viewport::new(&mut camera)
                 .artboards(&artboards)
                 .overlays(&overlays)
+                .show(ui, rect);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// The timeline on its own, with the sample scene's actions.
+#[test]
+fn timeline() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1100.0, 280.0);
+    for variant in Variant::ALL {
+        let sample = Sample::default();
+        let mut groups = sample.timeline_groups();
+        groups[1].collapsed = true;
+        groups[2].hidden = true;
+        let selection = [Key::new("a-card-move")];
+        let mut state = TimelineState::default();
+        let (path, image) = snapshot("timeline", size, variant, move |ui| {
+            let rect = ui.ctx().content_rect();
+            Timeline::new(&mut state, &groups)
+                .selection(&selection)
+                .selected_group(Some(&Key::new("card")))
+                .playhead(1200.0)
+                .duration(sample.duration)
+                .looping(true)
                 .show(ui, rect);
         });
         assert_rendered(&image, size, variant);

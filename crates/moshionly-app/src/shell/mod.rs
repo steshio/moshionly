@@ -35,6 +35,7 @@ use crate::{
     key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
+    timeline::{Timeline, TimelineEvent, TimelineState},
     viewport::{Camera, Viewport, ViewportEvent},
     widgets::{Grow, Toast, Toasts, splitter},
 };
@@ -47,6 +48,11 @@ pub struct Shell {
     toasts: Toasts,
     tool: Tool,
     playing: bool,
+    looping: bool,
+    snapping: bool,
+    /// The current time, in milliseconds.
+    playhead: f64,
+    timeline: TimelineState,
     camera: Camera,
     /// The canvas rectangle of the last frame; `None` before the first one.
     canvas: Option<Rect>,
@@ -76,6 +82,10 @@ impl Shell {
             toasts: Toasts::default(),
             tool: Tool::default(),
             playing: false,
+            looping: true,
+            snapping: true,
+            playhead: 1200.0,
+            timeline: TimelineState::default(),
             camera: Camera::default(),
             canvas: None,
             hover: None,
@@ -215,8 +225,39 @@ impl Shell {
         });
         edge_line(ui, layout.right, Edge::Left);
 
-        parts::panel(ui, "timeline", layout.timeline, c.surface, |_| {});
+        self.advance_playback(&ctx);
+        let groups = self.sample.timeline_groups();
+        let timeline = parts::panel(ui, "timeline", layout.timeline, c.surface, |ui| {
+            let out = Timeline::new(&mut self.timeline, &groups)
+                .selection(&self.sample.selected_actions)
+                .selected_group(self.sample.selected_layer.as_ref())
+                .playhead(self.playhead)
+                .duration(self.sample.duration)
+                .playing(self.playing)
+                .looping(self.looping)
+                .snapping(self.snapping)
+                .show(ui, layout.timeline);
+            // The tag floats in the corner of the tracks.
+            let corner = out.layout.tracks.right_top() + egui::vec2(-64.0, 8.0);
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(corner, egui::vec2(56.0, 16.0))),
+                parts::sample_tag,
+            );
+            out
+        });
         edge_line(ui, layout.timeline, Edge::Top);
+        for event in &timeline.events {
+            match event {
+                TimelineEvent::PlayheadMoved { time } => self.playhead = *time,
+                TimelineEvent::PlayToggled { playing } => self.playing = *playing,
+                TimelineEvent::LoopToggled { looping } => self.looping = *looping,
+                TimelineEvent::SnappingToggled { snapping } => self.snapping = *snapping,
+                TimelineEvent::JumpedToStart => self.playhead = 0.0,
+                TimelineEvent::BarActivated { .. } => self.inspector.tab = InspectorTab::Animate,
+                other => self.sample.apply(other),
+            }
+        }
 
         if let Some(chat) = layout.chat {
             let out = parts::panel(ui, "chat", chat, c.surface, |ui| {
@@ -331,6 +372,8 @@ impl Shell {
             CommandId::ThemeLight => self.set_theme(ctx, ThemeMode::Light),
             CommandId::ThemeDark => self.set_theme(ctx, ThemeMode::Dark),
             CommandId::PlayPause => self.playing = !self.playing,
+            CommandId::JumpToStart => self.playhead = 0.0,
+            CommandId::ToggleLoop => self.looping = !self.looping,
             CommandId::ZoomIn => self.camera.zoom_in(),
             CommandId::ZoomOut => self.camera.zoom_out(),
             CommandId::ZoomTo100 => self.camera.set_zoom(1.0),
@@ -346,6 +389,21 @@ impl Shell {
             },
         }
         true
+    }
+
+    /// Moves the playhead on while playing. At the end of the scene it
+    /// wraps around when looping and stops otherwise.
+    fn advance_playback(&mut self, ctx: &Context) {
+        if !self.playing {
+            return;
+        }
+        let elapsed = f64::from(ctx.input(|i| i.stable_dt)) * 1000.0;
+        let (time, playing) = played(self.playhead, elapsed, self.sample.duration, self.looping);
+        self.playhead = time;
+        self.playing = playing;
+        if playing {
+            ctx.request_repaint();
+        }
     }
 
     /// Zooms and pans so `world` fills the part of `canvas` that is free of
@@ -375,5 +433,42 @@ fn tool_cursor(tool: Tool) -> CursorIcon {
         Tool::Artboard | Tool::Rectangle | Tool::Ellipse | Tool::Star | Tool::Pen | Tool::Image => {
             CursorIcon::Crosshair
         }
+    }
+}
+
+/// The time after playing on from `time` for `elapsed` milliseconds in a
+/// scene `duration` long, and whether playback goes on. Past the end, a loop
+/// wraps around; otherwise playback stops at the end.
+fn played(time: f64, elapsed: f64, duration: f64, looping: bool) -> (f64, bool) {
+    if duration <= 0.0 {
+        return (0.0, false);
+    }
+    // Pressing play at the end starts over.
+    let from = if time >= duration { 0.0 } else { time };
+    let next = from + elapsed.max(0.0);
+    if next < duration {
+        (next, true)
+    } else if looping {
+        (next % duration, true)
+    } else {
+        (duration, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_runs_to_the_end_and_stops_or_loops() {
+        assert_eq!(played(1000.0, 16.0, 4000.0, false), (1016.0, true));
+        assert_eq!(played(3990.0, 16.0, 4000.0, false), (4000.0, false));
+        assert_eq!(played(3990.0, 16.0, 4000.0, true), (6.0, true));
+        // Play pressed at the end starts from the beginning.
+        assert_eq!(played(4000.0, 16.0, 4000.0, false), (16.0, true));
+        // A scene with no length cannot play.
+        assert_eq!(played(0.0, 16.0, 0.0, true), (0.0, false));
+        // A long stall wraps as many times as needed.
+        assert_eq!(played(0.0, 9000.0, 4000.0, true), (1000.0, true));
     }
 }
