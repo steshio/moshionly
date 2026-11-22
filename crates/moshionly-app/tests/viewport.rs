@@ -4,7 +4,7 @@ use egui::{Event, Key, MouseWheelUnit, Pos2, TouchPhase, Vec2, pos2, vec2};
 use egui_kittest::Harness;
 use moshionly_app::{
     theme,
-    viewport::{Camera, Viewport, ViewportEvent},
+    viewport::{Anchor, Camera, Handle, OrientedBox, Overlays, Viewport, ViewportEvent},
 };
 
 /// The viewport fills a window of this size, so its centre is at 200, 150.
@@ -12,22 +12,33 @@ const SIZE: Vec2 = vec2(400.0, 300.0);
 
 struct State {
     camera: Camera,
+    overlays: Overlays,
     events: Vec<ViewportEvent>,
+    handle: Option<Handle>,
 }
 
 fn harness(camera: Camera) -> Harness<'static, State> {
+    harness_with(camera, Overlays::default())
+}
+
+fn harness_with(camera: Camera, overlays: Overlays) -> Harness<'static, State> {
     let mut harness = Harness::builder()
         .with_size(SIZE)
         .with_context_setup(theme::install)
         .build_ui_state(
             |ui, state: &mut State| {
                 let rect = ui.ctx().content_rect();
-                let output = Viewport::new(&mut state.camera).show(ui, rect);
+                let output = Viewport::new(&mut state.camera)
+                    .overlays(&state.overlays)
+                    .show(ui, rect);
                 state.events.extend(output.events);
+                state.handle = output.handle;
             },
             State {
                 camera,
+                overlays,
                 events: Vec::new(),
+                handle: None,
             },
         );
     harness.run();
@@ -162,4 +173,92 @@ fn scrolling_pans() {
     );
     assert!((state.camera.center.x - 100.0).abs() < 0.01);
     assert_eq!(state.camera.zoom, 2.0);
+}
+
+/// A selection box that is at 120, 90 to 280, 210 on screen with [`camera`].
+fn selection() -> Overlays {
+    Overlays {
+        selection: Some(OrientedBox::from_rect(egui::Rect::from_min_max(
+            pos2(60.0, 70.0),
+            pos2(140.0, 130.0),
+        ))),
+        ..Overlays::default()
+    }
+}
+
+#[test]
+fn dragging_a_corner_of_the_selection_reports_the_handle() {
+    let mut harness = harness_with(camera(), selection());
+    let (corner, end) = (pos2(280.0, 210.0), pos2(300.0, 240.0));
+    harness.hover_at(corner);
+    harness.run();
+    assert_eq!(
+        harness.state().handle,
+        Some(Handle::Resize(Anchor::BottomRight))
+    );
+    harness.drag_at(corner);
+    harness.hover_at(pos2(290.0, 225.0));
+    harness.hover_at(end);
+    harness.drop_at(end);
+    harness.run();
+
+    let events = &harness.state().events;
+    let handle = Handle::Resize(Anchor::BottomRight);
+    assert!(
+        matches!(events.first(), Some(ViewportEvent::HandleDragStarted { handle: h, world, .. })
+            if *h == handle && close(*world, pos2(140.0, 130.0))),
+        "{events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(ViewportEvent::HandleDragStopped { handle: h, world, .. })
+            if *h == handle && close(*world, pos2(150.0, 145.0))),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, ViewportEvent::DragStarted { .. }))
+    );
+}
+
+#[test]
+fn dragging_from_just_outside_a_corner_rotates() {
+    let mut harness = harness_with(camera(), selection());
+    let (start, end) = (pos2(290.0, 220.0), pos2(260.0, 250.0));
+    harness.hover_at(start);
+    harness.drag_at(start);
+    harness.hover_at(pos2(275.0, 235.0));
+    harness.hover_at(end);
+    harness.drop_at(end);
+    harness.run();
+    let events = &harness.state().events;
+    assert!(
+        matches!(
+            events.first(),
+            Some(ViewportEvent::HandleDragStarted {
+                handle: Handle::Rotate(Anchor::BottomRight),
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_drag_inside_the_selection_is_an_ordinary_drag() {
+    let mut harness = harness_with(camera(), selection());
+    let (start, end) = (pos2(200.0, 150.0), pos2(230.0, 170.0));
+    harness.hover_at(start);
+    harness.run();
+    assert_eq!(harness.state().handle, None);
+    harness.drag_at(start);
+    harness.hover_at(pos2(215.0, 160.0));
+    harness.hover_at(end);
+    harness.drop_at(end);
+    harness.run();
+    let events = &harness.state().events;
+    assert!(
+        matches!(events.first(), Some(ViewportEvent::DragStarted { .. })),
+        "{events:?}"
+    );
 }

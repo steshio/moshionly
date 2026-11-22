@@ -309,7 +309,7 @@ pub(super) const SIZE: Size = Size {
     timeline_bar: 20.0,
     timeline_labels: 248.0,
     bar_edge_grab: 7.0,
-    handle: 8.0,
+    handle: 7.0,
     rotate_zone: 14.0,
     menu_width: 220.0,
     palette_width: 520.0,

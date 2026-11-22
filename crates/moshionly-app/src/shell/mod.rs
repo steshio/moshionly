@@ -32,6 +32,7 @@ use self::{
 };
 use crate::{
     commands::{CommandId, CommandRegistry},
+    key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
     viewport::{Camera, Viewport, ViewportEvent},
@@ -49,6 +50,8 @@ pub struct Shell {
     camera: Camera,
     /// The canvas rectangle of the last frame; `None` before the first one.
     canvas: Option<Rect>,
+    /// The sample layer under the pointer, found on the last frame.
+    hover: Option<Key>,
     /// Set when the top bar is also the window's title area: the room to
     /// leave at its left edge for the window's buttons.
     title_inset: Option<f32>,
@@ -75,6 +78,7 @@ impl Shell {
             playing: false,
             camera: Camera::default(),
             canvas: None,
+            hover: None,
             title_inset: None,
             sample: Sample::default(),
         }
@@ -143,19 +147,32 @@ impl Shell {
         self.canvas = Some(layout.canvas);
         let tool = self.tool;
         let artboards = self.sample.viewport_artboards();
+        let overlays = self.sample.overlays(self.hover.as_ref());
         let (viewport, picked) = parts::panel(ui, "canvas", layout.canvas, c.canvas, |ui| {
             let viewport = Viewport::new(&mut self.camera)
                 .artboards(&artboards)
+                .overlays(&overlays)
                 .cursor(tool_cursor(tool))
                 .show(ui, layout.canvas);
             (viewport, tool_bar::tool_bar(ui, layout.canvas, tool))
         });
         requested.extend(picked);
+
+        // TODO: route canvas gestures to the document engine. Until then the
+        // select tool picks sample layers by their boxes; drags and handles
+        // are reported by the viewport but change nothing.
+        let selecting = tool == Tool::Select;
+        self.hover = viewport
+            .pointer
+            .filter(|_| selecting && viewport.handle.is_none())
+            .and_then(|world| self.sample.layer_at(world));
         for event in viewport.events {
-            // TODO: route canvas gestures to the document engine. For now
-            // only the artboard names do something.
-            if let ViewportEvent::ArtboardNameClicked { key, .. } = event {
-                self.sample.selected_layer = Some(key);
+            match event {
+                ViewportEvent::ArtboardNameClicked { key, .. } => self.sample.select(Some(key)),
+                ViewportEvent::Clicked { world, .. } if selecting => {
+                    self.sample.select(self.sample.layer_at(world));
+                }
+                _ => {}
             }
         }
 

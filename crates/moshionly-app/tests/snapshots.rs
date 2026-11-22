@@ -15,7 +15,7 @@ use moshionly_app::{
     settings::Settings,
     shell::{InspectorTab, Shell},
     theme::{Theme, icons},
-    viewport::{Artboard, Camera, Viewport},
+    viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, Viewport},
     widgets::*,
 };
 
@@ -426,7 +426,8 @@ fn shell_with_chat() {
     }
 }
 
-/// The canvas on its own: two artboards without pictures.
+/// The canvas on its own: two artboards without pictures, and one of every
+/// overlay.
 #[test]
 fn viewport() {
     if !can_render() {
@@ -458,8 +459,28 @@ fn viewport() {
                     selected: false,
                 },
             ];
+            let rect_at = |x: f32, y: f32, w: f32, h: f32| {
+                egui::Rect::from_min_size(egui::pos2(x, y), vec2(w, h))
+            };
+            let overlays = Overlays {
+                outlines: vec![OrientedBox::from_rect(rect_at(120.0, 700.0, 160.0, 160.0))],
+                selection: Some(OrientedBox::new(rect_at(320.0, 180.0, 560.0, 320.0), -12.0)),
+                show_size: true,
+                hover: Some(OrientedBox::from_rect(rect_at(1300.0, 140.0, 280.0, 200.0))),
+                marquee: Some(rect_at(60.0, 640.0, 420.0, 320.0)),
+                guides: vec![
+                    [egui::pos2(540.0, -80.0), egui::pos2(540.0, 1160.0)],
+                    [egui::pos2(-80.0, 540.0), egui::pos2(1160.0, 540.0)],
+                ],
+                measurements: vec![Measurement {
+                    from: egui::pos2(1080.0, 800.0),
+                    to: egui::pos2(1240.0, 800.0),
+                    label: "160".to_owned(),
+                }],
+            };
             Viewport::new(&mut camera)
                 .artboards(&artboards)
+                .overlays(&overlays)
                 .show(ui, rect);
         });
         assert_rendered(&image, size, variant);

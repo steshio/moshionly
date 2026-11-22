@@ -126,7 +126,7 @@ pub fn layers_panel(
                 {
                     *expanded = !*expanded;
                 } else if shown.response.clicked() || shown.response.secondary_clicked() {
-                    sample.selected_layer = Some(key);
+                    sample.select(Some(key));
                 }
             }
             ui.add_space(theme.space.md);

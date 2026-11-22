@@ -9,11 +9,21 @@
 //! - [`Viewport`] is the widget. It handles pan and zoom itself and reports
 //!   every other gesture as a [`ViewportEvent`] with positions in world
 //!   coordinates.
+//! - [`Overlays`] is what it draws over the artboards, from plain geometry:
+//!   the selection box with its handles, hover outlines, a marquee, snapping
+//!   guides and measurements.
+//! - [`hit_handle`] finds the [`Handle`] of a selection box under the
+//!   pointer, for rotated boxes too.
 //!
-//! Hit testing of layers belongs to the engine, which knows their shapes.
+//! Hit testing of handles lives here. Hit testing of layers belongs to the
+//! engine, which knows their shapes.
 
 mod camera;
+mod handles;
+mod overlay;
 mod widget;
 
 pub use camera::{Camera, MAX_ZOOM, MIN_ZOOM, ZOOM_STOPS, next_zoom_stop, previous_zoom_stop};
+pub use handles::{Anchor, Handle, HandleMetrics, OrientedBox, handle_cursor, hit_handle};
+pub use overlay::{Measurement, Overlays};
 pub use widget::{Artboard, Viewport, ViewportEvent, ViewportOutput};

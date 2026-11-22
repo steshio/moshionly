@@ -13,7 +13,7 @@ use super::sample_art;
 use crate::{
     key::Key,
     theme::{Tone, icons},
-    viewport::Artboard,
+    viewport::{Artboard, OrientedBox, Overlays},
     widgets::Rgba,
 };
 
@@ -49,6 +49,9 @@ pub struct SampleLayer {
     pub hidden: bool,
     /// The layer is locked.
     pub locked: bool,
+    /// The layer's box on the canvas, in world coordinates. Groups have
+    /// none of their own.
+    pub frame: Option<Rect>,
 }
 
 /// One sample action: something a layer does between two moments.
@@ -183,6 +186,7 @@ fn layer(
     icon: &'static str,
     depth: usize,
     expanded: Option<bool>,
+    frame: Option<[f32; 4]>,
 ) -> SampleLayer {
     SampleLayer {
         key: Key::new(key),
@@ -192,6 +196,7 @@ fn layer(
         expanded,
         hidden: false,
         locked: false,
+        frame: frame.map(|[x, y, w, h]| Rect::from_min_size(pos2(x, y), vec2(w, h))),
     }
 }
 
@@ -217,19 +222,106 @@ fn action(
 
 impl Default for Sample {
     fn default() -> Self {
-        let mut layers = vec![
-            layer("scene-1", "Scene 1", icons::FRAME_CORNERS, 0, Some(true)),
-            layer("headline", "Headline", icons::TEXT_T, 1, None),
-            layer("badge", "Badge", icons::CIRCLE, 1, None),
-            layer("card", "Card", icons::RECTANGLE, 1, None),
-            layer("photo", "Photo", icons::IMAGE, 1, None),
-            layer("confetti", "Confetti", icons::FOLDER_SIMPLE, 1, Some(false)),
-            layer("spark-1", "Spark", icons::STAR, 2, None),
-            layer("spark-2", "Spark", icons::STAR, 2, None),
-            layer("backdrop", "Backdrop", icons::RECTANGLE, 1, None),
-            layer("scene-2", "Scene 2", icons::FRAME_CORNERS, 0, Some(false)),
-            layer("outro", "Outro title", icons::TEXT_T, 1, None),
+        // Front to back, as a layer list reads. The boxes match the picture
+        // drawn by `sample_art`.
+        let side = 1080.0;
+        let second = side + 160.0;
+        let rows = [
+            (
+                "scene-1",
+                "Scene 1",
+                icons::FRAME_CORNERS,
+                0,
+                Some(true),
+                Some([0.0, 0.0, side, side]),
+            ),
+            (
+                "headline",
+                "Headline",
+                icons::TEXT_T,
+                1,
+                None,
+                Some([120.0, 112.0, 560.0, 146.0]),
+            ),
+            (
+                "badge",
+                "Badge",
+                icons::CIRCLE,
+                1,
+                None,
+                Some([752.0, 246.0, 184.0, 184.0]),
+            ),
+            (
+                "photo",
+                "Photo",
+                icons::IMAGE,
+                1,
+                None,
+                Some([280.0, 380.0, 236.0, 320.0]),
+            ),
+            (
+                "card",
+                "Card",
+                icons::RECTANGLE,
+                1,
+                None,
+                Some([240.0, 340.0, 600.0, 400.0]),
+            ),
+            (
+                "confetti",
+                "Confetti",
+                icons::FOLDER_SIMPLE,
+                1,
+                Some(false),
+                None,
+            ),
+            (
+                "spark-1",
+                "Spark",
+                icons::STAR,
+                2,
+                None,
+                Some([168.0, 820.0, 38.0, 38.0]),
+            ),
+            (
+                "spark-2",
+                "Spark",
+                icons::STAR,
+                2,
+                None,
+                Some([884.0, 852.0, 30.0, 30.0]),
+            ),
+            (
+                "backdrop",
+                "Backdrop",
+                icons::CIRCLE,
+                1,
+                None,
+                Some([0.0, 690.0, 420.0, 390.0]),
+            ),
+            (
+                "scene-2",
+                "Scene 2",
+                icons::FRAME_CORNERS,
+                0,
+                Some(false),
+                Some([second, 0.0, side, side]),
+            ),
+            (
+                "outro",
+                "Outro title",
+                icons::TEXT_T,
+                1,
+                None,
+                Some([second + 280.0, 480.0, 520.0, 62.0]),
+            ),
         ];
+        let mut layers: Vec<SampleLayer> = rows
+            .into_iter()
+            .map(|(key, name, icon, depth, expanded, frame)| {
+                layer(key, name, icon, depth, expanded, frame)
+            })
+            .collect();
         layers[8].locked = true;
 
         // Tones tell the families of actions apart: teal appears, rose
@@ -309,7 +401,6 @@ impl Default for Sample {
             ),
         ];
 
-        let side = 1080.0;
         let artboards = vec![
             SampleArtboard {
                 key: Key::new("scene-1"),
@@ -321,7 +412,7 @@ impl Default for Sample {
             SampleArtboard {
                 key: Key::new("scene-2"),
                 name: "Scene 2",
-                rect: Rect::from_min_size(pos2(side + 160.0, 0.0), vec2(side, side)),
+                rect: Rect::from_min_size(pos2(second, 0.0), vec2(side, side)),
                 fill: Color32::from_rgb(0x18, 0x18, 0x1E),
                 texture: None,
             },
@@ -396,6 +487,59 @@ impl Sample {
             })
     }
 
+    /// Selects a layer, or nothing, and shows its box in the Design tab.
+    pub fn select(&mut self, key: Option<Key>) {
+        if let Some(frame) = key.as_ref().and_then(|key| self.layer(key)?.frame) {
+            // Positions are relative to the artboard the layer is on.
+            let origin = self
+                .artboards
+                .iter()
+                .find(|artboard| artboard.rect.contains(frame.center()))
+                .map_or(pos2(0.0, 0.0), |artboard| artboard.rect.min);
+            self.design.x = f64::from(frame.left() - origin.x);
+            self.design.y = f64::from(frame.top() - origin.y);
+            self.design.width = f64::from(frame.width());
+            self.design.height = f64::from(frame.height());
+        }
+        self.selected_layer = key;
+    }
+
+    /// The frontmost layer under a world position: a stand-in for the
+    /// engine's hit testing. Hidden and locked layers are passed over, and an
+    /// artboard is hit only where none of its layers is.
+    pub fn layer_at(&self, world: egui::Pos2) -> Option<Key> {
+        let hit = |layer: &&SampleLayer| {
+            !layer.hidden && !layer.locked && layer.frame.is_some_and(|f| f.contains(world))
+        };
+        self.layers
+            .iter()
+            .filter(|layer| layer.depth > 0)
+            .find(hit)
+            .or_else(|| {
+                self.layers
+                    .iter()
+                    .filter(|layer| layer.depth == 0)
+                    .find(hit)
+            })
+            .map(|layer| layer.key.clone())
+    }
+
+    /// What the viewport draws over the artboards: the selected layer's box
+    /// with handles, and an outline around the layer under the pointer.
+    pub fn overlays(&self, hover: Option<&Key>) -> Overlays {
+        let frame = |key: &Key| {
+            self.layer(key)
+                .and_then(|layer| layer.frame)
+                .map(OrientedBox::from_rect)
+        };
+        Overlays {
+            selection: self.selected_layer.as_ref().and_then(frame),
+            show_size: true,
+            hover: hover.and_then(frame),
+            ..Overlays::default()
+        }
+    }
+
     /// The layer with `key`.
     pub fn layer(&self, key: &Key) -> Option<&SampleLayer> {
         self.layers.iter().find(|layer| layer.key == *key)
@@ -456,7 +600,7 @@ mod tests {
         assert_eq!(
             names(&sample),
             [
-                "Scene 1", "Headline", "Badge", "Card", "Photo", "Confetti", "Backdrop", "Scene 2"
+                "Scene 1", "Headline", "Badge", "Photo", "Card", "Confetti", "Backdrop", "Scene 2"
             ]
         );
         sample.layers[0].expanded = Some(false);
@@ -486,5 +630,35 @@ mod tests {
             assert!(action.end <= sample.duration);
         }
         assert!(sample.selected().is_some());
+    }
+
+    #[test]
+    fn the_frontmost_layer_under_a_point_is_hit() {
+        let sample = Sample::default();
+        let at = |x: f32, y: f32| sample.layer_at(pos2(x, y));
+        // The photo lies on the card.
+        assert_eq!(at(300.0, 400.0), Some(Key::new("photo")));
+        assert_eq!(at(700.0, 600.0), Some(Key::new("card")));
+        // The backdrop is locked, so the artboard is hit through it.
+        assert_eq!(at(50.0, 900.0), Some(Key::new("scene-1")));
+        assert_eq!(at(1500.0, 100.0), Some(Key::new("scene-2")));
+        // Between the artboards there is nothing.
+        assert_eq!(at(1150.0, 500.0), None);
+    }
+
+    #[test]
+    fn selecting_a_layer_shows_its_box() {
+        let mut sample = Sample::default();
+        sample.select(Some(Key::new("outro")));
+        // Relative to the second artboard.
+        assert_eq!(
+            (sample.design.x, sample.design.y, sample.design.width),
+            (280.0, 480.0, 520.0)
+        );
+        let overlays = sample.overlays(Some(&Key::new("badge")));
+        assert_eq!(overlays.selection.unwrap().size, vec2(520.0, 62.0));
+        assert_eq!(overlays.hover.unwrap().size, vec2(184.0, 184.0));
+        sample.select(None);
+        assert!(sample.overlays(None).selection.is_none());
     }
 }
