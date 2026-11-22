@@ -5,6 +5,7 @@
 //! [`crate::theme`], and reports what the user did through its return value.
 
 mod button;
+pub mod color;
 mod empty_state;
 mod list_row;
 mod menu;
@@ -17,6 +18,7 @@ mod text_field;
 mod tooltip;
 
 pub use button::{ButtonKind, IconButton, TextButton, ToolButton, icon_toggle};
+pub use color::{ColorField, ColorResponse, Rgba, color_picker, color_swatch};
 pub use empty_state::empty_state;
 pub use list_row::{ListRow, ListRowResponse, row_toggle};
 pub use menu::{Dropdown, MenuItem, context_menu, menu_heading, menu_separator, popup_frame};
