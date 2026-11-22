@@ -1,0 +1,18 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Launch day",
+  "nodes": [
+    {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},
+    {"id":"card","parent":"scene","index":"a0","type":"group","name":"Card","x":240,"y":340,"width":600,"height":400,"shadow":{"color":"#0000002E","y":24,"blur":64},"fill":"#FFFFFF","corner_radius":32,"clip":true},
+    {"id":"accent","parent":"card","index":"a0","type":"rect","name":"Accent","width":600,"height":12,"fill":{"type":"linear_gradient","start":[0,0.5],"end":[1,0.5],"stops":[{"offset":0,"color":"#0D99FF"},{"offset":1,"color":"#7B61FF"}]}},
+    {"id":"title","parent":"card","index":"a1","type":"text","name":"Title","x":48,"y":72,"fill":"#111111","content":"Launch day","font":{"weight":700},"font_size":64},
+    {"id":"raised","parent":"card","index":"a2","type":"text","name":"Raised","x":48,"y":196,"fill":"#0D99FF","content":"$12,480 raised","font_size":40},
+    {"id":"dot","parent":"card","index":"a3","type":"ellipse","name":"Dot","x":500,"y":300,"width":52,"height":52,"fill":"#0D99FF"},
+    {"id":"cardfade","parent":"scene","index":"a0","type":"fade_in","name":"Card fades in","target":"card","start":0,"end":500,"easing":{"type":"slow_down"}},
+    {"id":"cardslide","parent":"scene","index":"a1","type":"slide_in","name":"Card slides up","target":"card","start":0,"end":700,"easing":{"type":"slow_down"},"distance":80,"fade":false},
+    {"id":"titlein","parent":"scene","index":"a2","type":"text_in","name":"Title, letter by letter","target":"title","start":500,"end":1500,"easing":{"type":"slow_down"},"effect":"slide_up","distance":60},
+    {"id":"count","parent":"scene","index":"a3","type":"counter","name":"Count up","target":"raised","start":900,"end":2600,"easing":{"type":"slow_down","intensity":70},"from":0},
+    {"id":"dotin","parent":"scene","index":"a4","type":"grow_in","name":"Dot pops","target":"dot","start":1400,"end":2000,"easing":{"type":"overshoot"},"scale":0}
+  ]
+}

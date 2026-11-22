@@ -74,6 +74,7 @@ pub struct SceneNode {
     /// Blur in pixels (twice the standard deviation of the Gaussian). 0 for none.
     pub blur: f64,
     /// Drop shadow, if any.
+    #[serde(serialize_with = "crate::defaults::write_fully")]
     pub shadow: Option<Shadow>,
     /// Region outside which nothing of the node is drawn, if any.
     pub clip: Option<Clip>,
@@ -138,6 +139,7 @@ pub enum Content {
     /// A pen-drawn outline.
     Path {
         /// The outline in pixels in the node's coordinates.
+        #[serde(serialize_with = "crate::defaults::write_fully")]
         path: PathData,
         /// Paint of the inside.
         fill: Option<ScenePaint>,
@@ -258,6 +260,7 @@ pub struct TextContent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextStyle {
     /// The font.
+    #[serde(serialize_with = "crate::defaults::write_fully")]
     pub font: Font,
     /// Font size in pixels.
     pub font_size: f64,
@@ -650,6 +653,39 @@ mod tests {
         );
         let back: Scene = serde_json::from_value(value).unwrap();
         assert_eq!(back, scene);
+    }
+
+    #[test]
+    fn scene_json_spells_out_every_value() {
+        // In a document a shadow of the default offset is written as `{}`.
+        // In a scene nothing is left for the reader to know.
+        let mut shadowed = rect("r", 0.0, 0.0, 10.0, 10.0);
+        shadowed.shadow = Some(Shadow::default());
+        let value = serde_json::to_value(&shadowed).unwrap();
+        assert_eq!(
+            value["shadow"],
+            json!({ "color": "#00000040", "x": 0.0, "y": 4.0, "blur": 12.0 })
+        );
+        let style = TextStyle {
+            font: Font::default(),
+            font_size: 10.0,
+            line_height: 12.0,
+            letter_spacing: 0.0,
+            align: TextAlign::Left,
+        };
+        assert_eq!(
+            serde_json::to_value(&style).unwrap()["font"],
+            json!({ "family": "Inter", "weight": 400, "italic": false })
+        );
+        let path = Content::Path {
+            path: PathData::polygon(&[[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]]),
+            fill: None,
+            stroke: None,
+        };
+        let value = serde_json::to_value(&path).unwrap();
+        assert_eq!(value["path"]["fill_rule"], "non_zero");
+        assert_eq!(value["path"]["subpaths"][0]["closed"], true);
+        assert_eq!(serde_json::from_value::<Content>(value).unwrap(), path);
     }
 
     #[test]

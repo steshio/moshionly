@@ -30,6 +30,18 @@ pub(crate) fn with_defaults<R>(work: impl FnOnce() -> R) -> R {
     work()
 }
 
+/// `serialize_with` helper that writes a value with every default spelt out.
+///
+/// The scene uses it for the model types it carries (a shadow, a font, a
+/// path): a scene is read by programs that should not have to know that a
+/// missing shadow offset means 4.
+pub(crate) fn write_fully<T: serde::Serialize, S: serde::Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    with_defaults(|| value.serialize(serializer))
+}
+
 /// `skip_serializing_if` helper for properties whose default is `Default::default()`.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     !writing_defaults() && *value == T::default()
