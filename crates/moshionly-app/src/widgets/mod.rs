@@ -7,6 +7,7 @@
 mod button;
 mod empty_state;
 mod list_row;
+pub mod numeric;
 pub mod paint;
 mod property_row;
 mod section;
@@ -17,6 +18,7 @@ mod tooltip;
 pub use button::{ButtonKind, IconButton, TextButton, ToolButton, icon_toggle};
 pub use empty_state::empty_state;
 pub use list_row::{ListRow, ListRowResponse, row_toggle};
+pub use numeric::{NumericField, NumericResponse};
 pub use property_row::{LABEL_WIDTH, control_row, pair, property_row};
 pub use section::{divider, padded, section, section_header};
 pub use segmented::{segmented, tabs};
