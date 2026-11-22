@@ -11,6 +11,8 @@
 //! Nothing here is written by hand per type. A new property on a node type
 //! shows up everywhere as soon as it is added to the struct.
 
+mod reference;
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::sync::OnceLock;
@@ -23,6 +25,8 @@ use crate::id::NodeId;
 use crate::json::tidy_numbers;
 use crate::model::{AnimationKind, Family, Node, NodeType};
 use crate::validate::{Problem, ProblemKind};
+
+pub use reference::reference;
 
 /// One node type, for pickers and prompts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
