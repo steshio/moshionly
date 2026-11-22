@@ -1,0 +1,15 @@
+[package]
+name = "moshionly-app"
+description = "Moshionly: open-source motion design for the desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "moshionly"
+path = "src/main.rs"
+
+[dependencies]

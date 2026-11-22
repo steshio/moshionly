@@ -1,0 +1,155 @@
+# Architecture
+
+This document is the contract between the parts of Moshionly. If code and this document disagree, fix one of them in the same pull request.
+
+## Principles
+
+1. **Design first, then actions.** A layer's properties describe how it looks at rest. Animations are separate objects that say "between these two moments, take this property of that layer to this value". There are no keyframes.
+2. **A frame is a pure function.** `frame = evaluate(document, artboard, time)`. Nothing depends on the previous frame, so scrubbing, playback, export and agent screenshots all produce the same pixels.
+3. **One way to change a document.** Every change, whether it comes from a mouse drag, undo, a file import or an AI agent, is a batch of three edits: add a node, update a node, remove a node.
+4. **One schema.** Node types are defined once in Rust. The file format, the validator, the JSON Schema given to agents and the docs are derived from those definitions.
+5. **Local first.** Projects are files on disk. No account, no server. Network access is used only when the user turns on an AI provider or sends a design from Figma.
+6. **The engine does not know about the window.** Everything except `moshionly-app` runs headless, which is what makes the command line, the MCP server and tests possible.
+
+## Crates
+
+| Crate | Depends on | Responsibility |
+|---|---|---|
+| `moshionly-core` | nothing heavy | Document model, edits, undo, file format, schema, easing, and evaluation of a document at a time into a `Scene` |
+| `moshionly-render` | core, Skia | Turns a `Scene` into pixels. Fonts, text layout, images, effects |
+| `moshionly-export` | core, render | PNG, GIF, MP4 and other video, Lottie |
+| `moshionly-agent` | core, render, export | The tool surface for AI agents and the MCP server that exposes it |
+| `moshionly-ai` | none of the above | Chat providers: subscriptions through installed agent CLIs, and API keys |
+| `moshionly-app` | all | The desktop editor (egui) and the `moshionly` command |
+
+`plugins/figma` is a Figma plugin written in plain JavaScript. It converts a Figma selection into Moshionly nodes.
+
+## Document
+
+A document is a flat list of nodes. The tree is assembled from `parent`.
+
+```json
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Launch teaser",
+  "nodes": [
+    { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",
+      "x": 0, "y": 0, "width": 1080, "height": 1080, "duration": 4000, "fill": "#FFFFFF" },
+    { "id": "cd34", "parent": "ab12", "index": "a0", "type": "rect", "name": "Card",
+      "x": 240, "y": 340, "width": 600, "height": 400, "fill": "#0D99FF", "corner_radius": 32 },
+    { "id": "ef56", "parent": "ab12", "index": "a0", "type": "fade_in",
+      "target": "cd34", "start": 0, "end": 600, "easing": { "type": "smooth", "intensity": 50 } }
+  ]
+}
+```
+
+Rules:
+
+- `id` is a 12 character URL-safe random string, unique in the document.
+- Every node belongs to one of two families: **layers** and **animations**. The `type` decides the family.
+- Artboards are the roots (`parent: null`). A layer's parent is an artboard, a `group` or a `mask_group`. An animation's parent is an artboard or an `animation_group` in the same artboard, and its `target` is a layer (or the artboard) in that artboard.
+- `index` is a fractional index string. Siblings of the same family sort by `index` using plain string comparison. For layers, a larger index is drawn later, so it is in front. For animations the order is only the row order in the timeline.
+- Lengths are in pixels. Angles are in degrees, clockwise positive. Times are in milliseconds from the start of the artboard. Opacity is 0 to 100. Colours are `#RRGGBB` or `#RRGGBBAA`.
+- A layer's `x`, `y` is the position of its top-left corner in its parent's coordinate space. Rotation and scale happen around the centre of the layer's box.
+- Unknown fields are rejected on edit and preserved nowhere. Unknown node types make a file fail to load with a clear message. The `version` number increases when the format changes, with a migration for every step.
+
+### Layers
+
+`artboard`, `group`, `mask_group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`.
+
+A `mask_group` uses its first child (lowest index) as an alpha mask for the rest. `group` can clip its children to its box.
+
+Shared layer properties: `name`, `x`, `y`, `width`, `height`, `rotation`, `scale`, `opacity`, `hidden`, `locked`, `blend_mode`, `blur`, `shadow`, `source_id`. Shapes add `fill`, `stroke` and, where it applies, `corner_radius`. A paint is a colour string or a linear or radial gradient object. `source_id` records where an imported layer came from (for example `figma:<file key>:<node id>`) so a design can be re-imported without losing its animations.
+
+### Animations
+
+Every animation has `target`, `start`, `end` and, unless it is instantaneous, `easing`. Optional `from` and `to` values mean "whatever the value is at that moment" when omitted.
+
+| Family | Types |
+|---|---|
+| Property | `move`, `rotate`, `scale`, `opacity`, `resize`, `fill`, `stroke`, `corner_radius`, `blur`, `shadow` |
+| Instant | `show`, `hide` |
+| Presets | `fade_in`/`fade_out`, `slide_in`/`slide_out`, `grow_in`/`grow_out`, `shrink_in`/`shrink_out`, `spin_in`/`spin_out`, `blur_in`/`blur_out`, `reveal_in`/`reveal_out` |
+| Text | `text_in`, `text_out`, `counter` |
+| Structure | `animation_group` |
+
+Presets are stored as one node with a few settings and are expanded into property animations during evaluation, so they stay easy to edit.
+
+### Combining animations
+
+For one property of one layer, animations are sorted by `start` and combined by one of two rules.
+
+- **Additive** (`move`, `rotate`): each animation contributes a delta that is added to the resting value. Two moves add up. A missing `from` is a delta of zero.
+- **Replacing** (everything else): the value is the resting value until the first animation, and from then on the most recently started animation decides. A missing `from` is the value at the moment the animation starts. A missing `to` is the resting value. If the first animation has a `from`, that value also applies before it starts, which is how "fade in" keeps a layer invisible until its cue.
+
+`scale` values are multipliers of the layer's resting scale. `opacity`, sizes, colours, radii and blur are absolute.
+
+### Easing
+
+```json
+{ "type": "smooth", "intensity": 50 }
+{ "type": "bezier", "x1": 0.2, "y1": 0, "x2": 0, "y2": 1 }
+```
+
+Types: `linear`, `smooth`, `natural`, `slow_down`, `accelerate`, `overshoot`, `elastic`, `bounce`, `bezier`. `intensity` is 0 to 100 and shapes the curve. Every easing maps a progress of 0 to 1 onto a value that starts at 0 and ends at 1.
+
+## Edits and undo
+
+```rust
+enum Edit {
+    Add { node: Node },
+    Update { id: NodeId, patch: Map<String, Value> },   // null removes an optional field
+    Remove { id: NodeId },                              // removes descendants and animations that target them
+}
+```
+
+`Document::apply(&[Edit]) -> Result<Vec<Edit>, EditError>` validates the whole batch, applies it atomically and returns the inverse batch. Moving or reordering a node is an `Update` of `parent` and `index`. `History` keeps undo and redo stacks of inverse batches. Interactive drags apply edits continuously and are merged into one undo step when the gesture ends.
+
+## Evaluation and the scene
+
+`evaluate(&Document, artboard_id, time_ms, &dyn TextMeasurer) -> Scene`
+
+The `Scene` is a plain data tree with every value resolved for that instant: transforms, opacity, clip and mask, paints, shape geometry, text broken into drawable units, images and effects. It has no dependency on a graphics library and can be serialised. The renderer, the Lottie exporter and hit testing all read it.
+
+Text needs fonts to be measured, and fonts belong to the renderer. Core therefore asks a `TextMeasurer` for line and glyph-cluster boxes when it needs to split text for per-letter, per-word or per-line animation.
+
+## Rendering
+
+`moshionly-render` draws a `Scene` with Skia on a CPU raster surface into premultiplied RGBA. The same call serves the editor preview (at screen resolution), export (at output resolution) and agent screenshots. A GPU surface is a later optimisation and must not change results.
+
+Effect order for a layer, innermost first: content, shadow, blur, mask and clip, blend mode, opacity.
+
+## Export
+
+Export steps through an artboard at `1000 / fps` millisecond intervals, renders each frame and feeds an encoder. PNG and GIF are encoded in-process. MP4 is encoded in-process when possible. Formats that need a system encoder (ProRes with alpha, WebM) use `ffmpeg` when it is installed. Lottie export converts the scene model, not pixels.
+
+## Agents
+
+`moshionly-agent` defines a small set of tools over a document handle:
+
+| Tool | Purpose |
+|---|---|
+| `get_overview` | Artboards, sizes, durations, layer and animation counts |
+| `query_nodes` | Find nodes by type, name, parent or target and return chosen fields |
+| `get_schema` | The JSON Schema for a node type, with defaults |
+| `apply_edits` | An atomic batch of add, update, remove, move and clone operations |
+| `screenshot` | Render an artboard or layer at a time, as a small PNG |
+| `export` | Render a file to disk |
+
+Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
+
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port while the app is open, and over MCP on stdio through `moshionly mcp` for headless use.
+
+## AI providers
+
+`moshionly-ai` offers two kinds of provider behind one chat interface.
+
+- **Subscription providers** run an agent CLI the user has already installed and signed in to (for example Claude Code). Moshionly starts the CLI in non-interactive mode with the Moshionly MCP server attached and streams its output. Moshionly never reads or stores the CLI's credentials.
+- **API providers** call a model API directly with a key the user supplies (Anthropic, or any OpenAI-compatible endpoint including local models). Moshionly runs the tool loop itself. Keys are stored in the operating system keychain.
+
+## The app
+
+`moshionly-app` is an egui application. Layout: a canvas in the centre, layers on the left, a Design and Animate inspector on the right, a timeline along the bottom, a floating tool bar over the canvas, and an optional chat panel. The app holds a `Document`, a `History` and view state (selection, current time, zoom); it draws artboards by evaluating and rendering on a worker thread and showing the result as a texture.
+
+All colours, spacing and type sizes come from one theme module so the look can be changed in one place.
