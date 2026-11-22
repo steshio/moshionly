@@ -190,6 +190,69 @@ named_default!(
     u16,
     400
 );
+named_default!(
+    /// Travel distance of slide presets, in pixels.
+    slide_distance,
+    is_slide_distance,
+    f64,
+    100.0
+);
+named_default!(
+    /// Starting scale of `grow_in` and end scale of `shrink_out`.
+    small_scale,
+    is_small_scale,
+    f64,
+    0.5
+);
+named_default!(
+    /// Starting scale of `shrink_in` and end scale of `grow_out`.
+    large_scale,
+    is_large_scale,
+    f64,
+    1.5
+);
+named_default!(
+    /// Rotation of spin presets, in degrees.
+    spin_angle,
+    is_spin_angle,
+    f64,
+    180.0
+);
+named_default!(
+    /// Blur of blur presets and the text blur effect, in pixels.
+    preset_blur,
+    is_preset_blur,
+    f64,
+    20.0
+);
+named_default!(
+    /// Direction of the reveal presets' wipe edge.
+    reveal_direction,
+    is_reveal_direction,
+    crate::model::Direction,
+    crate::model::Direction::Right
+);
+named_default!(
+    /// Delay between two text units starting, in milliseconds.
+    text_stagger,
+    is_text_stagger,
+    f64,
+    40.0
+);
+named_default!(
+    /// Travel of the text slide effects, as a percentage of the line height.
+    text_distance,
+    is_text_distance,
+    f64,
+    100.0
+);
+named_default!(
+    /// A flag that is on unless turned off.
+    yes,
+    is_yes,
+    bool,
+    true
+);
 
 #[cfg(test)]
 mod tests {

@@ -4,12 +4,21 @@
 //! JSON Schema and the reference documentation are all derived from these
 //! definitions, so a new property is added in exactly one place.
 
+pub mod animation;
 pub mod layer;
 pub mod node;
 pub mod paint;
 pub mod path;
 pub mod text;
 
+pub use animation::{
+    AnimationGroup, AnimationKind, BlurAnimation, BlurPreset, CornerRadiusAnimation,
+    CounterAnimation, Direction, FadePreset, FillAnimation, GrowIn, GrowOut, InstantAnimation,
+    MoveAnimation, Offset, OpacityAnimation, ResizeAnchor, ResizeAnimation, RevealPreset,
+    RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn, ShrinkOut,
+    SizeChange, SlidePreset, SpinPreset, StrokeAnimation, StrokeChange, TextAnimation, TextEffect,
+    TextOrder, TextSplit, Timing,
+};
 pub use layer::{
     Artboard, EllipseLayer, Group, ImageFit, ImageLayer, LayerProps, MaskGroup, PathLayer,
     RectLayer, StarLayer, TextLayer,

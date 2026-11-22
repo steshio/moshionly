@@ -6,12 +6,20 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::animation::{
+    AnimationGroup, AnimationKind, BlurAnimation, BlurPreset, CornerRadiusAnimation,
+    CounterAnimation, FadePreset, FillAnimation, GrowIn, GrowOut, InstantAnimation, MoveAnimation,
+    OpacityAnimation, ResizeAnimation, RevealPreset, RotateAnimation, ScaleAnimation,
+    ShadowAnimation, ShrinkIn, ShrinkOut, SlidePreset, SpinPreset, StrokeAnimation, TextAnimation,
+    Timing,
+};
 use super::layer::{
     Artboard, EllipseLayer, Group, ImageLayer, LayerProps, MaskGroup, PathLayer, RectLayer,
     StarLayer, TextLayer,
 };
 use super::paint::{CornerRadius, Paint, Stroke};
 use crate::defaults;
+use crate::easing::Easing;
 use crate::id::NodeId;
 use crate::json;
 
@@ -63,6 +71,71 @@ pub enum NodeData {
     Text(TextLayer),
     /// A bitmap image.
     Image(ImageLayer),
+
+    /// Shifts a layer from its resting position.
+    Move(MoveAnimation),
+    /// Turns a layer.
+    Rotate(RotateAnimation),
+    /// Scales a layer.
+    Scale(ScaleAnimation),
+    /// Fades a layer.
+    Opacity(OpacityAnimation),
+    /// Changes the size of a layer's box.
+    Resize(ResizeAnimation),
+    /// Changes a layer's fill.
+    Fill(FillAnimation),
+    /// Changes a layer's stroke.
+    Stroke(StrokeAnimation),
+    /// Changes a layer's corner rounding.
+    CornerRadius(CornerRadiusAnimation),
+    /// Changes a layer's blur.
+    Blur(BlurAnimation),
+    /// Changes a layer's drop shadow.
+    Shadow(ShadowAnimation),
+
+    /// Makes a layer visible at one moment.
+    Show(InstantAnimation),
+    /// Makes a layer invisible at one moment.
+    Hide(InstantAnimation),
+
+    /// Fades a layer in.
+    FadeIn(FadePreset),
+    /// Fades a layer out.
+    FadeOut(FadePreset),
+    /// Slides a layer into place.
+    SlideIn(SlidePreset),
+    /// Slides a layer away.
+    SlideOut(SlidePreset),
+    /// Grows a layer into place.
+    GrowIn(GrowIn),
+    /// Grows a layer away.
+    GrowOut(GrowOut),
+    /// Shrinks a layer into place.
+    ShrinkIn(ShrinkIn),
+    /// Shrinks a layer away.
+    ShrinkOut(ShrinkOut),
+    /// Spins a layer into place.
+    SpinIn(SpinPreset),
+    /// Spins a layer away.
+    SpinOut(SpinPreset),
+    /// Brings a layer into focus.
+    BlurIn(BlurPreset),
+    /// Takes a layer out of focus.
+    BlurOut(BlurPreset),
+    /// Wipes a layer into view.
+    RevealIn(RevealPreset),
+    /// Wipes a layer out of view.
+    RevealOut(RevealPreset),
+
+    /// Brings text in piece by piece.
+    TextIn(TextAnimation),
+    /// Takes text out piece by piece.
+    TextOut(TextAnimation),
+    /// Counts a number in a text layer.
+    Counter(CounterAnimation),
+
+    /// A folder of animations on the timeline.
+    AnimationGroup(AnimationGroup),
 }
 
 /// The two families of nodes. Siblings are ordered within their family.
@@ -84,61 +157,102 @@ impl fmt::Display for Family {
     }
 }
 
-/// Every node type, without its properties.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeType {
-    /// See [`Artboard`].
-    Artboard,
-    /// See [`Group`].
-    Group,
-    /// See [`MaskGroup`].
-    MaskGroup,
-    /// See [`RectLayer`].
-    Rect,
-    /// See [`EllipseLayer`].
-    Ellipse,
-    /// See [`StarLayer`].
-    Star,
-    /// See [`PathLayer`].
-    Path,
-    /// See [`TextLayer`].
-    Text,
-    /// See [`ImageLayer`].
-    Image,
+/// Declares [`NodeType`] with, for every type, its name in files, its kind
+/// (`layer`, or the kind of animation) and a one-line description.
+macro_rules! node_types {
+    ($($variant:ident, $name:literal, $kind:tt, $description:literal;)*) => {
+        /// Every node type, without its properties.
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+            JsonSchema,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum NodeType {
+            $(#[doc = $description] $variant,)*
+        }
+
+        impl NodeType {
+            /// Every node type: layers first, then animations.
+            pub const ALL: &'static [NodeType] = &[$(NodeType::$variant,)*];
+
+            /// The name used in the `type` field, for example `"mask_group"`.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(NodeType::$variant => $name,)*
+                }
+            }
+
+            /// One line saying what the type is, for pickers and AI prompts.
+            pub fn description(self) -> &'static str {
+                match self {
+                    $(NodeType::$variant => $description,)*
+                }
+            }
+
+            /// The kind of animation, or `None` for a layer type.
+            pub fn animation_kind(self) -> Option<AnimationKind> {
+                match self {
+                    $(NodeType::$variant => node_types!(@kind $kind),)*
+                }
+            }
+        }
+    };
+    (@kind layer) => { None };
+    (@kind property) => { Some(AnimationKind::Property) };
+    (@kind instant) => { Some(AnimationKind::Instant) };
+    (@kind preset) => { Some(AnimationKind::Preset) };
+    (@kind text) => { Some(AnimationKind::Text) };
+    (@kind structure) => { Some(AnimationKind::Structure) };
+}
+
+node_types! {
+    Artboard, "artboard", layer, "A root frame with a size, a background and its own timeline. Everything else lives inside one.";
+    Group, "group", layer, "A box that holds other layers and moves them together; can clip them and have its own fill, stroke and rounded corners.";
+    MaskGroup, "mask_group", layer, "A group whose first child (lowest index) is an alpha mask for the other children.";
+    Rect, "rect", layer, "A rectangle with optional rounded corners.";
+    Ellipse, "ellipse", layer, "An ellipse; can be cut down to an arc, a pie slice or a ring.";
+    Star, "star", layer, "A star with a chosen number of points; an inner radius of 1 makes a polygon.";
+    Path, "path", layer, "A pen-drawn shape made of straight and curved segments.";
+    Text, "text", layer, "A block of text in one font and style.";
+    Image, "image", layer, "A bitmap image from a file or a data URI.";
+
+    Move, "move", property, "Shifts a layer by an offset from its resting position. Additive: several moves add up.";
+    Rotate, "rotate", property, "Turns a layer by an angle added to its resting rotation. Additive: several rotations add up.";
+    Scale, "scale", property, "Scales a layer by a multiplier of its resting scale.";
+    Opacity, "opacity", property, "Fades a layer to an opacity from 0 to 100.";
+    Resize, "resize", property, "Changes the width and height of a layer's box while one anchor point stays fixed.";
+    Fill, "fill", property, "Changes a layer's fill, or an artboard's background, to another colour or gradient.";
+    Stroke, "stroke", property, "Changes the paint and width of a layer's stroke.";
+    CornerRadius, "corner_radius", property, "Changes the corner rounding of a rect, group or image.";
+    Blur, "blur", property, "Changes how blurred a layer is.";
+    Shadow, "shadow", property, "Changes a layer's drop shadow: colour, offset and blur.";
+
+    Show, "show", instant, "Makes a layer visible at one moment; the layer is hidden before the first show.";
+    Hide, "hide", instant, "Makes a layer invisible at one moment.";
+
+    FadeIn, "fade_in", preset, "The layer fades in from invisible; it stays invisible until this starts.";
+    FadeOut, "fade_out", preset, "The layer fades out to invisible.";
+    SlideIn, "slide_in", preset, "The layer travels into its resting position from a distance, fading in.";
+    SlideOut, "slide_out", preset, "The layer travels away from its resting position, fading out.";
+    GrowIn, "grow_in", preset, "The layer appears while growing from a smaller size.";
+    GrowOut, "grow_out", preset, "The layer disappears while growing to a larger size.";
+    ShrinkIn, "shrink_in", preset, "The layer appears while shrinking from a larger size.";
+    ShrinkOut, "shrink_out", preset, "The layer disappears while shrinking to a smaller size.";
+    SpinIn, "spin_in", preset, "The layer turns into place while growing from nothing.";
+    SpinOut, "spin_out", preset, "The layer turns away while shrinking to nothing.";
+    BlurIn, "blur_in", preset, "The layer fades in while coming into focus.";
+    BlurOut, "blur_out", preset, "The layer fades out while going out of focus.";
+    RevealIn, "reveal_in", preset, "A straight edge wipes across the layer and uncovers it.";
+    RevealOut, "reveal_out", preset, "A straight edge wipes across the layer and covers it.";
+
+    TextIn, "text_in", text, "Text appears letter by letter, word by word or line by line, each with a fade, slide, scale or blur.";
+    TextOut, "text_out", text, "Text disappears letter by letter, word by word or line by line.";
+    Counter, "counter", text, "Counts the first number in a text layer up or down, keeping the text around it.";
+
+    AnimationGroup, "animation_group", structure, "A folder that organises animations on the timeline; it does not change playback.";
 }
 
 impl NodeType {
-    /// Every node type: layers first, then animations.
-    pub const ALL: &'static [NodeType] = &[
-        NodeType::Artboard,
-        NodeType::Group,
-        NodeType::MaskGroup,
-        NodeType::Rect,
-        NodeType::Ellipse,
-        NodeType::Star,
-        NodeType::Path,
-        NodeType::Text,
-        NodeType::Image,
-    ];
-
-    /// The name used in the `type` field, for example `"mask_group"`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            NodeType::Artboard => "artboard",
-            NodeType::Group => "group",
-            NodeType::MaskGroup => "mask_group",
-            NodeType::Rect => "rect",
-            NodeType::Ellipse => "ellipse",
-            NodeType::Star => "star",
-            NodeType::Path => "path",
-            NodeType::Text => "text",
-            NodeType::Image => "image",
-        }
-    }
-
     /// Looks a type up by the name used in the `type` field.
     pub fn parse(name: &str) -> Option<NodeType> {
         Self::ALL.iter().copied().find(|ty| ty.as_str() == name)
@@ -146,16 +260,9 @@ impl NodeType {
 
     /// Whether nodes of this type are layers or animations.
     pub fn family(self) -> Family {
-        match self {
-            NodeType::Artboard
-            | NodeType::Group
-            | NodeType::MaskGroup
-            | NodeType::Rect
-            | NodeType::Ellipse
-            | NodeType::Star
-            | NodeType::Path
-            | NodeType::Text
-            | NodeType::Image => Family::Layer,
+        match self.animation_kind() {
+            None => Family::Layer,
+            Some(_) => Family::Animation,
         }
     }
 
@@ -167,27 +274,19 @@ impl NodeType {
         )
     }
 
-    /// One line saying what the type is, for pickers and AI prompts.
-    pub fn description(self) -> &'static str {
-        match self {
-            NodeType::Artboard => {
-                "A root frame with a size, a background and its own timeline. Everything else lives inside one."
-            }
-            NodeType::Group => {
-                "A box that holds other layers and moves them together; can clip them and have its own fill, stroke and rounded corners."
-            }
-            NodeType::MaskGroup => {
-                "A group whose first child (lowest index) is an alpha mask for the other children."
-            }
-            NodeType::Rect => "A rectangle with optional rounded corners.",
-            NodeType::Ellipse => "An ellipse; can be cut down to an arc, a pie slice or a ring.",
-            NodeType::Star => {
-                "A star with a chosen number of points; an inner radius of 1 makes a polygon."
-            }
-            NodeType::Path => "A pen-drawn shape made of straight and curved segments.",
-            NodeType::Text => "A block of text in one font and style.",
-            NodeType::Image => "A bitmap image from a file or a data URI.",
-        }
+    /// Whether animations can be placed inside a node of this type.
+    pub fn holds_animations(self) -> bool {
+        matches!(self, NodeType::Artboard | NodeType::AnimationGroup)
+    }
+
+    /// Whether this is a preset whose name ends in `_in`: an entrance.
+    pub fn is_entrance(self) -> bool {
+        self.animation_kind() == Some(AnimationKind::Preset) && self.as_str().ends_with("_in")
+    }
+
+    /// Whether this is a preset whose name ends in `_out`: an exit.
+    pub fn is_exit(self) -> bool {
+        self.animation_kind() == Some(AnimationKind::Preset) && self.as_str().ends_with("_out")
     }
 }
 
@@ -210,6 +309,36 @@ impl NodeData {
             NodeData::Path(_) => NodeType::Path,
             NodeData::Text(_) => NodeType::Text,
             NodeData::Image(_) => NodeType::Image,
+            NodeData::Move(_) => NodeType::Move,
+            NodeData::Rotate(_) => NodeType::Rotate,
+            NodeData::Scale(_) => NodeType::Scale,
+            NodeData::Opacity(_) => NodeType::Opacity,
+            NodeData::Resize(_) => NodeType::Resize,
+            NodeData::Fill(_) => NodeType::Fill,
+            NodeData::Stroke(_) => NodeType::Stroke,
+            NodeData::CornerRadius(_) => NodeType::CornerRadius,
+            NodeData::Blur(_) => NodeType::Blur,
+            NodeData::Shadow(_) => NodeType::Shadow,
+            NodeData::Show(_) => NodeType::Show,
+            NodeData::Hide(_) => NodeType::Hide,
+            NodeData::FadeIn(_) => NodeType::FadeIn,
+            NodeData::FadeOut(_) => NodeType::FadeOut,
+            NodeData::SlideIn(_) => NodeType::SlideIn,
+            NodeData::SlideOut(_) => NodeType::SlideOut,
+            NodeData::GrowIn(_) => NodeType::GrowIn,
+            NodeData::GrowOut(_) => NodeType::GrowOut,
+            NodeData::ShrinkIn(_) => NodeType::ShrinkIn,
+            NodeData::ShrinkOut(_) => NodeType::ShrinkOut,
+            NodeData::SpinIn(_) => NodeType::SpinIn,
+            NodeData::SpinOut(_) => NodeType::SpinOut,
+            NodeData::BlurIn(_) => NodeType::BlurIn,
+            NodeData::BlurOut(_) => NodeType::BlurOut,
+            NodeData::RevealIn(_) => NodeType::RevealIn,
+            NodeData::RevealOut(_) => NodeType::RevealOut,
+            NodeData::TextIn(_) => NodeType::TextIn,
+            NodeData::TextOut(_) => NodeType::TextOut,
+            NodeData::Counter(_) => NodeType::Counter,
+            NodeData::AnimationGroup(_) => NodeType::AnimationGroup,
         }
     }
 
@@ -230,6 +359,7 @@ impl NodeData {
             NodeData::Path(n) => Some(&n.layer),
             NodeData::Text(n) => Some(&n.layer),
             NodeData::Image(n) => Some(&n.layer),
+            _ => None,
         }
     }
 
@@ -245,6 +375,7 @@ impl NodeData {
             NodeData::Path(n) => Some(&mut n.layer),
             NodeData::Text(n) => Some(&mut n.layer),
             NodeData::Image(n) => Some(&mut n.layer),
+            _ => None,
         }
     }
 
@@ -258,7 +389,7 @@ impl NodeData {
             NodeData::Star(n) => n.fill.as_ref(),
             NodeData::Path(n) => n.fill.as_ref(),
             NodeData::Text(n) => n.fill.as_ref(),
-            NodeData::MaskGroup(_) | NodeData::Image(_) => None,
+            _ => None,
         }
     }
 
@@ -272,7 +403,7 @@ impl NodeData {
             NodeData::Path(n) => n.stroke.as_ref(),
             NodeData::Text(n) => n.stroke.as_ref(),
             NodeData::Image(n) => n.stroke.as_ref(),
-            NodeData::Artboard(_) | NodeData::MaskGroup(_) => None,
+            _ => None,
         }
     }
 
@@ -286,11 +417,109 @@ impl NodeData {
         }
     }
 
+    /// Target, span and easing, for every animation that runs over time.
+    ///
+    /// `show`, `hide` and `animation_group` have none; use
+    /// [`NodeData::target`] and [`NodeData::span`] to cover instants too.
+    pub fn timing(&self) -> Option<&Timing> {
+        match self {
+            NodeData::Move(n) => Some(&n.timing),
+            NodeData::Rotate(n) => Some(&n.timing),
+            NodeData::Scale(n) => Some(&n.timing),
+            NodeData::Opacity(n) => Some(&n.timing),
+            NodeData::Resize(n) => Some(&n.timing),
+            NodeData::Fill(n) => Some(&n.timing),
+            NodeData::Stroke(n) => Some(&n.timing),
+            NodeData::CornerRadius(n) => Some(&n.timing),
+            NodeData::Blur(n) => Some(&n.timing),
+            NodeData::Shadow(n) => Some(&n.timing),
+            NodeData::FadeIn(n) | NodeData::FadeOut(n) => Some(&n.timing),
+            NodeData::SlideIn(n) | NodeData::SlideOut(n) => Some(&n.timing),
+            NodeData::GrowIn(n) => Some(&n.timing),
+            NodeData::GrowOut(n) => Some(&n.timing),
+            NodeData::ShrinkIn(n) => Some(&n.timing),
+            NodeData::ShrinkOut(n) => Some(&n.timing),
+            NodeData::SpinIn(n) | NodeData::SpinOut(n) => Some(&n.timing),
+            NodeData::BlurIn(n) | NodeData::BlurOut(n) => Some(&n.timing),
+            NodeData::RevealIn(n) | NodeData::RevealOut(n) => Some(&n.timing),
+            NodeData::TextIn(n) | NodeData::TextOut(n) => Some(&n.timing),
+            NodeData::Counter(n) => Some(&n.timing),
+            _ => None,
+        }
+    }
+
+    /// Mutable access to [`NodeData::timing`].
+    pub fn timing_mut(&mut self) -> Option<&mut Timing> {
+        match self {
+            NodeData::Move(n) => Some(&mut n.timing),
+            NodeData::Rotate(n) => Some(&mut n.timing),
+            NodeData::Scale(n) => Some(&mut n.timing),
+            NodeData::Opacity(n) => Some(&mut n.timing),
+            NodeData::Resize(n) => Some(&mut n.timing),
+            NodeData::Fill(n) => Some(&mut n.timing),
+            NodeData::Stroke(n) => Some(&mut n.timing),
+            NodeData::CornerRadius(n) => Some(&mut n.timing),
+            NodeData::Blur(n) => Some(&mut n.timing),
+            NodeData::Shadow(n) => Some(&mut n.timing),
+            NodeData::FadeIn(n) | NodeData::FadeOut(n) => Some(&mut n.timing),
+            NodeData::SlideIn(n) | NodeData::SlideOut(n) => Some(&mut n.timing),
+            NodeData::GrowIn(n) => Some(&mut n.timing),
+            NodeData::GrowOut(n) => Some(&mut n.timing),
+            NodeData::ShrinkIn(n) => Some(&mut n.timing),
+            NodeData::ShrinkOut(n) => Some(&mut n.timing),
+            NodeData::SpinIn(n) | NodeData::SpinOut(n) => Some(&mut n.timing),
+            NodeData::BlurIn(n) | NodeData::BlurOut(n) => Some(&mut n.timing),
+            NodeData::RevealIn(n) | NodeData::RevealOut(n) => Some(&mut n.timing),
+            NodeData::TextIn(n) | NodeData::TextOut(n) => Some(&mut n.timing),
+            NodeData::Counter(n) => Some(&mut n.timing),
+            _ => None,
+        }
+    }
+
+    /// The layer an animation changes. `None` for layers and animation groups.
+    pub fn target(&self) -> Option<&NodeId> {
+        match self {
+            NodeData::Show(n) | NodeData::Hide(n) => Some(&n.target),
+            other => other.timing().map(|timing| &timing.target),
+        }
+    }
+
+    /// Points an animation at another layer. Does nothing for other nodes.
+    pub fn set_target(&mut self, target: NodeId) {
+        match self {
+            NodeData::Show(n) | NodeData::Hide(n) => n.target = target,
+            other => {
+                if let Some(timing) = other.timing_mut() {
+                    timing.target = target;
+                }
+            }
+        }
+    }
+
+    /// Start and end of an animation in milliseconds. Instants start and end
+    /// at the same moment. `None` for layers and animation groups.
+    pub fn span(&self) -> Option<(f64, f64)> {
+        match self {
+            NodeData::Show(n) | NodeData::Hide(n) => Some((n.start, n.start)),
+            other => other.timing().map(|timing| (timing.start, timing.end)),
+        }
+    }
+
+    /// The easing of an animation that has one.
+    pub fn easing(&self) -> Option<&Easing> {
+        self.timing().map(|timing| &timing.easing)
+    }
+
     /// The name given to the node, which may be empty.
     pub fn name(&self) -> &str {
-        match self.layer() {
-            Some(layer) => &layer.name,
-            None => "",
+        match self {
+            NodeData::Show(n) | NodeData::Hide(n) => &n.name,
+            NodeData::AnimationGroup(n) => &n.name,
+            other => match (other.layer(), other.timing()) {
+                (Some(layer), _) => &layer.name,
+                (None, Some(timing)) => &timing.name,
+                (None, None) => "",
+            },
         }
     }
 }
@@ -305,6 +534,9 @@ macro_rules! node_data_from {
     };
 }
 
+// Types used by exactly one variant convert on their own. Types shared by an
+// "in" and an "out" variant (`FadePreset`, `InstantAnimation`, ...) have to be
+// wrapped by hand, because the type alone does not say which one is meant.
 node_data_from! {
     Artboard => Artboard,
     Group => Group,
@@ -315,6 +547,22 @@ node_data_from! {
     PathLayer => Path,
     TextLayer => Text,
     ImageLayer => Image,
+    MoveAnimation => Move,
+    RotateAnimation => Rotate,
+    ScaleAnimation => Scale,
+    OpacityAnimation => Opacity,
+    ResizeAnimation => Resize,
+    FillAnimation => Fill,
+    StrokeAnimation => Stroke,
+    CornerRadiusAnimation => CornerRadius,
+    BlurAnimation => Blur,
+    ShadowAnimation => Shadow,
+    GrowIn => GrowIn,
+    GrowOut => GrowOut,
+    ShrinkIn => ShrinkIn,
+    ShrinkOut => ShrinkOut,
+    CounterAnimation => Counter,
+    AnimationGroup => AnimationGroup,
 }
 
 impl Node {
@@ -374,6 +622,11 @@ impl Node {
     /// The shared layer properties, when the node is a layer.
     pub fn layer(&self) -> Option<&LayerProps> {
         self.data.layer()
+    }
+
+    /// The layer an animation changes. `None` for layers and animation groups.
+    pub fn target(&self) -> Option<&NodeId> {
+        self.data.target()
     }
 
     /// The name given to the node, which may be empty.
@@ -590,5 +843,203 @@ mod tests {
         assert_eq!(data.corner_radius(), None);
         data.layer_mut().unwrap().x = 99.0;
         assert_eq!(data.layer().unwrap().x, 99.0);
+    }
+
+    #[test]
+    fn reads_the_animation_example_from_the_architecture_document() {
+        let node = Node::from_value(json!({
+            "id": "ef56", "parent": "ab12", "index": "a0", "type": "fade_in",
+            "target": "cd34", "start": 0, "end": 600, "easing": { "type": "smooth", "intensity": 50 }
+        }))
+        .unwrap();
+        assert_eq!(node.node_type(), NodeType::FadeIn);
+        assert_eq!(node.family(), Family::Animation);
+        assert_eq!(node.target(), Some(&NodeId::from("cd34")));
+        assert_eq!(node.data.span(), Some((0.0, 600.0)));
+        assert_eq!(node.data.easing(), Some(&Easing::smooth()));
+        // The default easing is not written back.
+        assert_eq!(
+            node.to_value(),
+            json!({ "id": "ef56", "parent": "ab12", "index": "a0", "type": "fade_in",
+                    "target": "cd34", "start": 0, "end": 600 })
+        );
+    }
+
+    /// One example of every animation type with non-default settings.
+    fn animation_examples() -> Vec<Value> {
+        let gradient = json!({ "type": "linear_gradient", "stops": [
+            { "offset": 0, "color": "#FF0000" }, { "offset": 1, "color": "#0000FF" } ] });
+        vec![
+            json!({ "type": "move", "from": { "x": -200 }, "to": { "y": 40 } }),
+            json!({ "type": "rotate", "from": -90, "to": 180 }),
+            json!({ "type": "scale", "from": 0, "to": 1.2 }),
+            json!({ "type": "opacity", "from": 0, "to": 80 }),
+            json!({ "type": "resize", "from": { "width": 10 }, "to": { "width": 300, "height": 50 },
+                    "anchor": "top_left" }),
+            json!({ "type": "fill", "from": "#FF0000", "to": gradient }),
+            json!({ "type": "stroke", "from": { "width": 0 }, "to": { "paint": "#00FF00", "width": 6 } }),
+            json!({ "type": "corner_radius", "from": 0, "to": [8, 8, 0, 0] }),
+            json!({ "type": "blur", "from": 24, "to": 0 }),
+            json!({ "type": "shadow", "from": { "blur": 0 }, "to": { "color": "#00000080", "x": 2, "y": 12, "blur": 30 } }),
+            json!({ "type": "show" }),
+            json!({ "type": "hide", "name": "Cut" }),
+            json!({ "type": "fade_in" }),
+            json!({ "type": "fade_out", "easing": { "type": "linear" } }),
+            json!({ "type": "slide_in", "direction": "left", "distance": 240, "fade": false }),
+            json!({ "type": "slide_out", "direction": "down" }),
+            json!({ "type": "grow_in", "scale": 0.2 }),
+            json!({ "type": "grow_out", "scale": 3, "fade": false }),
+            json!({ "type": "shrink_in", "scale": 2 }),
+            json!({ "type": "shrink_out", "scale": 0 }),
+            json!({ "type": "spin_in", "angle": -360, "fade": true }),
+            json!({ "type": "spin_out", "angle": 90 }),
+            json!({ "type": "blur_in", "blur": 40 }),
+            json!({ "type": "blur_out" }),
+            json!({ "type": "reveal_in", "direction": "down" }),
+            json!({ "type": "reveal_out" }),
+            json!({ "type": "text_in", "split": "words", "effect": "slide_up", "stagger": 80, "order": "backward",
+                    "distance": 50 }),
+            json!({ "type": "text_out", "split": "lines", "effect": "scale", "scale": 1.5 }),
+            json!({ "type": "counter", "from": 0, "to": 1250.5, "easing": { "type": "slow_down", "intensity": 70 } }),
+        ]
+    }
+
+    #[test]
+    fn every_animation_type_round_trips_with_non_default_values() {
+        for mut animation in animation_examples() {
+            let fields = animation.as_object_mut().unwrap();
+            fields.insert("id".into(), json!("a1"));
+            fields.insert("parent".into(), json!("ab12"));
+            fields.insert("index".into(), json!("a0"));
+            fields.insert("target".into(), json!("cd34"));
+            fields.insert("start".into(), json!(250));
+            if !matches!(fields["type"].as_str(), Some("show" | "hide")) {
+                fields.insert("end".into(), json!(900));
+            }
+            let node =
+                Node::from_value(animation.clone()).unwrap_or_else(|e| panic!("{animation}: {e}"));
+            assert_eq!(node.family(), Family::Animation);
+            assert_eq!(node.target(), Some(&NodeId::from("cd34")));
+            let written = node.to_value();
+            assert_eq!(
+                written.as_object().unwrap().len(),
+                animation.as_object().unwrap().len(),
+                "nothing dropped or added: {written}"
+            );
+            assert_eq!(Node::from_value(written).unwrap(), node);
+            assert_eq!(Node::from_value(node.to_full_value()).unwrap(), node);
+        }
+    }
+
+    #[test]
+    fn the_examples_cover_every_animation_type() {
+        let covered: Vec<String> = animation_examples()
+            .iter()
+            .map(|example| example["type"].as_str().unwrap().to_owned())
+            .collect();
+        for ty in NodeType::ALL {
+            if ty.family() == Family::Animation && *ty != NodeType::AnimationGroup {
+                assert!(
+                    covered.iter().any(|name| name == ty.as_str()),
+                    "no example for {ty}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn animation_groups_are_plain_folders() {
+        let group = Node::from_value(json!({
+            "id": "g1", "parent": "ab12", "index": "a1", "type": "animation_group", "name": "Intro"
+        }))
+        .unwrap();
+        assert_eq!(group.name(), "Intro");
+        assert_eq!(group.target(), None);
+        assert_eq!(group.data.span(), None);
+        assert!(NodeType::AnimationGroup.holds_animations());
+        assert!(!NodeType::AnimationGroup.holds_layers());
+        assert!(
+            Node::from_value(json!({
+                "id": "g1", "parent": "ab12", "index": "a1", "type": "animation_group", "target": "x"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn instants_span_a_single_moment_and_ignore_end() {
+        let show = Node::from_value(json!({
+            "id": "s1", "parent": "ab12", "index": "a0", "type": "show", "target": "cd34", "start": 400, "end": 900
+        }))
+        .unwrap();
+        assert_eq!(show.data.span(), Some((400.0, 400.0)));
+        assert_eq!(show.data.timing(), None);
+        assert_eq!(show.data.easing(), None);
+        assert!(
+            Node::from_value(json!({
+                "id": "s1", "parent": "ab12", "index": "a0", "type": "show", "target": "cd34", "start": 400,
+                "easing": { "type": "linear" }
+            }))
+            .is_err(),
+            "an instant has no easing"
+        );
+    }
+
+    #[test]
+    fn animations_reject_fields_of_other_types() {
+        let attempt = |extra: Value| {
+            let mut value = json!({ "id": "a1", "parent": "ab12", "index": "a0", "target": "cd34", "start": 0, "end": 1 });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            Node::from_value(value).unwrap_err().to_string()
+        };
+        assert!(attempt(json!({ "type": "fade_in", "from": 0 })).contains("from"));
+        assert!(attempt(json!({ "type": "move", "to": { "z": 1 } })).contains("z"));
+        assert!(attempt(json!({ "type": "resize", "anchor": "middle" })).contains("middle"));
+        assert!(attempt(json!({ "type": "opacity", "to": "half" })).contains("invalid type"));
+        assert!(attempt(json!({ "type": "slide_in", "direction": "north" })).contains("north"));
+    }
+
+    #[test]
+    fn retargeting_reaches_every_animation() {
+        let mut fade = NodeData::FadeIn(FadePreset {
+            timing: Timing::new("old", 0.0, 500.0),
+        });
+        fade.set_target(NodeId::from("new"));
+        assert_eq!(fade.target(), Some(&NodeId::from("new")));
+
+        let mut hide = NodeData::Hide(InstantAnimation::new("old", 100.0));
+        hide.set_target(NodeId::from("new"));
+        assert_eq!(hide.target(), Some(&NodeId::from("new")));
+
+        let mut rect = NodeData::from(RectLayer::default());
+        rect.set_target(NodeId::from("new"));
+        assert_eq!(rect.target(), None);
+    }
+
+    #[test]
+    fn kinds_and_entrances() {
+        assert_eq!(
+            NodeType::Move.animation_kind(),
+            Some(AnimationKind::Property)
+        );
+        assert_eq!(
+            NodeType::Show.animation_kind(),
+            Some(AnimationKind::Instant)
+        );
+        assert_eq!(
+            NodeType::Counter.animation_kind(),
+            Some(AnimationKind::Text)
+        );
+        assert_eq!(NodeType::Rect.animation_kind(), None);
+        assert!(NodeType::SlideIn.is_entrance() && !NodeType::SlideIn.is_exit());
+        assert!(NodeType::RevealOut.is_exit());
+        assert!(
+            !NodeType::TextIn.is_entrance(),
+            "text animations are their own kind"
+        );
+        assert_eq!(NodeType::ALL.len(), 39);
     }
 }
