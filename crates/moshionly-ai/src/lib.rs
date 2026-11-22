@@ -20,11 +20,20 @@
 mod chat;
 mod error;
 mod event;
+mod provider;
 pub mod redact;
 mod tool;
 
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
 pub use error::{AiError, ErrorKind};
 pub use event::{ChatEvent, EventReceiver, EventSender, StopReason, event_channel};
+pub use provider::{
+    Capabilities, ChatProvider, ModelInfo, ProviderInfo, ProviderKind, Readiness, ReadyState,
+    ToolTransport,
+};
 pub use redact::ApiKey;
 pub use tool::{ToolContent, ToolExecutor, ToolOutput, ToolSpec};
+
+/// The token used to cancel a request, re-exported so that callers do not
+/// need their own dependency on `tokio-util`.
+pub use tokio_util::sync::CancellationToken;
