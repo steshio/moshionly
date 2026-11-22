@@ -18,6 +18,7 @@ pub mod eval;
 pub mod geometry;
 pub mod history;
 pub mod id;
+pub mod import;
 pub mod index;
 pub mod io;
 mod json;

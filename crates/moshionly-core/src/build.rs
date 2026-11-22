@@ -529,7 +529,7 @@ pub fn add_artboard(
 
 /// Where the next artboard goes on the canvas: right of the rightmost one,
 /// level with the first.
-fn free_canvas_spot(document: &Document) -> (f64, f64) {
+pub(crate) fn free_canvas_spot(document: &Document) -> (f64, f64) {
     let frames: Vec<Rect> = document
         .artboards()
         .iter()
