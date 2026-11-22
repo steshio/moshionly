@@ -240,7 +240,7 @@ impl Journal {
     }
 
     /// Adds what `later` touched after this journal's changes.
-    fn absorb(&mut self, later: Journal) {
+    pub(crate) fn absorb(&mut self, later: Journal) {
         let Journal { mut before, order } = later;
         for id in order {
             if let Some(state) = before.remove(&id)
