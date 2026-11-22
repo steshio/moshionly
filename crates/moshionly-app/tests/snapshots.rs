@@ -517,3 +517,21 @@ fn timeline() {
         println!("wrote {}", path.display());
     }
 }
+
+/// The command palette over the window, with something typed.
+#[test]
+fn command_palette() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = Shell::new(Settings::default());
+        shell.palette_mut().open();
+        let (path, image) = snapshot("palette", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}

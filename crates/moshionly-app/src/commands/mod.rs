@@ -4,17 +4,20 @@
 //! shortcut ([`CommandId`]). Menus, buttons, shortcuts and the command palette
 //! all refer to commands by id, so each one is described in exactly one place.
 //! [`CommandRegistry`] holds what changes while the app runs: which commands
-//! are currently enabled. It also turns key presses into commands.
+//! are currently enabled. It also turns key presses into commands, and
+//! [`Palette`] lets the user find any command by typing.
 //!
 //! The registry only *names* what should happen. Carrying a command out is the
 //! job of whoever owns the state it touches.
 
+mod palette;
 mod shortcut;
 
 use std::collections::HashSet;
 
 use egui::{Context, Event, Key, KeyboardShortcut, Modifiers};
 
+pub use palette::Palette;
 pub use shortcut::shortcut_text;
 
 use crate::theme::icons;

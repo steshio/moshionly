@@ -31,7 +31,7 @@ use self::{
     top_bar::TopBar,
 };
 use crate::{
-    commands::{CommandId, CommandRegistry},
+    commands::{CommandId, CommandRegistry, Palette},
     key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
@@ -46,6 +46,7 @@ pub struct Shell {
     commands: CommandRegistry,
     inspector: InspectorState,
     toasts: Toasts,
+    palette: Palette,
     tool: Tool,
     playing: bool,
     looping: bool,
@@ -80,6 +81,7 @@ impl Shell {
             commands: CommandRegistry::new(),
             inspector: InspectorState::default(),
             toasts: Toasts::default(),
+            palette: Palette::default(),
             tool: Tool::default(),
             playing: false,
             looping: true,
@@ -130,6 +132,11 @@ impl Shell {
     /// Which commands are enabled.
     pub fn commands_mut(&mut self) -> &mut CommandRegistry {
         &mut self.commands
+    }
+
+    /// The command palette, for opening it from outside.
+    pub fn palette_mut(&mut self) -> &mut Palette {
+        &mut self.palette
     }
 
     /// Shows a short message over the canvas.
@@ -280,6 +287,7 @@ impl Shell {
             - egui::vec2(0.0, theme.space.lg);
         self.toasts.show(&ctx, toast_anchor);
 
+        requested.extend(self.palette.show(&ctx, &self.commands));
         requested.extend(self.commands.triggered(&ctx));
         let mut output = ShellOutput::default();
         for id in requested {
@@ -371,6 +379,7 @@ impl Shell {
             CommandId::ThemeSystem => self.set_theme(ctx, ThemeMode::System),
             CommandId::ThemeLight => self.set_theme(ctx, ThemeMode::Light),
             CommandId::ThemeDark => self.set_theme(ctx, ThemeMode::Dark),
+            CommandId::CommandPalette => self.palette.toggle(),
             CommandId::PlayPause => self.playing = !self.playing,
             CommandId::JumpToStart => self.playhead = 0.0,
             CommandId::ToggleLoop => self.looping = !self.looping,
