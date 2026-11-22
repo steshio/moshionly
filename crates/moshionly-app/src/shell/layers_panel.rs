@@ -2,9 +2,12 @@
 
 use egui::{ScrollArea, Ui};
 
-use super::{parts::sample_tag, sample::Sample};
+use super::{
+    parts::{command_item, sample_tag},
+    sample::Sample,
+};
 use crate::{
-    commands::CommandId,
+    commands::{CommandId, CommandRegistry},
     theme::{Theme, icons},
     widgets::{
         IconButton, ListRow, MenuItem, context_menu, control_row, empty_state, menu_separator,
@@ -16,7 +19,11 @@ use crate::{
 ///
 /// Selection, expanding, hiding and locking act on the sample scene. Returns
 /// the commands chosen from a row's context menu.
-pub fn layers_panel(ui: &mut Ui, sample: &mut Sample) -> Vec<CommandId> {
+pub fn layers_panel(
+    ui: &mut Ui,
+    sample: &mut Sample,
+    registry: &CommandRegistry,
+) -> Vec<CommandId> {
     let theme = Theme::of(ui);
     let mut commands = Vec::new();
 
@@ -48,6 +55,7 @@ pub fn layers_panel(ui: &mut Ui, sample: &mut Sample) -> Vec<CommandId> {
     }
 
     let searching = !sample.layer_query.trim().is_empty();
+    let delete_shortcut = CommandId::Delete.shortcut_label().unwrap_or_default();
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -92,18 +100,17 @@ pub fn layers_panel(ui: &mut Ui, sample: &mut Sample) -> Vec<CommandId> {
 
                 context_menu(&shown.response, |ui| {
                     for id in [CommandId::Duplicate, CommandId::Group, CommandId::Ungroup] {
-                        if command_item(ui, id) {
+                        if command_item(ui, id, registry, None) {
                             commands.push(id);
                         }
                     }
                     menu_separator(ui);
+                    let delete = MenuItem::new(CommandId::Delete.name())
+                        .icon(icons::TRASH)
+                        .shortcut(&delete_shortcut)
+                        .danger(true);
                     if ui
-                        .add(
-                            MenuItem::new(CommandId::Delete.name())
-                                .icon(icons::TRASH)
-                                .shortcut(&CommandId::Delete.shortcut_label().unwrap_or_default())
-                                .danger(true),
-                        )
+                        .add_enabled(registry.is_enabled(CommandId::Delete), delete)
                         .clicked()
                     {
                         commands.push(CommandId::Delete);
@@ -125,18 +132,4 @@ pub fn layers_panel(ui: &mut Ui, sample: &mut Sample) -> Vec<CommandId> {
             ui.add_space(theme.space.md);
         });
     commands
-}
-
-/// One menu line for a command, with its icon and shortcut. Returns true
-/// when it was clicked.
-pub fn command_item(ui: &mut Ui, id: CommandId) -> bool {
-    let shortcut = id.shortcut_label().unwrap_or_default();
-    let mut item = MenuItem::new(id.name());
-    if let Some(icon) = id.icon() {
-        item = item.icon(icon);
-    }
-    if !shortcut.is_empty() {
-        item = item.shortcut(&shortcut);
-    }
-    ui.add(item).clicked()
 }

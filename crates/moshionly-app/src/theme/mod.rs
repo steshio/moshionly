@@ -7,6 +7,7 @@
 //!
 //! To change the look of the app, edit this module and nothing else.
 
+pub mod brand;
 pub mod fonts;
 pub mod icons;
 pub mod tokens;

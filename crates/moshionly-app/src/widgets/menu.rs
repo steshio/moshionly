@@ -32,6 +32,7 @@ pub struct MenuItem<'a> {
     checked: Option<bool>,
     danger: bool,
     highlighted: bool,
+    submenu: bool,
 }
 
 impl<'a> MenuItem<'a> {
@@ -44,6 +45,7 @@ impl<'a> MenuItem<'a> {
             checked: None,
             danger: false,
             highlighted: false,
+            submenu: false,
         }
     }
 
@@ -75,6 +77,12 @@ impl<'a> MenuItem<'a> {
     /// Draws the item as if hovered, for keyboard navigation of a list.
     pub fn highlighted(mut self, highlighted: bool) -> Self {
         self.highlighted = highlighted;
+        self
+    }
+
+    /// Shows an arrow at the right edge: the item leads to a further list.
+    pub fn submenu(mut self, submenu: bool) -> Self {
+        self.submenu = submenu;
         self
     }
 }
@@ -137,7 +145,15 @@ impl Widget for MenuItem<'_> {
                 .align_size_within_rect(label.size(), text_rect)
                 .min;
             ui.painter().galley(paint::snap(pos), label, ink);
-            if let Some(shortcut) = shortcut {
+            if self.submenu {
+                icons::paint(
+                    ui.painter(),
+                    egui::pos2(text_rect.right() - 5.0, rect.center().y),
+                    icons::CARET_RIGHT,
+                    10.0,
+                    c.text_secondary,
+                );
+            } else if let Some(shortcut) = shortcut {
                 let pos = Align2::RIGHT_CENTER
                     .align_size_within_rect(shortcut.size(), text_rect)
                     .min;

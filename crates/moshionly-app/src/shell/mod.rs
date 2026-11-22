@@ -14,22 +14,26 @@ mod layers_panel;
 pub mod layout;
 mod parts;
 pub mod sample;
+mod tool_bar;
+mod top_bar;
 
-use egui::{Align2, Context, Rect, Ui, pos2};
+use egui::{Context, Rect, Ui, ViewportCommand};
 
 pub use self::{
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
+    tool_bar::Tool,
 };
 use self::{
     parts::{Edge, edge_line},
     sample::Sample,
+    top_bar::TopBar,
 };
 use crate::{
     commands::{CommandId, CommandRegistry},
     settings::Settings,
     theme::{self, Theme, ThemeMode},
-    widgets::{Grow, Toast, Toasts, paint, splitter},
+    widgets::{Grow, Toast, Toasts, splitter},
 };
 
 /// The editor window.
@@ -38,6 +42,11 @@ pub struct Shell {
     commands: CommandRegistry,
     inspector: InspectorState,
     toasts: Toasts,
+    tool: Tool,
+    playing: bool,
+    /// Set when the top bar is also the window's title area: the room to
+    /// leave at its left edge for the window's buttons.
+    title_inset: Option<f32>,
     sample: Sample,
 }
 
@@ -57,8 +66,24 @@ impl Shell {
             commands: CommandRegistry::new(),
             inspector: InspectorState::default(),
             toasts: Toasts::default(),
+            tool: Tool::default(),
+            playing: false,
+            title_inset: None,
             sample: Sample::default(),
         }
+    }
+
+    /// Tells the shell that its top bar doubles as the window's title bar,
+    /// as on macOS with a full-size content view. The bar then leaves `inset`
+    /// points free at its left edge for the window's own buttons, and its
+    /// empty space drags the window.
+    pub fn use_top_bar_as_title_bar(&mut self, inset: f32) {
+        self.title_inset = Some(inset);
+    }
+
+    /// The active tool.
+    pub fn tool(&self) -> Tool {
+        self.tool
     }
 
     /// The settings as they are now, for saving.
@@ -97,26 +122,43 @@ impl Shell {
         let mut requested: Vec<CommandId> = Vec::new();
 
         // The canvas first, so the panels' edges are drawn over it.
-        parts::panel(ui, "canvas", layout.canvas, c.canvas, |_| {});
+        let tool = self.tool;
+        let picked = parts::panel(ui, "canvas", layout.canvas, c.canvas, |ui| {
+            tool_bar::tool_bar(ui, layout.canvas, tool)
+        });
+        requested.extend(picked);
 
-        parts::panel(ui, "top-bar", layout.top_bar, c.surface, |ui| {
-            let name = Rect::from_min_max(
-                pos2(layout.top_bar.left() + theme.space.xl, layout.top_bar.top()),
-                layout.top_bar.max,
-            );
-            paint::text_in(
-                ui,
-                name,
-                Align2::LEFT_CENTER,
-                &self.sample.project_name,
-                theme.title(),
-                c.text,
-            );
+        // In full screen the window's buttons are hidden, so the inset goes.
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
+        let bar = TopBar {
+            project_name: &self.sample.project_name,
+            zoom: 1.0,
+            playing: self.playing,
+            chat_open: self.settings.panels.chat_open,
+            theme_mode: self.settings.theme,
+            commands: &self.commands,
+            leading_inset: self.title_inset.filter(|_| !fullscreen).unwrap_or(0.0),
+            drags_window: self.title_inset.is_some(),
+        };
+        let top = parts::panel(ui, "top-bar", layout.top_bar, c.surface, |ui| {
+            top_bar::top_bar(ui, layout.top_bar, &bar)
         });
         edge_line(ui, layout.top_bar, Edge::Bottom);
+        requested.extend(top.commands);
+        if top.drag_window {
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if top.toggle_maximized {
+            let maximized = ctx.input(|i| i.viewport().maximized == Some(true));
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        }
 
         parts::panel(ui, "layers", layout.left, c.surface, |ui| {
-            requested.extend(layers_panel::layers_panel(ui, &mut self.sample));
+            requested.extend(layers_panel::layers_panel(
+                ui,
+                &mut self.sample,
+                &self.commands,
+            ));
         });
         edge_line(ui, layout.left, Edge::Right);
 
@@ -144,7 +186,9 @@ impl Shell {
 
         self.splitters(ui, window, &layout);
 
-        let toast_anchor = layout.canvas.center_bottom() - egui::vec2(0.0, theme.space.xl);
+        // Toasts stack upwards from just above the tool bar.
+        let toast_anchor = tool_bar::tool_bar_rect(layout.canvas, theme).center_top()
+            - egui::vec2(0.0, theme.space.lg);
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.commands.triggered(&ctx));
@@ -238,7 +282,12 @@ impl Shell {
             CommandId::ThemeSystem => self.set_theme(ctx, ThemeMode::System),
             CommandId::ThemeLight => self.set_theme(ctx, ThemeMode::Light),
             CommandId::ThemeDark => self.set_theme(ctx, ThemeMode::Dark),
-            _ => return false,
+            CommandId::PlayPause => self.playing = !self.playing,
+            CommandId::AskAi => self.settings.panels.chat_open = true,
+            other => match Tool::from_command(other) {
+                Some(tool) => self.tool = tool,
+                None => return false,
+            },
         }
         true
     }

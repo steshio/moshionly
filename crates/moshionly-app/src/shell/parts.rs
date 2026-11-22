@@ -3,8 +3,9 @@
 use egui::{Align, Align2, Color32, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2};
 
 use crate::{
+    commands::{CommandId, CommandRegistry},
     theme::{Theme, Tone},
-    widgets::{paint, tooltip},
+    widgets::{MenuItem, paint, tooltip},
 };
 
 /// Fills `rect` and runs `add` in a child that is laid out top to bottom,
@@ -71,4 +72,27 @@ pub fn sample_tag(ui: &mut Ui) {
         "Placeholder content: this panel is not connected to a document yet",
         None,
     );
+}
+
+/// One menu line for a command, with its icon and shortcut, greyed out when
+/// the command is disabled. `checked` makes it a checkable item. Returns true
+/// when it was clicked.
+pub fn command_item(
+    ui: &mut Ui,
+    id: CommandId,
+    commands: &CommandRegistry,
+    checked: Option<bool>,
+) -> bool {
+    let shortcut = id.shortcut_label().unwrap_or_default();
+    let mut item = MenuItem::new(id.name());
+    if let Some(icon) = id.icon() {
+        item = item.icon(icon);
+    }
+    if let Some(checked) = checked {
+        item = item.checked(checked);
+    }
+    if !shortcut.is_empty() {
+        item = item.shortcut(&shortcut);
+    }
+    ui.add_enabled(commands.is_enabled(id), item).clicked()
 }
