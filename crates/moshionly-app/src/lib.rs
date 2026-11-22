@@ -7,6 +7,7 @@
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
+pub mod commands;
 pub mod theme;
 pub mod widgets;
 
