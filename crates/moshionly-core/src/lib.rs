@@ -18,6 +18,7 @@ pub mod geometry;
 pub mod history;
 pub mod id;
 pub mod index;
+pub mod io;
 mod json;
 pub mod model;
 pub mod tree;

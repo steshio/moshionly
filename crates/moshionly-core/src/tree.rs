@@ -19,7 +19,11 @@ impl Document {
     }
 
     /// A node's children of one family, sorted by index.
-    pub fn child_nodes(&self, parent: &NodeId, family: Family) -> impl Iterator<Item = &Node> {
+    pub fn child_nodes<'a>(
+        &'a self,
+        parent: &NodeId,
+        family: Family,
+    ) -> impl Iterator<Item = &'a Node> + use<'a> {
         self.children(parent, family)
             .iter()
             .filter_map(move |id| self.get(id))
