@@ -220,8 +220,9 @@ impl CommandRegistry {
     /// Three rules keep shortcuts out of the way:
     ///
     /// - While a text field has focus, only shortcuts that cannot be meant as
-    ///   typing or text editing are honoured. `V` types a letter and ⌘C
-    ///   copies text; ⌘S still saves.
+    ///   typing or text editing are honoured. `V` types a letter, and the
+    ///   Edit commands (undo, copy, select all) belong to the text; ⌘S
+    ///   still saves.
     /// - A shortcut with more modifiers wins over one with fewer, so ⇧⌘Z is
     ///   redo and never undo.
     /// - Space runs its command when it is released, and only if no pointer
@@ -246,7 +247,9 @@ impl CommandRegistry {
 
         ctx.input_mut(|input| {
             for (shortcut, id) in bindings {
-                if typing && shortcut.conflicts_with_text_editing() {
+                if typing
+                    && (shortcut.conflicts_with_text_editing() || id.category() == Category::Edit)
+                {
                     continue;
                 }
                 if input.consume_shortcut(&shortcut) && self.is_enabled(id) {
@@ -429,6 +432,149 @@ mod tests {
         assert!(registry.search("no such command").is_empty());
         // A category name finds its commands.
         assert!(registry.search("playback").contains(&CommandId::PlayPause));
+    }
+
+    /// Runs one frame with `events` and returns the commands triggered.
+    fn frame(ctx: &Context, registry: &mut CommandRegistry, events: Vec<Event>) -> Vec<CommandId> {
+        let mut triggered = Vec::new();
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| triggered = registry.triggered(ui.ctx()));
+        // Nothing is drawn in these tests, so the font texture is not needed.
+        output.textures_delta.clear();
+        triggered
+    }
+
+    fn key_event(modifiers: Modifiers, logical_key: Key, pressed: bool) -> Event {
+        Event::Key {
+            key: logical_key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn press(modifiers: Modifiers, logical_key: Key) -> Vec<Event> {
+        vec![key_event(modifiers, logical_key, true)]
+    }
+
+    #[test]
+    fn a_shortcut_runs_its_command_once() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::K)),
+            [CommandId::CommandPalette]
+        );
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::NONE, Key::R)),
+            [CommandId::ToolRectangle]
+        );
+        // Nothing pressed, nothing runs.
+        assert!(frame(&ctx, &mut registry, Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn the_more_specific_shortcut_wins() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        let shift_command = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+        assert_eq!(
+            frame(&ctx, &mut registry, press(shift_command, Key::Z)),
+            [CommandId::Redo]
+        );
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::Z)),
+            [CommandId::Undo]
+        );
+        // ⌘S saves; plain S is the star tool.
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::S)),
+            [CommandId::Save]
+        );
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::NONE, Key::S)),
+            [CommandId::ToolStar]
+        );
+    }
+
+    #[test]
+    fn disabled_commands_ignore_their_shortcuts() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        registry.set_enabled(CommandId::Undo, false);
+        assert!(frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::Z)).is_empty());
+        registry.set_enabled(CommandId::Undo, true);
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::Z)),
+            [CommandId::Undo]
+        );
+    }
+
+    #[test]
+    fn alternate_keys_run_the_same_command() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::COMMAND, Key::Equals)),
+            [CommandId::ZoomIn]
+        );
+        assert_eq!(
+            frame(&ctx, &mut registry, press(Modifiers::NONE, Key::Delete)),
+            [CommandId::Delete]
+        );
+    }
+
+    #[test]
+    fn clipboard_events_become_commands() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        assert_eq!(
+            frame(&ctx, &mut registry, vec![Event::Copy]),
+            [CommandId::Copy]
+        );
+        assert_eq!(
+            frame(&ctx, &mut registry, vec![Event::Paste("x".to_owned())]),
+            [CommandId::Paste]
+        );
+    }
+
+    #[test]
+    fn a_tap_on_space_plays_but_holding_it_to_pan_does_not() {
+        let ctx = Context::default();
+        let mut registry = CommandRegistry::new();
+        let space = |pressed| vec![key_event(Modifiers::NONE, Key::Space, pressed)];
+
+        // Down does nothing yet; up runs the command.
+        assert!(frame(&ctx, &mut registry, space(true)).is_empty());
+        assert_eq!(
+            frame(&ctx, &mut registry, space(false)),
+            [CommandId::PlayPause]
+        );
+
+        // Down, a pointer press (a pan), up: no command.
+        assert!(frame(&ctx, &mut registry, space(true)).is_empty());
+        let pointer = |pressed| {
+            vec![Event::PointerButton {
+                pos: egui::pos2(10.0, 10.0),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }]
+        };
+        assert!(frame(&ctx, &mut registry, pointer(true)).is_empty());
+        assert!(frame(&ctx, &mut registry, pointer(false)).is_empty());
+        assert!(frame(&ctx, &mut registry, space(false)).is_empty());
+
+        // The next tap works again.
+        assert!(frame(&ctx, &mut registry, space(true)).is_empty());
+        assert_eq!(
+            frame(&ctx, &mut registry, space(false)),
+            [CommandId::PlayPause]
+        );
     }
 
     #[test]

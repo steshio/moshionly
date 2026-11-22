@@ -78,6 +78,9 @@ impl MoshionlyApp {
     /// Creates the app. Called once by `eframe` when the window is ready.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
+        // ⌘+ and ⌘- zoom the canvas here, not the whole interface.
+        cc.egui_ctx
+            .options_mut(|options| options.zoom_with_keyboard = false);
         let settings = Settings::load(cc.storage);
         theme::set_mode(&cc.egui_ctx, settings.theme);
         let mut shell = Shell::new(settings);

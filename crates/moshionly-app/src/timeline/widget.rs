@@ -422,7 +422,8 @@ impl<'a> Timeline<'a> {
                     // No guide when the move stopped short of the target.
                     state.guide = snapped.guide.filter(|_| delta == wanted);
                     for (key, start, end) in edit::moved(&originals, delta) {
-                        if times_of(groups, &key) != Some((start, end)) {
+                        // A bar that has gone since the drag began is left out.
+                        if times_of(groups, &key).is_some_and(|now| now != (start, end)) {
                             events.push(TimelineEvent::BarMoved { key, start, end });
                             state.drag_changed = true;
                         }
@@ -444,7 +445,7 @@ impl<'a> Timeline<'a> {
                         Edge::End => end,
                     };
                     state.guide = snapped.guide.filter(|_| landed == snapped.time);
-                    if times_of(groups, &key) != Some((start, end)) {
+                    if times_of(groups, &key).is_some_and(|now| now != (start, end)) {
                         events.push(TimelineEvent::BarResized {
                             key,
                             edge,

@@ -161,6 +161,9 @@ impl Shell {
         let window = ctx.content_rect();
         let layout = ShellLayout::compute(window, &self.settings.panels, &theme.size);
         let mut requested: Vec<CommandId> = Vec::new();
+        // Escape closes an open menu or the palette before it means anything
+        // else.
+        let overlay_open = egui::Popup::is_any_open(&ctx) || self.palette.is_open();
 
         // The canvas first, so the panels' edges are drawn over it.
         self.sample.load_textures(&ctx);
@@ -303,7 +306,12 @@ impl Shell {
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.palette.show(&ctx, &self.commands));
-        requested.extend(self.commands.triggered(&ctx));
+        requested.extend(
+            self.commands
+                .triggered(&ctx)
+                .into_iter()
+                .filter(|id| !(overlay_open && *id == CommandId::Deselect)),
+        );
         let mut output = ShellOutput::default();
         for id in requested {
             if !self.run(&ctx, id) {
@@ -395,6 +403,10 @@ impl Shell {
             CommandId::ThemeLight => self.set_theme(ctx, ThemeMode::Light),
             CommandId::ThemeDark => self.set_theme(ctx, ThemeMode::Dark),
             CommandId::CommandPalette => self.palette.toggle(),
+            CommandId::Deselect => {
+                self.sample.select(None);
+                self.sample.selected_actions.clear();
+            }
             CommandId::PlayPause => self.playing = !self.playing,
             CommandId::JumpToStart => self.playhead = 0.0,
             CommandId::ToggleLoop => self.looping = !self.looping,
