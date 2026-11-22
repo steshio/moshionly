@@ -26,6 +26,7 @@
 //! an exit left elsewhere, so a layer that slid out and later fades back in
 //! comes back in place.
 
+use super::tween::{Span, Tween};
 use crate::geometry::Point;
 use crate::model::{Direction, NodeData};
 
@@ -48,6 +49,62 @@ pub(crate) struct Expansion {
     /// Whether the preset brings the layer in, which resets the channels it
     /// does not use.
     pub entrance: bool,
+}
+
+/// One pose channel: what presets do to one aspect of a layer. Text
+/// animations use the same channels for each piece of text.
+#[derive(Debug)]
+pub(crate) struct Pose<V> {
+    pub steps: Vec<Tween<V>>,
+    /// Whether the last step was laid by an exit, which leaves the channel
+    /// away from neutral.
+    exited: bool,
+}
+
+impl<V> Default for Pose<V> {
+    fn default() -> Self {
+        Self {
+            steps: Vec::new(),
+            exited: false,
+        }
+    }
+}
+
+impl<V: Clone> Pose<V> {
+    /// Lays one preset onto the channel and says whether that added a step.
+    /// `values` are the start and end the preset gives this channel, if it
+    /// uses it.
+    ///
+    /// An entrance starts from its own start value, which therefore also
+    /// holds before it begins. An exit starts from wherever the channel is,
+    /// so it takes over smoothly from an entrance that is still running. An
+    /// entrance that does not use the channel snaps it back to `neutral` if
+    /// an exit left it elsewhere, so that the layer comes in from a clean
+    /// pose.
+    pub(crate) fn lay(
+        &mut self,
+        span: Span,
+        values: Option<(V, V)>,
+        entrance: bool,
+        neutral: V,
+    ) -> bool {
+        match values {
+            Some((from, to)) => {
+                self.steps
+                    .push(Tween::new(span, entrance.then_some(from), Some(to)));
+                self.exited = !entrance;
+                true
+            }
+            None if entrance && self.exited => {
+                let at_start = Span::new(span.start, span.start, span.easing);
+                self.steps
+                    .push(Tween::new(at_start, Some(neutral.clone()), Some(neutral)));
+                self.exited = false;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 const FADE_IN: Option<(f64, f64)> = Some((0.0, 1.0));

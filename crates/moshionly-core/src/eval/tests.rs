@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::color::Color;
 use crate::model::{BlendMode, GradientStop, TextAlign};
+use crate::scene::TextUnit;
 use crate::text::MonospaceMeasurer;
 
 /// Builds a document from node JSON. Every document gets a 400 by 300
@@ -1194,4 +1195,328 @@ fn presets_do_not_apply_at_rest() {
     assert_eq!(rest.nodes[0].opacity, 1.0);
     assert_eq!(rest.nodes[0].transform, Affine::translate(100.0, 100.0));
     assert!(rest.nodes[0].clip.is_none());
+}
+
+/// A text layer "t" saying "Hi you" in letters 6 wide on lines 12 tall, with
+/// the given extra fields and the given linear animations on it.
+fn animated_text(layer: Value, animations: Value) -> Document {
+    let mut text = json!({
+        "id": "t", "type": "text", "content": "Hi you", "font_size": 10, "fill": "#000000"
+    });
+    text.as_object_mut()
+        .unwrap()
+        .extend(layer.as_object().unwrap().clone());
+    let mut nodes = vec![text];
+    for (position, animation) in animations.as_array().unwrap().iter().enumerate() {
+        let mut node = json!({ "id": format!("a{position}"), "target": "t", "easing": linear() });
+        node.as_object_mut()
+            .unwrap()
+            .extend(animation.as_object().unwrap().clone());
+        nodes.push(node);
+    }
+    document(Value::Array(nodes))
+}
+
+/// The units of the text layer at a time, as the text they cover with
+/// their opacity.
+fn pieces(document: &Document, time: f64) -> Vec<(String, f64)> {
+    let scene = at(document, time);
+    let Some(node) = scene.find(&id("t")) else {
+        return Vec::new();
+    };
+    let Content::Text(text) = &node.content else {
+        panic!()
+    };
+    text.units
+        .iter()
+        .map(|unit| {
+            (
+                text.text[unit.start..unit.end].to_owned(),
+                (unit.opacity * 1e6).round() / 1e6,
+            )
+        })
+        .collect()
+}
+
+fn units(document: &Document, time: f64) -> Vec<TextUnit> {
+    let scene = at(document, time);
+    match &node(&scene, "t").content {
+        Content::Text(text) => text.units.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn piece(text: &str, opacity: f64) -> (String, f64) {
+    (text.to_owned(), opacity)
+}
+
+#[test]
+fn text_comes_in_letter_by_letter() {
+    // Five letters, 100 apart, each taking 600 of the 1000.
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 0, "end": 1000, "stagger": 100 }]),
+    );
+    assert!(pieces(&document, 0.0).is_empty(), "nothing has come in yet");
+    assert_eq!(
+        pieces(&document, 300.0),
+        [piece("H", 0.5), piece("i", 0.333333), piece("y", 0.166667)]
+    );
+    assert_eq!(
+        pieces(&document, 700.0),
+        [
+            piece("Hi", 1.0),
+            piece("y", 0.833333),
+            piece("o", 0.666667),
+            piece("u", 0.5)
+        ]
+    );
+    // Once everything is in, the text is one plain unit again.
+    assert_eq!(pieces(&document, 1000.0), [piece("Hi you", 1.0)]);
+    assert_eq!(units(&document, 1000.0)[0].transform, Affine::IDENTITY);
+}
+
+#[test]
+fn text_waits_unseen_until_its_cue() {
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 500, "end": 900, "split": "words" }]),
+    );
+    assert!(pieces(&document, 0.0).is_empty());
+    assert!(pieces(&document, 500.0).is_empty());
+    assert!(!pieces(&document, 600.0).is_empty());
+    // The layer itself is there the whole time; only its units are not.
+    assert!(at(&document, 0.0).find(&id("t")).is_some());
+}
+
+#[test]
+fn words_rise_into_place() {
+    // Two words 200 apart, 800 each; half a line (6 pixels) of travel.
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 0, "end": 1000, "split": "words", "effect": "slide_up",
+                  "stagger": 200, "distance": 50 }]),
+    );
+    let units = units(&document, 400.0);
+    assert_eq!(units.len(), 2);
+    assert_eq!(
+        (units[0].start, units[0].end, units[0].opacity),
+        (0, 2, 0.5)
+    );
+    assert_eq!(
+        units[0].transform,
+        Affine::translate(0.0, 3.0),
+        "half way up from 6 below"
+    );
+    assert_eq!(
+        (units[1].start, units[1].end, units[1].opacity),
+        (3, 6, 0.25)
+    );
+    assert_eq!(units[1].transform, Affine::translate(0.0, 4.5));
+
+    let down = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 0, "end": 1000, "split": "lines", "effect": "slide_down" }]),
+    );
+    assert_eq!(
+        super::tests::units(&down, 500.0)[0].transform,
+        Affine::translate(0.0, -6.0)
+    );
+}
+
+#[test]
+fn pieces_scale_about_their_own_centre() {
+    let document = animated_text(
+        json!({ "auto_size": "fixed", "width": 200, "height": 80, "vertical_align": "middle" }),
+        json!([{ "type": "text_in", "start": 0, "end": 1000, "split": "words", "effect": "scale",
+                  "stagger": 0, "scale": 0.5 }]),
+    );
+    let units = units(&document, 500.0);
+    // "Hi" is 12 wide on a line 12 tall, and the text block sits 34 down in
+    // the box: its centre is (6, 40).
+    let center = units[0].transform.apply(Point::new(6.0, 40.0));
+    assert!(close(center.x, 6.0) && close(center.y, 40.0), "{center:?}");
+    let corner = units[0].transform.apply(Point::new(0.0, 34.0));
+    assert!(close(corner.x, 1.5) && close(corner.y, 35.5), "{corner:?}");
+    // "you" scales about its own centre, 27 along.
+    let other = units[1].transform.apply(Point::new(27.0, 40.0));
+    assert!(close(other.x, 27.0) && close(other.y, 40.0), "{other:?}");
+}
+
+#[test]
+fn pieces_come_into_focus() {
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 0, "end": 1000, "split": "lines", "effect": "blur", "blur": 16 }]),
+    );
+    let units = units(&document, 250.0);
+    assert_eq!((units[0].blur, units[0].opacity), (12.0, 0.25));
+    assert_eq!(super::tests::units(&document, 1000.0)[0].blur, 0.0);
+}
+
+#[test]
+fn text_goes_out_backward_from_the_last_letter() {
+    // Five letters, 100 apart, 100 each: the last letter goes first.
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_out", "start": 0, "end": 500, "stagger": 100, "order": "backward" }]),
+    );
+    assert_eq!(pieces(&document, 0.0), [piece("Hi you", 1.0)]);
+    assert_eq!(
+        pieces(&document, 150.0),
+        [piece("Hi y", 1.0), piece("o", 0.5)]
+    );
+    assert_eq!(pieces(&document, 450.0), [piece("H", 0.5)]);
+    assert!(pieces(&document, 500.0).is_empty());
+}
+
+#[test]
+fn text_can_come_in_go_out_and_come_back() {
+    let document = animated_text(
+        json!({}),
+        json!([
+            { "type": "text_in", "start": 0, "end": 400, "stagger": 0 },
+            { "type": "text_out", "start": 1000, "end": 1400, "split": "words", "effect": "slide_down", "stagger": 0 },
+            { "type": "text_in", "start": 2000, "end": 2400, "split": "lines" }
+        ]),
+    );
+    assert_eq!(pieces(&document, 200.0), [piece("Hi you", 0.5)]);
+    assert_eq!(pieces(&document, 700.0), [piece("Hi you", 1.0)]);
+    // Going out, both words drop together: still one unit, on the move.
+    let leaving = units(&document, 1200.0);
+    assert_eq!(leaving.len(), 1);
+    assert_eq!(
+        (leaving[0].opacity, leaving[0].transform),
+        (0.5, Affine::translate(0.0, 6.0))
+    );
+    assert!(pieces(&document, 1700.0).is_empty());
+    // Coming back, the drop is forgotten.
+    let back = units(&document, 2200.0);
+    assert_eq!(
+        (back[0].opacity, back[0].transform),
+        (0.5, Affine::IDENTITY)
+    );
+}
+
+#[test]
+fn a_text_out_takes_over_from_an_unfinished_text_in() {
+    let document = animated_text(
+        json!({}),
+        json!([
+            { "type": "text_in", "start": 0, "end": 1000, "split": "lines" },
+            { "type": "text_out", "start": 500, "end": 1500, "split": "lines" }
+        ]),
+    );
+    assert_eq!(pieces(&document, 500.0), [piece("Hi you", 0.5)]);
+    assert_eq!(pieces(&document, 1000.0), [piece("Hi you", 0.25)]);
+}
+
+#[test]
+fn text_is_one_unit_at_rest_and_without_animations() {
+    let document = animated_text(
+        json!({}),
+        json!([{ "type": "text_in", "start": 500, "end": 900 }]),
+    );
+    let rest = evaluate_at_rest(&document, &id("ab"), &MonospaceMeasurer::default()).unwrap();
+    let Content::Text(text) = &rest.nodes[0].content else {
+        panic!()
+    };
+    assert_eq!(
+        text.units,
+        [TextUnit {
+            start: 0,
+            end: 6,
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+            blur: 0.0
+        }]
+    );
+}
+
+fn content(document: &Document, time: f64) -> String {
+    match value_at(document, &id("t"), Property::Content, time) {
+        Some(PropertyValue::Text(text)) => text,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_counter_counts_the_number_in_the_text() {
+    let document = animated_text(
+        json!({ "content": "$1,250.50 raised", "case": "upper" }),
+        json!([{ "type": "counter", "start": 0, "end": 1000, "from": 0 }]),
+    );
+    assert_eq!(content(&document, 0.0), "$0.00 raised");
+    assert_eq!(content(&document, 500.0), "$625.25 raised");
+    assert_eq!(content(&document, 1000.0), "$1,250.50 raised");
+    assert_eq!(content(&document, 5000.0), "$1,250.50 raised");
+
+    // The scene carries the counted text, in the layer's letter case, and
+    // the box follows it: 14 letters of 6, then 16.
+    let scene = at(&document, 500.0);
+    let (node, text) = text_of(&scene);
+    assert_eq!(text.text, "$625.25 RAISED");
+    assert_eq!(text.units[0].end, 14);
+    assert_eq!(node.width, 84.0);
+    assert_eq!(text_of(&at(&document, 1000.0)).0.width, 96.0);
+}
+
+#[test]
+fn counters_follow_the_replacing_rule() {
+    let document = animated_text(
+        json!({ "content": "Top 10" }),
+        json!([
+            { "type": "counter", "start": 200, "end": 400, "from": 0, "to": 100 },
+            { "type": "counter", "start": 300, "end": 500, "to": 20 },
+            { "type": "counter", "start": 800, "end": 900 }
+        ]),
+    );
+    let number = |time: f64| content(&document, time);
+    assert_eq!(
+        number(0.0),
+        "Top 0",
+        "the first `from` holds before the start"
+    );
+    assert_eq!(number(300.0), "Top 50");
+    assert_eq!(
+        number(400.0),
+        "Top 35",
+        "picked up at 50 and heading for 20"
+    );
+    assert_eq!(number(600.0), "Top 20");
+    assert_eq!(
+        number(850.0),
+        "Top 15",
+        "back toward the number that is written"
+    );
+    assert_eq!(number(900.0), "Top 10");
+}
+
+#[test]
+fn a_counter_leaves_text_without_a_number_alone() {
+    let document = animated_text(
+        json!({ "content": "No digits" }),
+        json!([{ "type": "counter", "start": 0, "end": 1000, "from": 0, "to": 9 }]),
+    );
+    assert_eq!(content(&document, 500.0), "No digits");
+    // Layers that are not text have no content.
+    let other = animated(json!({}), json!([]));
+    assert_eq!(value_at(&other, &id("r"), Property::Content, 0.0), None);
+}
+
+#[test]
+fn counters_and_text_animations_work_on_the_same_layer() {
+    let document = animated_text(
+        json!({ "content": "7 days" }),
+        json!([
+            { "type": "counter", "start": 0, "end": 1000, "from": 100 },
+            { "type": "text_in", "start": 0, "end": 1000, "split": "words", "stagger": 500 }
+        ]),
+    );
+    // At 750 the counter shows 30 (from 30.25), the first word is in and the
+    // second is half way.
+    assert_eq!(
+        pieces(&document, 750.0),
+        [piece("30", 1.0), piece("days", 0.5)]
+    );
 }

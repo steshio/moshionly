@@ -36,9 +36,19 @@
 //! preset and a property animation on the same layer both take effect.
 //! Among themselves presets follow the replacing rule, and an entrance
 //! clears what earlier presets left behind.
+//!
+//! # Text
+//!
+//! `text_in` and `text_out` cut the text into letters, words or lines and
+//! play their effect on each piece, one starting `stagger` milliseconds
+//! after the other, all together filling the time from `start` to `end`.
+//! The scene lists the pieces as text units with their own transform,
+//! opacity and blur. A `counter` replaces the first number in the text,
+//! following the replacing rule with the written number as resting value.
 
 mod preset;
 mod state;
+mod textfx;
 mod tween;
 
 use std::collections::HashMap;
@@ -53,7 +63,7 @@ use crate::model::{
     TextLayer,
 };
 use crate::scene::{
-    Clip, Content, Scene, SceneNode, ScenePaint, SceneStroke, TextContent, TextStyle, TextUnit,
+    Clip, Content, Scene, SceneNode, ScenePaint, SceneStroke, TextContent, TextStyle,
 };
 use crate::text::{TextMeasurer, TextRequest};
 
@@ -105,11 +115,13 @@ pub enum Property {
     Blur,
     /// The drop shadow.
     Shadow,
+    /// The text of a text layer, with counters applied.
+    Content,
 }
 
 impl Property {
     /// Every property.
-    pub const ALL: [Property; 13] = [
+    pub const ALL: [Property; 14] = [
         Property::X,
         Property::Y,
         Property::Width,
@@ -123,6 +135,7 @@ impl Property {
         Property::CornerRadius,
         Property::Blur,
         Property::Shadow,
+        Property::Content,
     ];
 
     /// The name of the property, which is the name of the layer field it
@@ -142,6 +155,7 @@ impl Property {
             Property::CornerRadius => "corner_radius",
             Property::Blur => "blur",
             Property::Shadow => "shadow",
+            Property::Content => "content",
         }
     }
 
@@ -168,6 +182,8 @@ pub enum PropertyValue {
     CornerRadius(CornerRadius),
     /// A shadow, or none.
     Shadow(Option<Shadow>),
+    /// Text.
+    Text(String),
 }
 
 /// The length of an artboard's timeline in milliseconds. `None` when `id` is
@@ -235,6 +251,7 @@ pub fn value_at(
         Property::Visible => PropertyValue::Flag(state.visible),
         Property::Blur => PropertyValue::Number(state.blur),
         Property::Shadow => PropertyValue::Shadow(state.shadow),
+        Property::Content => PropertyValue::Text(state.content?),
         Property::Fill if has("fill") => PropertyValue::Paint(state.fill),
         Property::Stroke if has("stroke") => PropertyValue::Stroke(state.stroke),
         Property::CornerRadius if has("corner_radius") => {
@@ -465,7 +482,8 @@ impl<'a> Evaluator<'a> {
     /// Lays out a text layer. This also settles the size of its box, which
     /// for auto-sized text comes from the text.
     fn text(&self, text: &TextLayer, state: &mut LayerState) -> Content {
-        let content = text.case.apply(&text.content);
+        let typed = state.content.take().unwrap_or_else(|| text.content.clone());
+        let content = text.case.apply(&typed);
         let style = TextStyle {
             font: text.font.clone(),
             font_size: text.font_size,
@@ -498,19 +516,17 @@ impl<'a> Evaluator<'a> {
             AutoSize::Height => state.resize(state.width, text_height, anchor),
             AutoSize::Fixed => {}
         }
-        let units = if content.is_empty() {
-            Vec::new()
-        } else {
-            vec![TextUnit {
-                start: 0,
-                end: content.len(),
-                transform: Affine::IDENTITY,
-                opacity: 1.0,
-                blur: 0.0,
-            }]
-        };
+        let offset_y = (state.height - text_height) * text.vertical_align.factor();
+        let units = textfx::units(
+            &content,
+            &layout,
+            &state.text,
+            self.time,
+            style.line_height,
+            offset_y,
+        );
         Content::Text(TextContent {
-            offset_y: (state.height - text_height) * text.vertical_align.factor(),
+            offset_y,
             fill: paint(state.fill.as_ref(), state.width, state.height),
             stroke: stroke(state.stroke.as_ref(), state.width, state.height),
             text: content,

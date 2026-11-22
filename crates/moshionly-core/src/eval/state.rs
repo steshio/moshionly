@@ -1,12 +1,14 @@
 //! The state of one layer at one time: every animatable property resolved.
 
-use super::preset::{Expansion, WHOLE_BOX, expand};
+use super::preset::{Expansion, Pose, WHOLE_BOX, expand};
+use super::textfx::TextStep;
 use super::tween::{
     BoxState, NO_SHADOW, ResizeStep, ShadowStep, Span, StrokeState, StrokeStep, Tween, additive,
     replacing,
 };
 use crate::geometry::{Affine, Point, Rect};
 use crate::model::{LayerProps, Node, NodeData, Paint, Shadow, Stroke};
+use crate::text::find_number;
 
 /// The animations of one layer, sorted into the properties they act on.
 /// Each list is in the order the animations start.
@@ -32,52 +34,10 @@ pub(crate) struct Channels {
     pose_rotation: Pose<f64>,
     pose_blur: Pose<f64>,
     pose_reveal: Pose<[f64; 4]>,
-}
-
-/// One pose channel: what presets do to one aspect of a layer.
-#[derive(Debug)]
-struct Pose<V> {
-    steps: Vec<Tween<V>>,
-    /// Whether the last step was laid by an exit, which leaves the channel
-    /// away from neutral.
-    exited: bool,
-}
-
-impl<V> Default for Pose<V> {
-    fn default() -> Self {
-        Self {
-            steps: Vec::new(),
-            exited: false,
-        }
-    }
-}
-
-impl<V: Clone> Pose<V> {
-    /// Lays one preset onto the channel. `values` are the start and end the
-    /// preset gives this channel, if it uses it.
-    ///
-    /// An entrance starts from its own start value, which therefore also
-    /// holds before it begins. An exit starts from wherever the channel is,
-    /// so it takes over smoothly from an entrance that is still running. An
-    /// entrance that does not use the channel snaps it back to `neutral` if
-    /// an exit left it elsewhere, so that the layer comes in from a clean
-    /// pose.
-    fn lay(&mut self, span: Span, values: Option<(V, V)>, entrance: bool, neutral: V) {
-        match values {
-            Some((from, to)) => {
-                self.steps
-                    .push(Tween::new(span, entrance.then_some(from), Some(to)));
-                self.exited = !entrance;
-            }
-            None if entrance && self.exited => {
-                let at_start = Span::new(span.start, span.start, span.easing);
-                self.steps
-                    .push(Tween::new(at_start, Some(neutral.clone()), Some(neutral)));
-                self.exited = false;
-            }
-            None => {}
-        }
-    }
+    /// `text_in` and `text_out`, for text layers.
+    text: Vec<TextStep>,
+    /// `counter`, for text layers.
+    counters: Vec<Tween<f64>>,
 }
 
 impl Channels {
@@ -135,6 +95,19 @@ impl Channels {
             }),
             (NodeData::Show(a), _) => self.instants.push((a.start, true)),
             (NodeData::Hide(a), _) => self.instants.push((a.start, false)),
+            (NodeData::TextIn(a), Some(span)) => self.text.push(TextStep {
+                span,
+                entering: true,
+                animation: a.clone(),
+            }),
+            (NodeData::TextOut(a), Some(span)) => self.text.push(TextStep {
+                span,
+                entering: false,
+                animation: a.clone(),
+            }),
+            (NodeData::Counter(a), Some(span)) => {
+                self.counters.push(Tween::new(span, a.from, a.to))
+            }
             (preset, Some(span)) => {
                 if let Some(expansion) = expand(preset) {
                     self.add_preset(span, expansion);
@@ -174,6 +147,30 @@ impl Channels {
             .take_while(|(at, _)| *at <= time)
             .last()
             .map_or(!first, |(_, visible)| *visible)
+    }
+
+    /// The content of a text layer at `time`: what is typed, with its first
+    /// number replaced by the value its counters give it.
+    ///
+    /// A counter follows the replacing rule, with the number written in the
+    /// text as the resting value. The number keeps its notation: decimals,
+    /// thousands separators, sign and whatever stands around it.
+    fn content(&self, node: &Node, time: f64) -> Option<String> {
+        let NodeData::Text(text) = &node.data else {
+            return None;
+        };
+        let counted = find_number(&text.content)
+            .filter(|_| !self.counters.is_empty())
+            .map(|number| {
+                let value = replacing(&number.value, &self.counters, time);
+                format!(
+                    "{}{}{}",
+                    &text.content[..number.start],
+                    number.format.format(value),
+                    &text.content[number.end..]
+                )
+            });
+        Some(counted.unwrap_or_else(|| text.content.clone()))
     }
 
     /// Resolves every property of `node` at `time`.
@@ -238,6 +235,8 @@ impl Channels {
             radii: radii.unwrap_or_default(),
             shadow: (shadow.color.a > 0).then_some(shadow),
             reveal,
+            content: self.content(node, time),
+            text: self.text.clone(),
         })
     }
 }
@@ -293,6 +292,10 @@ pub(crate) struct LayerState {
     /// The part of the box that reveal presets leave showing, as
     /// `[left, top, right, bottom]` fractions of it.
     pub reveal: [f64; 4],
+    /// For a text layer: its content, with counters applied.
+    pub content: Option<String>,
+    /// For a text layer: its text animations, in the order they start.
+    pub text: Vec<TextStep>,
 }
 
 impl LayerState {
