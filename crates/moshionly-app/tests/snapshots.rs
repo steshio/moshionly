@@ -5,6 +5,16 @@
 //! [`common::output_dir`]). Look at them when you change the theme or a
 //! widget. The tests only assert that rendering worked; they do not compare
 //! pixels, because graphics adapters differ.
+//!
+//! The two pictures of the editor in `docs/images` come from here:
+//! `editor-light.png` is `shell-light@2x.png` and `editor-dark.png` is
+//! `shell-chat-dark@2x.png`. To refresh them after changing the look, run
+//!
+//! ```text
+//! MOSHIONLY_SNAPSHOT_DIR=/tmp/shots cargo test -p moshionly-app --test snapshots
+//! ```
+//!
+//! and copy those two files over.
 
 mod common;
 

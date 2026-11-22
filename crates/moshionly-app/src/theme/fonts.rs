@@ -1,7 +1,8 @@
 //! The bundled typefaces and how they are registered with egui.
 //!
 //! - **Inter** (regular, medium, semibold) for all interface text.
-//! - **JetBrains Mono** for numbers that must not jitter: times and readouts.
+//! - **JetBrains Mono** for numbers that must keep their width: times and
+//!   readouts.
 //! - **Phosphor** for icons.
 //!
 //! All three are open source; their licenses sit next to the files in `assets/`.

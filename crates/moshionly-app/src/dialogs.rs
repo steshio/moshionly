@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 /// File extension of Moshionly projects, without the dot.
-pub const PROJECT_EXTENSION: &str = "moshionly";
+pub const PROJECT_EXTENSION: &str = "moshi";
 
 /// Image formats that can be placed on the canvas.
 pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
@@ -117,13 +117,10 @@ mod tests {
     #[test]
     fn file_names_get_their_extension_once() {
         assert_eq!(
-            file_name("Launch teaser", "moshionly"),
-            "Launch teaser.moshionly"
+            file_name("Launch teaser", PROJECT_EXTENSION),
+            "Launch teaser.moshi"
         );
-        assert_eq!(
-            file_name("teaser.moshionly", "moshionly"),
-            "teaser.moshionly"
-        );
+        assert_eq!(file_name("teaser.moshi", PROJECT_EXTENSION), "teaser.moshi");
         assert_eq!(file_name("teaser.MP4", "mp4"), "teaser.MP4");
         assert_eq!(file_name("v1.2 final", "gif"), "v1.2 final.gif");
     }

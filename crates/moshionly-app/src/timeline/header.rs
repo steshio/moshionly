@@ -72,7 +72,7 @@ pub(super) fn transport(
     bar.add_space(theme.space.sm);
 
     // The readout: current time in full strength, the scene's length quiet.
-    // A monospaced face keeps it from jittering while it counts.
+    // A monospaced face keeps it the same width while it counts.
     let mut job = LayoutJob::default();
     let format = |color: Color32| egui::TextFormat {
         font_id: theme.mono(),
