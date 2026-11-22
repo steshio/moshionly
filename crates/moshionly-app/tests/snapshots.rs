@@ -11,9 +11,11 @@ mod common;
 use common::{Variant, assert_rendered, can_render, snapshot};
 use egui::vec2;
 use moshionly_app::{
+    key::Key,
     settings::Settings,
     shell::{InspectorTab, Shell},
     theme::{Theme, icons},
+    viewport::{Artboard, Camera, Viewport},
     widgets::*,
 };
 
@@ -418,6 +420,47 @@ fn shell_with_chat() {
         shell.inspector_mut().tab = InspectorTab::Animate;
         let (path, image) = snapshot("shell-chat", size, variant, move |ui| {
             shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// The canvas on its own: two artboards without pictures.
+#[test]
+fn viewport() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(640.0, 400.0);
+    for variant in Variant::ALL {
+        let mut camera = Camera {
+            center: egui::pos2(700.0, 500.0),
+            zoom: 0.3,
+        };
+        let (path, image) = snapshot("viewport", size, variant, move |ui| {
+            let rect = ui.ctx().content_rect();
+            let artboards = [
+                Artboard {
+                    key: Key::new("one"),
+                    name: "Scene 1",
+                    rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1080.0, 1080.0)),
+                    texture: None,
+                    fill: egui::Color32::WHITE,
+                    selected: true,
+                },
+                Artboard {
+                    key: Key::new("two"),
+                    name: "A second scene with a name too long to fit above it",
+                    rect: egui::Rect::from_min_size(egui::pos2(1240.0, 0.0), vec2(400.0, 1080.0)),
+                    texture: None,
+                    fill: egui::Color32::from_rgb(0x18, 0x18, 0x1E),
+                    selected: false,
+                },
+            ];
+            Viewport::new(&mut camera)
+                .artboards(&artboards)
+                .show(ui, rect);
         });
         assert_rendered(&image, size, variant);
         println!("wrote {}", path.display());

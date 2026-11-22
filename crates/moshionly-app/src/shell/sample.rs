@@ -7,11 +7,30 @@
 //! bound to a real document this module is deleted and the same widgets are
 //! fed from the document instead.
 
+use egui::{Color32, Context, Rect, TextureHandle, TextureOptions, pos2, vec2};
+
+use super::sample_art;
 use crate::{
     key::Key,
     theme::{Tone, icons},
+    viewport::Artboard,
     widgets::Rgba,
 };
+
+/// One artboard of the sample scene.
+#[derive(Clone)]
+pub struct SampleArtboard {
+    /// The artboard's key; it is also the key of its row in the layer list.
+    pub key: Key,
+    /// The artboard's name.
+    pub name: &'static str,
+    /// Position and size on the canvas, in world coordinates.
+    pub rect: Rect,
+    /// Background colour, shown until the picture is loaded.
+    pub fill: Color32,
+    /// The picture of the artboard, loaded on first use.
+    pub texture: Option<TextureHandle>,
+}
 
 /// One row of the sample layer list.
 #[derive(Clone, Debug)]
@@ -130,10 +149,12 @@ pub struct SampleDesign {
 }
 
 /// The sample scene and the bits of state the placeholder panels keep.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Sample {
     /// The project's name, shown in the top bar.
     pub project_name: String,
+    /// The artboards on the canvas.
+    pub artboards: Vec<SampleArtboard>,
     /// The layer list, top to bottom.
     pub layers: Vec<SampleLayer>,
     /// The selected layer.
@@ -288,8 +309,27 @@ impl Default for Sample {
             ),
         ];
 
+        let side = 1080.0;
+        let artboards = vec![
+            SampleArtboard {
+                key: Key::new("scene-1"),
+                name: "Scene 1",
+                rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(side, side)),
+                fill: Color32::from_rgb(0xF6, 0xF5, 0xFC),
+                texture: None,
+            },
+            SampleArtboard {
+                key: Key::new("scene-2"),
+                name: "Scene 2",
+                rect: Rect::from_min_size(pos2(side + 160.0, 0.0), vec2(side, side)),
+                fill: Color32::from_rgb(0x18, 0x18, 0x1E),
+                texture: None,
+            },
+        ];
+
         Self {
             project_name: "Launch teaser".to_owned(),
+            artboards,
             layers,
             selected_layer: Some(Key::new("card")),
             actions,
@@ -317,6 +357,45 @@ impl Default for Sample {
 }
 
 impl Sample {
+    /// Loads the artboards' pictures as textures, once.
+    pub fn load_textures(&mut self, ctx: &Context) {
+        let pictures: [fn() -> crate::raster::Canvas; 2] =
+            [sample_art::scene_one, sample_art::scene_two];
+        for (artboard, picture) in self.artboards.iter_mut().zip(pictures) {
+            if artboard.texture.is_none() {
+                artboard.texture = Some(ctx.load_texture(
+                    format!("sample-{}", artboard.key),
+                    picture().to_color_image(),
+                    TextureOptions::LINEAR,
+                ));
+            }
+        }
+    }
+
+    /// The artboards in the form the viewport takes.
+    pub fn viewport_artboards(&self) -> Vec<Artboard<'static>> {
+        self.artboards
+            .iter()
+            .map(|artboard| Artboard {
+                key: artboard.key.clone(),
+                name: artboard.name,
+                rect: artboard.rect,
+                texture: artboard.texture.as_ref().map(TextureHandle::id),
+                fill: artboard.fill,
+                selected: self.selected_layer.as_ref() == Some(&artboard.key),
+            })
+            .collect()
+    }
+
+    /// The rectangle around all artboards, in world coordinates.
+    pub fn bounds(&self) -> Rect {
+        self.artboards
+            .iter()
+            .fold(Rect::NOTHING, |bounds, artboard| {
+                bounds.union(artboard.rect)
+            })
+    }
+
     /// The layer with `key`.
     pub fn layer(&self, key: &Key) -> Option<&SampleLayer> {
         self.layers.iter().find(|layer| layer.key == *key)

@@ -7,6 +7,7 @@
 use egui::{Color32, Painter, Rect, Vec2, pos2};
 
 use super::{Theme, corner};
+use crate::raster::{Canvas, mix};
 
 /// The three bars as `[x, y, width, height]` in a unit square.
 const BARS: [[f32; 4]; 3] = [
@@ -36,58 +37,27 @@ pub fn paint_mark(painter: &Painter, rect: Rect, theme: &Theme) {
 /// premultiplied, on a transparent background. Used as the window icon.
 pub fn icon_rgba(size: u32) -> Vec<u8> {
     let theme = Theme::light();
-    let top = mix(theme.color.accent, Color32::WHITE, 0.16);
-    let bottom = theme.color.accent_pressed;
     let side = size as f32;
     // Desktop icons leave a margin around the tile.
     let margin = side * 0.09;
     let tile = Rect::from_min_max(pos2(margin, margin), pos2(side - margin, side - margin));
     let tile_side = tile.width();
 
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for py in 0..size {
-        for px in 0..size {
-            let p = pos2(px as f32 + 0.5, py as f32 + 0.5);
-            let tile_cover = coverage(p, tile, tile_side * TILE_RADIUS);
-            let t = ((p.y - tile.top()) / tile_side).clamp(0.0, 1.0);
-            let mut color = mix(top, bottom, t);
-            for [x, y, w, h] in BARS {
-                let bar = Rect::from_min_size(
-                    tile.min + Vec2::new(x * tile_side, y * tile_side),
-                    Vec2::new(w * tile_side, h * tile_side),
-                );
-                color = mix(color, Color32::WHITE, coverage(p, bar, bar.height() / 2.0));
-            }
-            rgba.extend_from_slice(&[
-                color.r(),
-                color.g(),
-                color.b(),
-                (tile_cover * 255.0).round() as u8,
-            ]);
-        }
+    let mut canvas = Canvas::new(size as usize, size as usize);
+    canvas.fill_gradient(
+        tile,
+        tile_side * TILE_RADIUS,
+        mix(theme.color.accent, Color32::WHITE, 0.16),
+        theme.color.accent_pressed,
+    );
+    for [x, y, w, h] in BARS {
+        let bar = Rect::from_min_size(
+            tile.min + Vec2::new(x * tile_side, y * tile_side),
+            Vec2::new(w * tile_side, h * tile_side),
+        );
+        canvas.fill(bar, bar.height() / 2.0, Color32::WHITE);
     }
-    rgba
-}
-
-/// How much of the pixel centred on `p` a rounded rectangle covers, from 0
-/// to 1, from the distance to its edge.
-fn coverage(p: egui::Pos2, rect: Rect, radius: f32) -> f32 {
-    let half = rect.size() / 2.0;
-    let radius = radius.min(half.x).min(half.y);
-    let d = (p - rect.center()).abs() - (half - Vec2::splat(radius));
-    let outside = Vec2::new(d.x.max(0.0), d.y.max(0.0)).length();
-    let distance = outside + d.x.max(d.y).min(0.0) - radius;
-    (0.5 - distance).clamp(0.0, 1.0)
-}
-
-/// Blends two opaque colours: `t` of 0 is `a`, 1 is `b`.
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let channel = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
-    Color32::from_rgb(
-        channel(a.r(), b.r()),
-        channel(a.g(), b.g()),
-        channel(a.b(), b.b()),
-    )
+    canvas.into_rgba()
 }
 
 #[cfg(test)]
@@ -125,16 +95,5 @@ mod tests {
             assert!(x > 0.1 && x + w < 0.9);
             assert!(y > 0.1 && y + h < 0.9);
         }
-    }
-
-    #[test]
-    fn coverage_is_one_inside_and_zero_outside() {
-        let rect = Rect::from_min_max(pos2(10.0, 10.0), pos2(30.0, 20.0));
-        assert_eq!(coverage(pos2(20.0, 15.0), rect, 3.0), 1.0);
-        assert_eq!(coverage(pos2(40.0, 15.0), rect, 3.0), 0.0);
-        // The sharp corner of the box is outside the rounded shape.
-        assert_eq!(coverage(pos2(10.2, 10.2), rect, 5.0), 0.0);
-        // On the straight edge, half the pixel is covered.
-        assert_eq!(coverage(pos2(20.0, 10.0), rect, 3.0), 0.5);
     }
 }

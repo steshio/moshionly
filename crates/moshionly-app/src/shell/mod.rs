@@ -14,10 +14,11 @@ mod layers_panel;
 pub mod layout;
 mod parts;
 pub mod sample;
+mod sample_art;
 mod tool_bar;
 mod top_bar;
 
-use egui::{Context, Rect, Ui, ViewportCommand};
+use egui::{Context, CursorIcon, Rect, Ui, ViewportCommand, pos2};
 
 pub use self::{
     inspector::{InspectorState, InspectorTab},
@@ -33,6 +34,7 @@ use crate::{
     commands::{CommandId, CommandRegistry},
     settings::Settings,
     theme::{self, Theme, ThemeMode},
+    viewport::{Camera, Viewport, ViewportEvent},
     widgets::{Grow, Toast, Toasts, splitter},
 };
 
@@ -44,6 +46,9 @@ pub struct Shell {
     toasts: Toasts,
     tool: Tool,
     playing: bool,
+    camera: Camera,
+    /// The canvas rectangle of the last frame; `None` before the first one.
+    canvas: Option<Rect>,
     /// Set when the top bar is also the window's title area: the room to
     /// leave at its left edge for the window's buttons.
     title_inset: Option<f32>,
@@ -68,6 +73,8 @@ impl Shell {
             toasts: Toasts::default(),
             tool: Tool::default(),
             playing: false,
+            camera: Camera::default(),
+            canvas: None,
             title_inset: None,
             sample: Sample::default(),
         }
@@ -84,6 +91,11 @@ impl Shell {
     /// The active tool.
     pub fn tool(&self) -> Tool {
         self.tool
+    }
+
+    /// The canvas camera.
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
     }
 
     /// The settings as they are now, for saving.
@@ -122,17 +134,36 @@ impl Shell {
         let mut requested: Vec<CommandId> = Vec::new();
 
         // The canvas first, so the panels' edges are drawn over it.
+        self.sample.load_textures(&ctx);
+        if self.canvas.is_none() {
+            // First frame: start with the first artboard filling the canvas.
+            let first = self.sample.artboards.first().map(|a| a.rect);
+            self.fit(layout.canvas, first.unwrap_or(Rect::NOTHING));
+        }
+        self.canvas = Some(layout.canvas);
         let tool = self.tool;
-        let picked = parts::panel(ui, "canvas", layout.canvas, c.canvas, |ui| {
-            tool_bar::tool_bar(ui, layout.canvas, tool)
+        let artboards = self.sample.viewport_artboards();
+        let (viewport, picked) = parts::panel(ui, "canvas", layout.canvas, c.canvas, |ui| {
+            let viewport = Viewport::new(&mut self.camera)
+                .artboards(&artboards)
+                .cursor(tool_cursor(tool))
+                .show(ui, layout.canvas);
+            (viewport, tool_bar::tool_bar(ui, layout.canvas, tool))
         });
         requested.extend(picked);
+        for event in viewport.events {
+            // TODO: route canvas gestures to the document engine. For now
+            // only the artboard names do something.
+            if let ViewportEvent::ArtboardNameClicked { key, .. } = event {
+                self.sample.selected_layer = Some(key);
+            }
+        }
 
         // In full screen the window's buttons are hidden, so the inset goes.
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         let bar = TopBar {
             project_name: &self.sample.project_name,
-            zoom: 1.0,
+            zoom: self.camera.zoom,
             playing: self.playing,
             chat_open: self.settings.panels.chat_open,
             theme_mode: self.settings.theme,
@@ -283,6 +314,14 @@ impl Shell {
             CommandId::ThemeLight => self.set_theme(ctx, ThemeMode::Light),
             CommandId::ThemeDark => self.set_theme(ctx, ThemeMode::Dark),
             CommandId::PlayPause => self.playing = !self.playing,
+            CommandId::ZoomIn => self.camera.zoom_in(),
+            CommandId::ZoomOut => self.camera.zoom_out(),
+            CommandId::ZoomTo100 => self.camera.set_zoom(1.0),
+            CommandId::ZoomToFit => {
+                if let Some(canvas) = self.canvas {
+                    self.fit(canvas, self.sample.bounds());
+                }
+            }
             CommandId::AskAi => self.settings.panels.chat_open = true,
             other => match Tool::from_command(other) {
                 Some(tool) => self.tool = tool,
@@ -292,8 +331,32 @@ impl Shell {
         true
     }
 
+    /// Zooms and pans so `world` fills the part of `canvas` that is free of
+    /// the tool bar, with room for the artboard names above.
+    fn fit(&mut self, canvas: Rect, world: Rect) {
+        let theme = Theme::light();
+        let margin = theme.space.xxl * 2.0;
+        let bottom = theme.size.tool_bar + theme.size.tool_bar_inset + theme.space.xxl;
+        let area = Rect::from_min_max(
+            pos2(canvas.left() + margin, canvas.top() + margin),
+            pos2(canvas.right() - margin, canvas.bottom() - bottom),
+        );
+        self.camera.fit(canvas, area, world);
+    }
+
     fn set_theme(&mut self, ctx: &Context, mode: ThemeMode) {
         self.settings.theme = mode;
         theme::set_mode(ctx, mode);
+    }
+}
+
+/// The pointer shape a tool shows over the canvas.
+fn tool_cursor(tool: Tool) -> CursorIcon {
+    match tool {
+        Tool::Select => CursorIcon::Default,
+        Tool::Text => CursorIcon::Text,
+        Tool::Artboard | Tool::Rectangle | Tool::Ellipse | Tool::Star | Tool::Pen | Tool::Image => {
+            CursorIcon::Crosshair
+        }
     }
 }

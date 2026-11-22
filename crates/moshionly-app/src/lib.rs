@@ -10,9 +10,11 @@ pub mod app;
 pub mod commands;
 pub mod dialogs;
 pub mod key;
+pub mod raster;
 pub mod settings;
 pub mod shell;
 pub mod theme;
+pub mod viewport;
 pub mod widgets;
 
 /// The name shown in the window title and used for the app's settings folder.
