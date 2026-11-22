@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::cli::classify_failure_text;
 use crate::cli::process::{LineAction, ProcessExit};
+use crate::cli::{classify_failure_text, summarize_tool_content};
 use crate::error::{AiError, ErrorKind};
 use crate::event::{ChatEvent, EventSender, StopReason};
 use crate::redact::scrub;
@@ -277,7 +277,7 @@ impl ClaudeStream {
             events.emit(ChatEvent::ToolCallFinished {
                 id: id.to_owned(),
                 ok: !failed,
-                summary: summarize_tool_result(block.get("content"), failed),
+                summary: summarize_tool_content(block.get("content"), failed),
             });
         }
     }
@@ -421,45 +421,6 @@ fn result_message(value: &Value, subtype: &str) -> String {
     } else {
         errors.join("; ")
     }
-}
-
-/// One line describing a tool result, whose content is either a string or a
-/// list of text and image blocks.
-fn summarize_tool_result(content: Option<&Value>, failed: bool) -> String {
-    let mut text = String::new();
-    let mut images = 0usize;
-    match content {
-        Some(Value::String(value)) => text.push_str(value),
-        Some(Value::Array(blocks)) => {
-            for block in blocks {
-                match block.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str(block.get("text").and_then(Value::as_str).unwrap_or(""));
-                    }
-                    Some("image") => images += 1,
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-    let mut summary = summarize_text(&text);
-    if images > 0 {
-        if !summary.is_empty() {
-            summary.push_str(", ");
-        }
-        summary.push_str(&format!(
-            "{images} image{}",
-            if images == 1 { "" } else { "s" }
-        ));
-    }
-    if summary.is_empty() {
-        summary.push_str(if failed { "failed" } else { "ok" });
-    }
-    summary
 }
 
 #[cfg(test)]
@@ -700,20 +661,6 @@ mod tests {
                 summary: "node cd34 does not exist".to_owned(),
             }
         );
-    }
-
-    #[test]
-    fn a_tool_result_with_an_image_mentions_it() {
-        let content = json!([
-            {"type":"text","text":"frame at 500 ms"},
-            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
-        ]);
-        assert_eq!(
-            summarize_tool_result(Some(&content), false),
-            "frame at 500 ms, 1 image"
-        );
-        assert_eq!(summarize_tool_result(None, false), "ok");
-        assert_eq!(summarize_tool_result(None, true), "failed");
     }
 
     #[test]

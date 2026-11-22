@@ -20,6 +20,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::chat::{ChatRequest, McpEndpoint};
+use crate::cli::files::{create_dir, remove_if_present, write_if_changed};
 use crate::error::AiError;
 
 /// What the agent may never do in a design chat: run commands, change files
@@ -41,7 +42,7 @@ pub(super) fn write_workspace_files(
 ) -> Result<(), AiError> {
     let config_dir = workspace.join(".cursor");
     let rules_dir = config_dir.join("rules");
-    std::fs::create_dir_all(&rules_dir).map_err(|error| io_error(&rules_dir, &error))?;
+    create_dir(&rules_dir)?;
 
     let mcp = request.mcp.as_ref();
     write_if_changed(&config_dir.join("mcp.json"), &pretty(&mcp_config(mcp)))?;
@@ -54,11 +55,7 @@ pub(super) fn write_workspace_files(
     match request.system_prompt.as_deref().map(str::trim) {
         Some(prompt) if !prompt.is_empty() => write_if_changed(&rule_path, &rule_file(prompt))?,
         // A rule left over from an earlier turn must not outlive its prompt.
-        _ => match std::fs::remove_file(&rule_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error(&rule_path, &error)),
-        },
+        _ => remove_if_present(&rule_path)?,
     }
     Ok(())
 }
@@ -96,31 +93,6 @@ fn pretty(value: &Value) -> String {
     let mut text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
     text.push('\n');
     text
-}
-
-/// Writes `contents` to `path` unless the file already holds exactly that.
-///
-/// The new file is put in place with a rename, so a second chat that starts
-/// at the same moment never reads half a file.
-fn write_if_changed(path: &Path, contents: &str) -> Result<(), AiError> {
-    if std::fs::read_to_string(path).is_ok_and(|existing| existing == contents) {
-        return Ok(());
-    }
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}.tmp", std::process::id()));
-    let temporary = Path::new(&temporary);
-    std::fs::write(temporary, contents).map_err(|error| io_error(temporary, &error))?;
-    std::fs::rename(temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(temporary);
-        io_error(path, &error)
-    })
-}
-
-fn io_error(path: &Path, error: &std::io::Error) -> AiError {
-    AiError::other(format!(
-        "could not prepare the Cursor Agent workspace ({}): {error}",
-        path.display()
-    ))
 }
 
 #[cfg(test)]
