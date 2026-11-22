@@ -27,11 +27,11 @@ pub use edit::{
     MIN_ACTION, MIN_SCENE, Original, clamp_move, marquee_hits, merged, moved, resized, scene_end,
 };
 pub use layout::{LABELS_MIN, MIN_BAR_WIDTH, TRACK_PAD, TRACKS_MIN, TimelineLayout, label_width};
-pub use model::{Bar, Edge, Group, Row, TimelineEvent, last_end, rows};
+pub use model::{Bar, Edge, Group, Row, TimelineEvent, last_end, rows, rows_of};
 pub use scale::{
     MAX_POINTS_PER_SECOND, MIN_POINTS_PER_SECOND, Ticks, TimeScale, clamp_zoom, grid_step,
     scroll_after_zoom, slider_to_zoom, tick_label, ticks, timecode, zoom_to_fit, zoom_to_slider,
 };
 pub use snap::{Snapped, Snapper};
 pub use state::TimelineState;
-pub use widget::{Timeline, TimelineOutput, edge_zone, selection_after_click};
+pub use widget::{Timeline, TimelineOutput, edge_zone, scroll_to_reveal, selection_after_click};

@@ -179,6 +179,22 @@ pub fn rows(groups: &[Group]) -> Vec<Row> {
     rows
 }
 
+/// The first and last index in `rows` of the group or bar with `key`: a
+/// group's range runs from its header to its last showing action.
+pub fn rows_of(groups: &[Group], rows: &[Row], key: &Key) -> Option<(usize, usize)> {
+    let mut range: Option<(usize, usize)> = None;
+    for (index, row) in rows.iter().enumerate() {
+        let matches = match *row {
+            Row::Group(g) => groups[g].key == *key,
+            Row::Bar(g, b) => groups[g].key == *key || groups[g].bars[b].key == *key,
+        };
+        if matches {
+            range = Some((range.map_or(index, |(first, _)| first), index));
+        }
+    }
+    range
+}
+
 /// The latest end of any bar, or zero when there are none.
 pub fn last_end(groups: &[Group]) -> f64 {
     groups
@@ -238,6 +254,25 @@ pub(super) mod tests {
             rows(&groups),
             [Row::Group(0), Row::Group(1), Row::Bar(1, 0), Row::Group(2)]
         );
+    }
+
+    #[test]
+    fn a_group_occupies_its_header_and_action_rows() {
+        let mut groups = vec![
+            group("a", vec![bar("a1", 0.0, 100.0), bar("a2", 50.0, 400.0)]),
+            group("b", vec![bar("b1", 200.0, 300.0)]),
+        ];
+        let showing = rows(&groups);
+        assert_eq!(rows_of(&groups, &showing, &Key::new("a")), Some((0, 2)));
+        assert_eq!(rows_of(&groups, &showing, &Key::new("b")), Some((3, 4)));
+        assert_eq!(rows_of(&groups, &showing, &Key::new("a2")), Some((2, 2)));
+        assert_eq!(rows_of(&groups, &showing, &Key::new("zz")), None);
+        // Folded away, a group is just its header and its bars are nowhere.
+        groups[0].collapsed = true;
+        let showing = rows(&groups);
+        assert_eq!(rows_of(&groups, &showing, &Key::new("a")), Some((0, 0)));
+        assert_eq!(rows_of(&groups, &showing, &Key::new("a2")), None);
+        assert_eq!(rows_of(&groups, &showing, &Key::new("b1")), Some((2, 2)));
     }
 
     #[test]

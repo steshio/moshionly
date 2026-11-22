@@ -26,6 +26,9 @@ const SNAP_REACH: f32 = 6.0;
 const GRID_WIDTH: f32 = 10.0;
 /// Empty room under the last row.
 const BOTTOM_PAD: f32 = 24.0;
+/// Room kept under a row that is scrolled into view, clear of the scroll
+/// handle along the bottom.
+const REVEAL_MARGIN: f32 = 12.0;
 
 /// A timeline: a ruler, a playhead, and one row per action, grouped under
 /// the layer each action targets.
@@ -158,6 +161,19 @@ impl<'a> Timeline<'a> {
             state.fit_requested = false;
         }
         state.label_width = layout::label_width(state.label_width, rect.width());
+
+        // Bring a row into view when asked.
+        if let Some(key) = state.reveal.take()
+            && let Some((first, last)) = model::rows_of(groups, &rows, &key)
+        {
+            let layout = TimelineLayout::compute(rect, state, theme);
+            state.scroll_y = scroll_to_reveal(
+                state.scroll_y,
+                layout.tracks.height() - REVEAL_MARGIN,
+                first as f32 * layout.row_height,
+                (last + 1) as f32 * layout.row_height,
+            );
+        }
 
         // Scrolling and zooming change the layout, so they come first.
         scroll_and_zoom(ui, &TimelineLayout::compute(rect, state, theme), state);
@@ -760,6 +776,19 @@ fn scroll_and_zoom(ui: &Ui, layout: &TimelineLayout, state: &mut TimelineState) 
     }
 }
 
+/// The scroll offset that brings the span from `top` to `bottom` (measured
+/// from the top of the content) into a view `view` tall, moving as little as
+/// possible. A span taller than the view is shown from its top.
+pub fn scroll_to_reveal(scroll: f32, view: f32, top: f32, bottom: f32) -> f32 {
+    if bottom - top > view || top < scroll {
+        top
+    } else if bottom > scroll + view {
+        bottom - view
+    } else {
+        scroll
+    }
+}
+
 /// The size of everything that can be scrolled to: all rows, and time up to
 /// `end` plus half a view of empty room.
 fn content_size(layout: &TimelineLayout, rows: usize, end: f64) -> Vec2 {
@@ -951,6 +980,20 @@ mod tests {
         );
         assert_eq!(times_of(&groups, &Key::new("b1")), Some((200.0, 300.0)));
         assert_eq!(times_of(&groups, &Key::new("zz")), None);
+    }
+
+    #[test]
+    fn revealing_scrolls_no_more_than_needed() {
+        // A view 200 tall, scrolled to 100: it shows 100 to 300.
+        assert_eq!(scroll_to_reveal(100.0, 200.0, 150.0, 250.0), 100.0);
+        // Above the view: its top comes to the top.
+        assert_eq!(scroll_to_reveal(100.0, 200.0, 40.0, 90.0), 40.0);
+        // Below: its bottom comes to the bottom.
+        assert_eq!(scroll_to_reveal(100.0, 200.0, 380.0, 430.0), 230.0);
+        // Half in view at the bottom.
+        assert_eq!(scroll_to_reveal(100.0, 200.0, 280.0, 330.0), 130.0);
+        // Too tall to fit: show its beginning.
+        assert_eq!(scroll_to_reveal(100.0, 200.0, 250.0, 600.0), 250.0);
     }
 
     #[test]

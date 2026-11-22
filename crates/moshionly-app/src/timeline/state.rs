@@ -20,6 +20,8 @@ pub struct TimelineState {
     pub label_width: f32,
     /// Set to zoom so the whole scene fits when the timeline is next shown.
     pub fit_requested: bool,
+    /// The group or bar to scroll into view when the timeline is next shown.
+    pub(super) reveal: Option<Key>,
     /// The drag in progress.
     pub(super) drag: Option<Drag>,
     /// Where the snapping guide is, while something is snapped to a target.
@@ -77,6 +79,7 @@ impl Default for TimelineState {
             scroll_y: 0.0,
             label_width: Theme::light().size.timeline_labels,
             fit_requested: true,
+            reveal: None,
             drag: None,
             guide: None,
             drag_changed: false,
@@ -93,6 +96,12 @@ impl TimelineState {
             fit_requested: false,
             ..Self::default()
         }
+    }
+
+    /// Scrolls the rows so the group or bar with `key` is in view the next
+    /// time the timeline is shown. A group is shown with its actions.
+    pub fn reveal(&mut self, key: Key) {
+        self.reveal = Some(key);
     }
 
     /// Points per millisecond at the current zoom.

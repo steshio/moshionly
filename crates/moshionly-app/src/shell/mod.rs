@@ -59,6 +59,8 @@ pub struct Shell {
     canvas: Option<Rect>,
     /// The sample layer under the pointer, found on the last frame.
     hover: Option<Key>,
+    /// The layer whose rows the timeline was last scrolled to.
+    revealed: Option<Key>,
     /// Set when the top bar is also the window's title area: the room to
     /// leave at its left edge for the window's buttons.
     title_inset: Option<f32>,
@@ -91,6 +93,7 @@ impl Shell {
             camera: Camera::default(),
             canvas: None,
             hover: None,
+            revealed: None,
             title_inset: None,
             sample: Sample::default(),
         }
@@ -238,6 +241,13 @@ impl Shell {
         edge_line(ui, layout.right, Edge::Left);
 
         self.advance_playback(&ctx);
+        // Selecting a layer anywhere brings its actions into view.
+        if self.sample.selected_layer != self.revealed {
+            self.revealed.clone_from(&self.sample.selected_layer);
+            if let Some(key) = &self.revealed {
+                self.timeline.reveal(key.clone());
+            }
+        }
         let groups = self.sample.timeline_groups();
         let timeline = parts::panel(ui, "timeline", layout.timeline, c.surface, |ui| {
             let out = Timeline::new(&mut self.timeline, &groups)
