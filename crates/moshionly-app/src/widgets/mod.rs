@@ -14,6 +14,7 @@ pub mod paint;
 mod property_row;
 mod section;
 mod segmented;
+mod slider;
 mod text_field;
 mod tooltip;
 
@@ -26,5 +27,6 @@ pub use numeric::{NumericField, NumericResponse};
 pub use property_row::{LABEL_WIDTH, control_row, pair, property_row};
 pub use section::{divider, padded, section, section_header};
 pub use segmented::{segmented, tabs};
+pub use slider::{Slider, slider_value, slider_with_value};
 pub use text_field::{TextField, TextFieldResponse, search_field};
 pub use tooltip::tooltip;

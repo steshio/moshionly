@@ -127,6 +127,170 @@ fn controls_gallery(ui: &mut egui::Ui) {
     );
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Easing {
+    Smooth,
+    Natural,
+    Bounce,
+}
+
+fn inputs_gallery(ui: &mut egui::Ui) {
+    let theme = Theme::of(ui);
+    let mut open = true;
+    let (mut x, mut y, mut w, mut h) = (240.0, 340.0, 600.0, 400.0);
+    let (mut rotation, mut radius, mut opacity) = (0.0, 32.0, 80.0);
+    let (mut start, mut duration) = (0.0, 600.0);
+    let mut fill = Rgba::from_hex("#5B5FEF").unwrap();
+    let mut stroke = Rgba::from_hex("#1C1C2080").unwrap();
+    let mut easing = Easing::Smooth;
+    let mut intensity = 50.0;
+    let mut tab = 0;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+    padded(ui, |ui| {
+        tabs(ui, &mut tab, &[(0, "Layers"), (1, "Assets")]);
+    });
+    section(
+        ui,
+        "Position and size",
+        &mut open,
+        |_| {},
+        |ui| {
+            control_row(ui, |ui| {
+                pair(
+                    ui,
+                    |ui| {
+                        NumericField::new(&mut x, "X").label("X").show(ui);
+                    },
+                    |ui| {
+                        NumericField::new(&mut y, "Y").label("Y").show(ui);
+                    },
+                );
+            });
+            control_row(ui, |ui| {
+                pair(
+                    ui,
+                    |ui| {
+                        NumericField::new(&mut w, "Width").label("W").show(ui);
+                    },
+                    |ui| {
+                        NumericField::new(&mut h, "Height").label("H").show(ui);
+                    },
+                );
+            });
+            control_row(ui, |ui| {
+                pair(
+                    ui,
+                    |ui| {
+                        NumericField::new(&mut rotation, "Rotation")
+                            .icon(icons::ANGLE)
+                            .unit("°")
+                            .show(ui);
+                    },
+                    |ui| {
+                        NumericField::new(&mut radius, "Corner radius")
+                            .icon(icons::CORNERS_OUT)
+                            .mixed(true)
+                            .show(ui);
+                    },
+                );
+            });
+        },
+    );
+    section(
+        ui,
+        "Fill and stroke",
+        &mut open,
+        |ui| {
+            ui.add(IconButton::new(icons::PLUS).tooltip("Add fill"));
+        },
+        |ui| {
+            control_row(ui, |ui| {
+                ColorField::new(&mut fill, "Fill").show(ui);
+            });
+            control_row(ui, |ui| {
+                ColorField::new(&mut stroke, "Stroke").show(ui);
+            });
+            property_row(ui, "Opacity", |ui| {
+                slider_with_value(ui, &mut opacity, "Opacity", 0.0..=100.0, "%");
+            });
+        },
+    );
+    section(
+        ui,
+        "Timing",
+        &mut open,
+        |_| {},
+        |ui| {
+            control_row(ui, |ui| {
+                pair(
+                    ui,
+                    |ui| {
+                        NumericField::new(&mut start, "Start")
+                            .icon(icons::TIMER)
+                            .unit("ms")
+                            .show(ui);
+                    },
+                    |ui| {
+                        NumericField::new(&mut duration, "Duration")
+                            .icon(icons::ARROWS_HORIZONTAL)
+                            .unit("ms")
+                            .show(ui);
+                    },
+                );
+            });
+            property_row(ui, "Easing", |ui| {
+                Dropdown::new(
+                    &mut easing,
+                    "Easing",
+                    &[
+                        (Easing::Smooth, "Smooth"),
+                        (Easing::Natural, "Natural"),
+                        (Easing::Bounce, "Bounce"),
+                    ],
+                )
+                .icon(icons::WAVE_SINE)
+                .show(ui);
+            });
+            property_row(ui, "Intensity", |ui| {
+                slider_with_value(ui, &mut intensity, "Intensity", 0.0..=100.0, "");
+            });
+        },
+    );
+    divider(ui);
+    ui.add_space(theme.space.lg);
+
+    // Popups, drawn in place so they show up in a still image.
+    padded(ui, |ui| {
+        popup_frame(ui).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 1.0);
+            ui.set_width(theme.size.menu_width - 8.0);
+            menu_heading(ui, "Layer");
+            ui.add(MenuItem::new("Duplicate").icon(icons::COPY).shortcut("⌘D"));
+            ui.add(
+                MenuItem::new("Group selection")
+                    .icon(icons::FOLDER_SIMPLE)
+                    .shortcut("⌘G")
+                    .highlighted(true),
+            );
+            ui.add(MenuItem::new("Snap to grid").checked(true));
+            menu_separator(ui);
+            ui.add(
+                MenuItem::new("Delete")
+                    .icon(icons::TRASH)
+                    .shortcut("⌫")
+                    .danger(true),
+            );
+        });
+        ui.add_space(theme.space.lg);
+        popup_frame(ui)
+            .inner_margin(theme.space.lg as i8)
+            .show(ui, |ui| {
+                color_picker(ui, egui::Id::unique("gallery-picker"), &mut fill);
+            });
+    });
+}
+
 #[test]
 fn controls() {
     if !can_render() {
@@ -135,6 +299,19 @@ fn controls() {
     let size = vec2(280.0, 760.0);
     for variant in Variant::ALL {
         let (path, image) = snapshot("controls", size, variant, controls_gallery);
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+#[test]
+fn inputs() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(280.0, 960.0);
+    for variant in Variant::ALL {
+        let (path, image) = snapshot("inputs", size, variant, inputs_gallery);
         assert_rendered(&image, size, variant);
         println!("wrote {}", path.display());
     }
