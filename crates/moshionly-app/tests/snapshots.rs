@@ -11,6 +11,8 @@ mod common;
 use common::{Variant, assert_rendered, can_render, snapshot};
 use egui::vec2;
 use moshionly_app::{
+    settings::Settings,
+    shell::{InspectorTab, Shell},
     theme::{Theme, icons},
     widgets::*,
 };
@@ -381,6 +383,42 @@ fn overlays() {
     let size = vec2(560.0, 400.0);
     for variant in Variant::ALL {
         let (path, image) = snapshot("overlays", size, variant, overlays_gallery());
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// The whole editor window with the sample scene.
+#[test]
+fn shell() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = Shell::new(Settings::default());
+        let (path, image) = snapshot("shell", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// The window with the chat panel open and the Animate tab showing.
+#[test]
+fn shell_with_chat() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = Shell::new(Settings::default());
+        shell.panels_mut().chat_open = true;
+        shell.inspector_mut().tab = InspectorTab::Animate;
+        let (path, image) = snapshot("shell-chat", size, variant, move |ui| {
+            shell.show(ui);
+        });
         assert_rendered(&image, size, variant);
         println!("wrote {}", path.display());
     }
