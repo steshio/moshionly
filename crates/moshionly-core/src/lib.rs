@@ -8,6 +8,12 @@
 //! The rules it implements are written down in `docs/architecture.md` and, for
 //! the file format, in `docs/file-format.md`.
 
+pub mod color;
+mod defaults;
+pub mod geometry;
 pub mod id;
+pub mod model;
 
+pub use color::Color;
+pub use geometry::{Affine, Point, Rect};
 pub use id::NodeId;
