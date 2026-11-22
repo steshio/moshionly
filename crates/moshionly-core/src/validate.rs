@@ -32,9 +32,10 @@ pub enum ProblemKind {
     UnknownNode,
     /// An update tries to change `id` or `type`, which are fixed.
     Immutable,
-    /// A patch does not produce a node of the type: an unknown field, a value
-    /// of the wrong shape, or a required field removed.
-    InvalidPatch,
+    /// The JSON is not a node of its type, or a patch does not leave one: an
+    /// unknown type or field, a value of the wrong shape, a required field
+    /// missing.
+    Malformed,
     /// A value is outside its documented range.
     OutOfRange,
     /// `parent` is missing, unknown, or of a type that cannot hold the node.

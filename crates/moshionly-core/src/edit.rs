@@ -539,17 +539,7 @@ fn patched(node: &Node, patch: &Map<String, Value>) -> Result<Node, Problem> {
 
     let mut fields = fields_of(node);
     merge_patch(&mut fields, patch);
-    Node::from_value(Value::Object(fields)).map_err(|error| {
-        Problem::new(
-            ProblemKind::InvalidPatch,
-            &node.id,
-            None,
-            format!(
-                "{label}: the patch does not leave a valid {}: {error}.",
-                node.node_type()
-            ),
-        )
-    })
+    crate::schema::read_node(Value::Object(fields))
 }
 
 fn unknown_node(id: &NodeId) -> Problem {
@@ -951,15 +941,15 @@ mod tests {
             ),
             (
                 json!({ "colour": "#FFFFFF" }),
-                ProblemKind::InvalidPatch,
-                None,
+                ProblemKind::Malformed,
+                Some("colour"),
             ),
-            (json!({ "x": "left" }), ProblemKind::InvalidPatch, None),
-            (json!({ "index": null }), ProblemKind::InvalidPatch, None),
-            (json!({ "fill": "blue" }), ProblemKind::InvalidPatch, None),
+            (json!({ "x": "left" }), ProblemKind::Malformed, None),
+            (json!({ "index": null }), ProblemKind::Malformed, None),
+            (json!({ "fill": "blue" }), ProblemKind::Malformed, None),
             (
                 json!({ "stroke": { "colour": "#000000" } }),
-                ProblemKind::InvalidPatch,
+                ProblemKind::Malformed,
                 None,
             ),
         ] {

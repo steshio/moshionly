@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 use crate::document::Document;
 use crate::id::NodeId;
 use crate::index;
-use crate::model::{Family, Node, NodeType};
+use crate::model::{Family, Node};
 use crate::validate::Problem;
 
 /// The value of the `format` field in every project file.
@@ -222,25 +222,10 @@ pub fn from_value(value: Value) -> Result<Document, LoadError> {
 
 fn read_node(position: usize, value: Value) -> Result<Node, LoadError> {
     let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
-    let unknown_type = match value.get("type") {
-        Some(Value::String(ty)) if NodeType::parse(ty).is_none() => Some(ty.clone()),
-        _ => None,
-    };
-    Node::from_value(value).map_err(|error| LoadError::BadNode {
+    crate::schema::read_node(value).map_err(|problem| LoadError::BadNode {
         position,
         id,
-        message: match unknown_type {
-            Some(ty) => format!(
-                "its type is \"{ty}\", which this version of Moshionly does not know. The \
-                 file may come from a newer version, or the type is misspelt. Known types: {}",
-                NodeType::ALL
-                    .iter()
-                    .map(|ty| ty.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            None => error.to_string(),
-        },
+        message: problem.message,
     })
 }
 
@@ -722,7 +707,9 @@ mod tests {
         ])))
         .unwrap_err();
         assert!(
-            unknown_field.to_string().contains("unknown field `colour`"),
+            unknown_field
+                .to_string()
+                .contains("\"colour\" is not a field of artboard. Did you mean \"fill\"?"),
             "{unknown_field}"
         );
 
