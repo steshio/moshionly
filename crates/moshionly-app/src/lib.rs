@@ -7,6 +7,7 @@
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
+pub mod theme;
 
 /// The name shown in the window title and used for the app's settings folder.
 pub const APP_NAME: &str = "Moshionly";

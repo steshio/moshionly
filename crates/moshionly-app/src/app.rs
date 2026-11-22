@@ -6,7 +6,8 @@ pub struct MoshionlyApp {}
 
 impl MoshionlyApp {
     /// Creates the app. Called once by `eframe` when the window is ready.
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::theme::install(&cc.egui_ctx);
         Self::default()
     }
 }
