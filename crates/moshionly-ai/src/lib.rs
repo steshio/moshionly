@@ -18,7 +18,13 @@
 //! [`ChatEvent::Finished`].
 
 mod chat;
+mod error;
+mod event;
+pub mod redact;
 mod tool;
 
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
+pub use error::{AiError, ErrorKind};
+pub use event::{ChatEvent, EventReceiver, EventSender, StopReason, event_channel};
+pub use redact::ApiKey;
 pub use tool::{ToolContent, ToolExecutor, ToolOutput, ToolSpec};
