@@ -18,6 +18,7 @@
 //! [`ChatEvent::Finished`].
 
 mod chat;
+mod cli;
 mod error;
 mod event;
 mod provider;
