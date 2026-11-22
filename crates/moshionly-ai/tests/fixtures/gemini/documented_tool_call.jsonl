@@ -1,0 +1,7 @@
+{"type":"init","timestamp":"2026-11-22T10:00:00.000Z","session_id":"00000000-0000-4000-8000-000000000001","model":"auto"}
+{"type":"message","timestamp":"2026-11-22T10:00:00.010Z","role":"user","content":"Call the echo tool with the text ping, then reply with the single word done."}
+{"type":"tool_use","timestamp":"2026-11-22T10:00:01.200Z","tool_name":"mcp_moshionly_echo","tool_id":"mcp_moshionly_echo-1795400000000-0","parameters":{"text":"ping"}}
+{"type":"tool_result","timestamp":"2026-11-22T10:00:01.260Z","tool_id":"mcp_moshionly_echo-1795400000000-0","status":"success","output":"echo: ping"}
+{"type":"message","timestamp":"2026-11-22T10:00:02.900Z","role":"assistant","content":"do","delta":true}
+{"type":"message","timestamp":"2026-11-22T10:00:02.950Z","role":"assistant","content":"ne","delta":true}
+{"type":"result","timestamp":"2026-11-22T10:00:03.120Z","status":"success","stats":{"total_tokens":8300,"input_tokens":8200,"output_tokens":100,"cached":4000,"input":4200,"duration_ms":3120,"tool_calls":1,"models":{}}}

@@ -6,6 +6,7 @@ pub(crate) mod codex;
 pub(crate) mod cursor_agent;
 pub(crate) mod discover;
 pub(crate) mod files;
+pub(crate) mod gemini;
 pub(crate) mod process;
 pub(crate) mod prompt;
 #[cfg(all(test, unix))]
@@ -44,6 +45,7 @@ pub(crate) fn classify_failure_text(text: &str) -> ErrorKind {
         "invalid api key",
         "no credentials",
         "not authenticated",
+        "auth method",
     ]) {
         ErrorKind::NotSignedIn
     } else if has(&[
@@ -179,6 +181,10 @@ mod tests {
             ("Not logged in · Please run /login", ErrorKind::NotSignedIn),
             (
                 "Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.",
+                ErrorKind::NotSignedIn,
+            ),
+            (
+                "Please set an Auth method in your settings.json",
                 ErrorKind::NotSignedIn,
             ),
             ("You've hit your usage limit", ErrorKind::RateLimited),
