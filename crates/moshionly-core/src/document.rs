@@ -12,7 +12,7 @@ use crate::model::{Family, Node};
 /// document keeps those child lists up to date, so tree queries (see the
 /// methods defined in [`crate::tree`]) are cheap.
 ///
-/// A document is only ever changed through `Document::apply`, which keeps
+/// A document is only ever changed through [`Document::apply`], which keeps
 /// these promises:
 ///
 /// - ids are unique and well formed;
@@ -110,7 +110,6 @@ impl Document {
     }
 
     /// Adds a node without checking any rule. The id must not be in use.
-    #[allow(dead_code)] // first used by the edit module
     pub(crate) fn insert_raw(&mut self, node: Node) {
         debug_assert!(!self.nodes.contains_key(&node.id), "id already in use");
         let nodes = &self.nodes;
@@ -131,7 +130,6 @@ impl Document {
     }
 
     /// Removes one node, and only that node, without checking any rule.
-    #[allow(dead_code)] // first used by the edit module
     pub(crate) fn remove_raw(&mut self, id: &NodeId) -> Option<Node> {
         let node = self.nodes.remove(id)?;
         let forget = |list: &mut Vec<NodeId>| list.retain(|sibling| sibling != id);
@@ -155,7 +153,7 @@ impl Document {
 
     /// Builds a document from nodes without checking any rule except that
     /// ids are distinct (a repeated id keeps the first node).
-    #[allow(dead_code)] // first used by the edit module
+    #[cfg(test)]
     pub(crate) fn from_nodes_unchecked(
         name: impl Into<String>,
         nodes: impl IntoIterator<Item = Node>,
