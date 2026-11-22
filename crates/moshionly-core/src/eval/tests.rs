@@ -1,0 +1,829 @@
+//! Tests of evaluation: documents built from JSON, evaluated at chosen
+//! times, checked number by number.
+
+use std::collections::HashMap;
+
+use serde_json::{Value, json};
+
+use super::*;
+use crate::color::Color;
+use crate::model::{BlendMode, GradientStop, TextAlign};
+use crate::text::MonospaceMeasurer;
+
+/// Builds a document from node JSON. Every document gets a 400 by 300
+/// artboard "ab" with a 2 second timeline. Nodes without a `parent` go in
+/// it, and nodes without an `index` are ordered as they are listed.
+pub(super) fn document(nodes: Value) -> Document {
+    let mut all = vec![json!({
+        "id": "ab", "index": "a0", "type": "artboard",
+        "width": 400, "height": 300, "duration": 2000, "fill": "#FFFFFF"
+    })];
+    all.extend(nodes.as_array().unwrap().iter().cloned());
+    let mut counters: HashMap<(String, bool), usize> = HashMap::new();
+    let keys = crate::index::keys_between(None, None, all.len()).unwrap();
+    let nodes = all.into_iter().map(|mut value| {
+        let is_artboard = value["type"] == "artboard";
+        if !is_artboard && value.get("parent").is_none() {
+            value["parent"] = json!("ab");
+        }
+        if value.get("index").is_none() {
+            let ty = NodeType::parse(value["type"].as_str().unwrap()).unwrap();
+            let group = (value["parent"].to_string(), ty.family() == Family::Layer);
+            let position = counters.entry(group).or_default();
+            value["index"] = json!(keys[*position]);
+            *position += 1;
+        }
+        crate::schema::read_node(value).unwrap_or_else(|problem| panic!("{problem}"))
+    });
+    Document::from_nodes("Test", nodes).unwrap_or_else(|problem| panic!("{problem}"))
+}
+
+pub(super) fn id(text: &str) -> NodeId {
+    NodeId::from(text)
+}
+
+pub(super) fn at(document: &Document, time: f64) -> Scene {
+    evaluate(document, &id("ab"), time, &MonospaceMeasurer::default()).unwrap()
+}
+
+pub(super) fn node<'a>(scene: &'a Scene, name: &str) -> &'a SceneNode {
+    scene
+        .find(&id(name))
+        .unwrap_or_else(|| panic!("\"{name}\" is not in the scene at {}", scene.time_ms))
+}
+
+pub(super) fn number(document: &Document, layer: &str, property: Property, time: f64) -> f64 {
+    match value_at(document, &id(layer), property, time) {
+        Some(PropertyValue::Number(value)) => value,
+        other => panic!("{property:?} of {layer} at {time} is {other:?}"),
+    }
+}
+
+pub(super) fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-6
+}
+
+pub(super) fn same_transform(a: Affine, b: Affine) -> bool {
+    a.0.iter().zip(b.0).all(|(a, b)| close(*a, b))
+}
+
+fn solid(hex: &str) -> Option<ScenePaint> {
+    Some(ScenePaint::solid(Color::parse(hex).unwrap()))
+}
+
+const LINEAR: &str = r#"{ "type": "linear" }"#;
+
+fn linear() -> Value {
+    serde_json::from_str(LINEAR).unwrap()
+}
+
+#[test]
+fn a_resting_layer_becomes_one_node() {
+    let document = document(json!([{
+        "id": "r", "type": "rect", "x": 40, "y": 30, "width": 100, "height": 50,
+        "rotation": 90, "opacity": 50, "blend_mode": "multiply", "blur": 3,
+        "shadow": { "y": 8 }, "fill": "#FF0000", "corner_radius": 40,
+        "stroke": { "paint": "#0000FF", "width": 2, "position": "inside" }
+    }]));
+    let scene = at(&document, 0.0);
+    assert_eq!(
+        (scene.width, scene.height, scene.time_ms),
+        (400.0, 300.0, 0.0)
+    );
+    assert_eq!(scene.artboard, id("ab"));
+    assert_eq!(scene.background, solid("#FFFFFF"));
+    assert_eq!(scene.nodes.len(), 1);
+
+    let rect = &scene.nodes[0];
+    assert_eq!(rect.id, id("r"));
+    assert_eq!(
+        rect.transform,
+        Affine::layer(40.0, 30.0, 100.0, 50.0, 90.0, 1.0)
+    );
+    assert_eq!((rect.width, rect.height), (100.0, 50.0));
+    assert_eq!(rect.opacity, 0.5);
+    assert_eq!(rect.blend_mode, BlendMode::Multiply);
+    assert_eq!(rect.blur, 3.0);
+    assert_eq!(rect.shadow.unwrap().y, 8.0);
+    assert!(rect.clip.is_none() && rect.mask.is_none());
+    let Content::Rect {
+        radii,
+        fill,
+        stroke,
+    } = &rect.content
+    else {
+        panic!("expected a rect, got {:?}", rect.content);
+    };
+    assert_eq!(*radii, [25.0; 4], "limited to half the shorter side");
+    assert_eq!(*fill, solid("#FF0000"));
+    let stroke = stroke.as_ref().unwrap();
+    assert_eq!(stroke.paint, ScenePaint::solid(Color::rgb(0, 0, 255)));
+    assert_eq!(
+        (stroke.width, stroke.position),
+        (2.0, crate::model::StrokePosition::Inside)
+    );
+}
+
+#[test]
+fn every_shape_carries_its_geometry() {
+    let document = document(json!([
+        { "id": "e", "type": "ellipse", "width": 80, "height": 40, "start_angle": 90, "sweep": 180, "inner_radius": 0.5 },
+        { "id": "s", "type": "star", "points": 7, "inner_radius": 0.6 },
+        { "id": "p", "type": "path", "width": 200, "height": 100,
+          "path": { "subpaths": [{ "closed": true, "anchors": [
+              { "point": [0, 0], "out": [0.5, 0] }, { "point": [1, 1] }, { "point": [0, 1] } ] }] } },
+        { "id": "i", "type": "image", "source": "photo.png", "fit": "contain", "width": 30, "height": 30, "corner_radius": 99 }
+    ]));
+    let scene = at(&document, 0.0);
+    assert!(matches!(
+        node(&scene, "e").content,
+        Content::Ellipse {
+            start_angle: 90.0,
+            sweep: 180.0,
+            inner_radius: 0.5,
+            ..
+        }
+    ));
+    assert!(matches!(
+        node(&scene, "s").content,
+        Content::Star {
+            points: 7,
+            inner_radius: 0.6,
+            ..
+        }
+    ));
+    let Content::Path { path, .. } = &node(&scene, "p").content else {
+        panic!()
+    };
+    let anchors = &path.subpaths[0].anchors;
+    assert_eq!(
+        anchors[0].handle_out,
+        Some([100.0, 0.0]),
+        "the path is in pixels"
+    );
+    assert_eq!(anchors[1].point, [200.0, 100.0]);
+    let Content::Image {
+        source, fit, radii, ..
+    } = &node(&scene, "i").content
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (source.as_str(), *fit, *radii),
+        ("photo.png", crate::model::ImageFit::Contain, [15.0; 4])
+    );
+    // Layers come back to front.
+    let order: Vec<&str> = scene.nodes.iter().map(|node| node.id.as_str()).collect();
+    assert_eq!(order, ["e", "s", "p", "i"]);
+}
+
+#[test]
+fn layers_that_cannot_be_seen_are_left_out() {
+    let document = document(json!([
+        { "id": "hidden", "type": "rect", "hidden": true },
+        { "id": "clear", "type": "rect", "opacity": 0 },
+        { "id": "tiny", "type": "rect", "scale": 0 },
+        { "id": "folder", "type": "group", "hidden": true },
+        { "id": "inside", "type": "rect", "parent": "folder" },
+        { "id": "seen", "type": "rect" }
+    ]));
+    let scene = at(&document, 0.0);
+    assert_eq!(scene.nodes.len(), 1);
+    assert_eq!(scene.nodes[0].id, id("seen"));
+    assert_eq!(scene.node_count(), 1);
+}
+
+#[test]
+fn moves_and_rotations_add_up() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "x": 100, "y": 100, "width": 50, "height": 50, "rotation": 10 },
+        { "id": "m1", "type": "move", "target": "r", "start": 0, "end": 1000, "to": { "x": 100 }, "easing": linear() },
+        { "id": "m2", "type": "move", "target": "r", "start": 500, "end": 1500, "to": { "y": 50 }, "easing": linear() },
+        { "id": "t1", "type": "rotate", "target": "r", "start": 0, "end": 1000, "to": 90, "easing": linear() },
+        { "id": "t2", "type": "rotate", "target": "r", "start": 0, "end": 1000, "from": 20, "easing": linear() }
+    ]));
+    let sample = |time: f64| {
+        (
+            number(&document, "r", Property::X, time),
+            number(&document, "r", Property::Y, time),
+            number(&document, "r", Property::Rotation, time),
+        )
+    };
+    assert_eq!(sample(0.0), (100.0, 100.0, 30.0));
+    assert_eq!(sample(500.0), (150.0, 100.0, 65.0));
+    assert_eq!(sample(1000.0), (200.0, 125.0, 100.0));
+    assert_eq!(sample(1500.0), (200.0, 150.0, 100.0));
+    assert_eq!(sample(9000.0), (200.0, 150.0, 100.0));
+
+    let scene = at(&document, 500.0);
+    assert!(same_transform(
+        node(&scene, "r").transform,
+        Affine::layer(150.0, 100.0, 50.0, 50.0, 65.0, 1.0)
+    ));
+}
+
+#[test]
+fn a_move_with_a_from_waits_there() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "x": 100 },
+        { "id": "m", "type": "move", "target": "r", "start": 400, "end": 800, "from": { "x": -300 }, "easing": linear() }
+    ]));
+    let x = |time: f64| number(&document, "r", Property::X, time);
+    assert_eq!(
+        (x(0.0), x(400.0), x(600.0), x(800.0), x(1200.0)),
+        (-200.0, -200.0, -50.0, 100.0, 100.0)
+    );
+}
+
+#[test]
+fn scale_multiplies_the_resting_scale() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "x": 100, "y": 100, "width": 40, "height": 20, "scale": 2 },
+        { "id": "s1", "type": "scale", "target": "r", "start": 0, "end": 1000, "from": 0.5, "to": 1.5, "easing": linear() },
+        { "id": "s2", "type": "scale", "target": "r", "start": 1500, "end": 2000, "easing": linear() }
+    ]));
+    let scale = |time: f64| number(&document, "r", Property::Scale, time);
+    assert_eq!(
+        (scale(0.0), scale(500.0), scale(1000.0), scale(1250.0)),
+        (1.0, 2.0, 3.0, 3.0)
+    );
+    // Without a `to` the second one returns to the resting scale.
+    assert_eq!((scale(1750.0), scale(2000.0)), (2.5, 2.0));
+    // Scaling pivots on the centre of the box, which stays put.
+    let scene = at(&document, 500.0);
+    let center = node(&scene, "r").transform.apply(Point::new(20.0, 10.0));
+    assert!(
+        close(center.x, 120.0) && close(center.y, 110.0),
+        "{center:?}"
+    );
+}
+
+#[test]
+fn opacity_is_replaced_and_held_before_the_first_cue() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "opacity": 80 },
+        { "id": "o1", "type": "opacity", "target": "r", "start": 200, "end": 400, "from": 0, "easing": linear() },
+        { "id": "o2", "type": "opacity", "target": "r", "start": 300, "end": 500, "to": 20, "easing": linear() }
+    ]));
+    let opacity = |time: f64| number(&document, "r", Property::Opacity, time);
+    assert_eq!(opacity(0.0), 0.0, "the first `from` holds before the start");
+    assert_eq!(opacity(250.0), 20.0);
+    // The second cuts the first off at 40 and carries on from there.
+    assert_eq!(
+        (
+            opacity(300.0),
+            opacity(400.0),
+            opacity(500.0),
+            opacity(1500.0)
+        ),
+        (40.0, 30.0, 20.0, 20.0)
+    );
+
+    assert!(
+        at(&document, 100.0).find(&id("r")).is_none(),
+        "invisible, so not in the scene"
+    );
+    assert!(close(node(&at(&document, 250.0), "r").opacity, 0.2));
+}
+
+#[test]
+fn equal_starts_are_decided_by_row_order_not_by_folders() {
+    let document = document(json!([
+        { "id": "r", "type": "rect" },
+        { "id": "folder", "type": "animation_group" },
+        { "id": "first", "type": "opacity", "target": "r", "start": 0, "end": 100, "to": 10, "parent": "folder" },
+        { "id": "second", "type": "opacity", "target": "r", "start": 0, "end": 100, "to": 70 }
+    ]));
+    assert_eq!(number(&document, "r", Property::Opacity, 100.0), 70.0);
+}
+
+#[test]
+fn show_and_hide_switch_at_their_moment() {
+    let document = document(json!([
+        { "id": "a", "type": "rect" },
+        { "id": "s1", "type": "show", "target": "a", "start": 300 },
+        { "id": "h1", "type": "hide", "target": "a", "start": 600 },
+        { "id": "s2", "type": "show", "target": "a", "start": 900 },
+        { "id": "b", "type": "rect" },
+        { "id": "h2", "type": "hide", "target": "b", "start": 500 },
+        { "id": "c", "type": "rect", "hidden": true },
+        { "id": "d", "type": "rect", "hidden": true },
+        { "id": "h3", "type": "hide", "target": "d", "start": 500 }
+    ]));
+    let seen = |time: f64| -> Vec<String> {
+        at(&document, time)
+            .nodes
+            .iter()
+            .map(|node| node.id.to_string())
+            .collect()
+    };
+    assert_eq!(
+        seen(0.0),
+        ["b", "d"],
+        "a waits for its show; d is shown until its hide"
+    );
+    assert_eq!(seen(300.0), ["a", "b", "d"]);
+    assert_eq!(seen(599.0), ["a"]);
+    assert_eq!(seen(600.0), [""; 0]);
+    assert_eq!(seen(900.0), ["a"]);
+    assert_eq!(
+        value_at(&document, &id("a"), Property::Visible, 700.0),
+        Some(PropertyValue::Flag(false))
+    );
+}
+
+#[test]
+fn a_resize_keeps_its_anchor_where_it_is() {
+    use crate::model::ResizeAnchor;
+    for anchor in ResizeAnchor::ALL {
+        let name = serde_json::to_value(anchor).unwrap();
+        let document = document(json!([
+            { "id": "r", "type": "rect", "x": 100, "y": 80, "width": 60, "height": 40, "rotation": 30, "scale": 1.5 },
+            { "id": "z", "type": "resize", "target": "r", "start": 200, "end": 1000,
+              "from": { "width": 10 }, "to": { "width": 200, "height": 10 }, "anchor": name }
+        ]));
+        let (fx, fy) = anchor.factors();
+        let rest = Affine::layer(100.0, 80.0, 60.0, 40.0, 30.0, 1.5)
+            .apply(Point::new(fx * 60.0, fy * 40.0));
+        for time in [0.0, 200.0, 450.0, 1000.0, 1800.0] {
+            let scene = at(&document, time);
+            let rect = node(&scene, "r");
+            let now = rect
+                .transform
+                .apply(Point::new(fx * rect.width, fy * rect.height));
+            assert!(
+                close(now.x, rest.x) && close(now.y, rest.y),
+                "{anchor:?} at {time}: {now:?} is not {rest:?}"
+            );
+        }
+        assert_eq!(number(&document, "r", Property::Width, 0.0), 10.0);
+        assert_eq!(number(&document, "r", Property::Height, 0.0), 40.0);
+        assert_eq!(number(&document, "r", Property::Width, 1000.0), 200.0);
+        assert_eq!(number(&document, "r", Property::Height, 1000.0), 10.0);
+    }
+}
+
+#[test]
+fn a_resize_without_values_returns_to_the_resting_box() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "x": 100, "y": 50, "width": 60, "height": 40 },
+        { "id": "grow", "type": "resize", "target": "r", "start": 0, "end": 100, "to": { "width": 200 }, "anchor": "left", "easing": linear() },
+        { "id": "back", "type": "resize", "target": "r", "start": 200, "end": 300, "anchor": "left", "easing": linear() }
+    ]));
+    let frame = |time: f64| {
+        (
+            number(&document, "r", Property::X, time),
+            number(&document, "r", Property::Width, time),
+        )
+    };
+    assert_eq!(frame(50.0), (100.0, 130.0));
+    assert_eq!(frame(100.0), (100.0, 200.0));
+    assert_eq!(frame(250.0), (100.0, 130.0));
+    assert_eq!(frame(300.0), (100.0, 60.0));
+}
+
+#[test]
+fn paints_radii_blur_and_shadow_animate() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "width": 200, "height": 100, "fill": "#FF0000", "corner_radius": [0, 0, 40, 40] },
+        { "id": "f", "type": "fill", "target": "r", "start": 0, "end": 1000, "to": "#0000FF", "easing": linear() },
+        { "id": "s", "type": "stroke", "target": "r", "start": 0, "end": 1000, "to": { "paint": "#00FF00", "width": 8 }, "easing": linear() },
+        { "id": "c", "type": "corner_radius", "target": "r", "start": 0, "end": 1000, "to": 20, "easing": linear() },
+        { "id": "b", "type": "blur", "target": "r", "start": 0, "end": 1000, "to": 10, "easing": linear() },
+        { "id": "d", "type": "shadow", "target": "r", "start": 0, "end": 1000,
+          "to": { "color": "#00000080", "y": 20, "blur": 40 }, "easing": linear() }
+    ]));
+    let scene = at(&document, 500.0);
+    let rect = node(&scene, "r");
+    let Content::Rect {
+        radii,
+        fill,
+        stroke,
+    } = &rect.content
+    else {
+        panic!()
+    };
+    assert_eq!(*fill, solid("#800080"));
+    assert_eq!(*radii, [10.0, 10.0, 30.0, 30.0]);
+    let stroke = stroke.as_ref().unwrap();
+    assert_eq!(
+        (stroke.width, &stroke.paint),
+        (4.0, &ScenePaint::solid(Color::rgb(0, 255, 0)))
+    );
+    assert_eq!(rect.blur, 5.0);
+    assert_eq!(
+        rect.shadow,
+        Some(Shadow {
+            color: Color::rgba(0, 0, 0, 64),
+            x: 0.0,
+            y: 10.0,
+            blur: 20.0
+        })
+    );
+
+    // At rest there is no stroke and no shadow to draw.
+    let rest = at(&document, 0.0);
+    let Content::Rect { stroke, .. } = &node(&rest, "r").content else {
+        panic!()
+    };
+    assert!(stroke.is_none() && node(&rest, "r").shadow.is_none());
+    assert_eq!(
+        value_at(&document, &id("r"), Property::CornerRadius, 1000.0),
+        Some(PropertyValue::CornerRadius(CornerRadius::Uniform(20.0)))
+    );
+    assert_eq!(
+        value_at(&document, &id("r"), Property::Fill, 1000.0),
+        Some(PropertyValue::Paint(Some(Paint::Solid(Color::rgb(
+            0, 0, 255
+        )))))
+    );
+}
+
+#[test]
+fn gradients_are_resolved_to_pixels() {
+    let stops = json!([{ "offset": 0, "color": "#000000" }, { "offset": 1, "color": "#FFFFFF" }]);
+    let document = document(json!([
+        { "id": "l", "type": "rect", "width": 200, "height": 100,
+          "fill": { "type": "linear_gradient", "stops": stops } },
+        { "id": "r", "type": "rect", "width": 200, "height": 100,
+          "fill": { "type": "radial_gradient", "center": [0.25, 0.5], "rotation": 30, "stops": stops } },
+        { "id": "none", "type": "rect", "fill": "#FF000000", "stroke": { "width": 0 } }
+    ]));
+    let scene = at(&document, 0.0);
+    let fill_of = |name: &str| match &node(&scene, name).content {
+        Content::Rect { fill, .. } => fill.clone(),
+        other => panic!("{other:?}"),
+    };
+    let stops = vec![
+        GradientStop::new(0.0, Color::BLACK),
+        GradientStop::new(1.0, Color::WHITE),
+    ];
+    assert_eq!(
+        fill_of("l"),
+        Some(ScenePaint::LinearGradient {
+            start: Point::new(100.0, 0.0),
+            end: Point::new(100.0, 100.0),
+            stops: stops.clone()
+        })
+    );
+    assert_eq!(
+        fill_of("r"),
+        Some(ScenePaint::RadialGradient {
+            center: Point::new(50.0, 50.0),
+            radius_x: 100.0,
+            radius_y: 50.0,
+            rotation: 30.0,
+            stops
+        })
+    );
+    assert_eq!(fill_of("none"), None, "a fully transparent fill is no fill");
+    let Content::Rect { stroke, .. } = &node(&scene, "none").content else {
+        panic!()
+    };
+    assert!(stroke.is_none(), "a stroke without width is no stroke");
+}
+
+#[test]
+fn the_artboard_background_animates() {
+    let document = document(json!([
+        { "id": "bg", "type": "fill", "target": "ab", "start": 0, "end": 1000, "to": "#000000", "easing": linear() }
+    ]));
+    assert_eq!(at(&document, 0.0).background, solid("#FFFFFF"));
+    assert_eq!(at(&document, 500.0).background, solid("#808080"));
+    assert_eq!(at(&document, 1000.0).background, solid("#000000"));
+}
+
+#[test]
+fn groups_nest_their_children() {
+    let document = document(json!([
+        { "id": "g", "type": "group", "x": 50, "y": 50, "width": 200, "height": 100, "scale": 2, "opacity": 50 },
+        { "id": "back", "type": "rect", "parent": "g", "x": 10, "y": 10, "width": 20, "height": 20 },
+        { "id": "front", "type": "rect", "parent": "g", "x": 30, "y": 10, "width": 20, "height": 20 },
+        { "id": "m", "type": "move", "target": "g", "start": 0, "end": 1000, "to": { "x": 100 }, "easing": linear() },
+        { "id": "n", "type": "move", "target": "front", "start": 0, "end": 1000, "to": { "y": 40 }, "easing": linear() }
+    ]));
+    let scene = at(&document, 1000.0);
+    assert_eq!(scene.nodes.len(), 1);
+    let group = node(&scene, "g");
+    assert_eq!(
+        group.opacity, 0.5,
+        "opacity belongs to the group as a whole"
+    );
+    let children: Vec<&str> = group
+        .children()
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    assert_eq!(children, ["back", "front"]);
+    // A child's transform is relative to the group.
+    assert_eq!(
+        node(&scene, "front").transform,
+        Affine::translate(30.0, 50.0)
+    );
+    assert_eq!(node(&scene, "front").opacity, 1.0);
+    // On the artboard the group's move and scale carry the child along.
+    let corner = scene.transform_of(&id("front")).unwrap().apply(Point::ZERO);
+    assert!(
+        close(corner.x, 50.0 + 100.0 - 100.0 + 60.0) && close(corner.y, 50.0 - 50.0 + 100.0),
+        "{corner:?}"
+    );
+}
+
+#[test]
+fn a_group_can_be_a_frame_with_fill_clip_and_outline() {
+    let document = document(json!([
+        { "id": "g", "type": "group", "x": 50, "y": 50, "width": 200, "height": 100,
+          "fill": "#EEEEEE", "stroke": { "width": 2 }, "corner_radius": 16, "clip": true, "shadow": {} },
+        { "id": "child", "type": "rect", "parent": "g", "x": 150, "y": 50, "width": 100, "height": 100 }
+    ]));
+    let scene = at(&document, 0.0);
+    let group = &scene.nodes[0];
+    assert!(
+        group.shadow.is_some() && group.clip.is_none(),
+        "the shadow is not clipped away"
+    );
+    let [background, holder, outline] = group.children() else {
+        panic!("expected three parts, got {:?}", group.children());
+    };
+    assert!(
+        matches!(&background.content, Content::Rect { fill: Some(_), stroke: None, radii } if *radii == [16.0; 4])
+    );
+    assert!(matches!(
+        &outline.content,
+        Content::Rect {
+            fill: None,
+            stroke: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(
+        holder.clip,
+        Some(Clip {
+            rect: Rect::new(0.0, 0.0, 200.0, 100.0),
+            radii: [16.0; 4]
+        })
+    );
+    assert_eq!(holder.children()[0].id, id("child"));
+    for part in [background, holder, outline] {
+        assert_eq!(
+            (part.id.as_str(), part.transform, part.opacity),
+            ("g", Affine::IDENTITY, 1.0)
+        );
+    }
+    // The part of the child that sticks out is not hit.
+    assert_eq!(
+        scene.hit_test(Point::new(240.0, 140.0)),
+        [id("g"), id("child")]
+    );
+    assert!(scene.hit_test(Point::new(280.0, 140.0)).is_empty());
+}
+
+#[test]
+fn a_mask_group_masks_with_its_first_child() {
+    let document = document(json!([
+        { "id": "m", "type": "mask_group", "x": 20, "y": 20, "width": 100, "height": 100 },
+        { "id": "shape", "type": "ellipse", "parent": "m" },
+        { "id": "one", "type": "rect", "parent": "m" },
+        { "id": "two", "type": "rect", "parent": "m", "x": 50 },
+        { "id": "fade", "type": "opacity", "target": "shape", "start": 0, "end": 1000, "to": 0, "easing": linear() },
+        { "id": "empty", "type": "mask_group" }
+    ]));
+    let scene = at(&document, 500.0);
+    assert_eq!(
+        scene.nodes.len(),
+        1,
+        "a mask group without a mask draws nothing"
+    );
+    let group = &scene.nodes[0];
+    let mask = group.mask.as_deref().unwrap();
+    assert_eq!((mask.id.as_str(), mask.opacity), ("shape", 0.5));
+    assert!(matches!(mask.content, Content::Ellipse { .. }));
+    let children: Vec<&str> = group
+        .children()
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    assert_eq!(children, ["one", "two"]);
+    // Once the mask has faded away, nothing of the group is left.
+    assert!(at(&document, 1000.0).nodes.is_empty());
+}
+
+fn text_node(extra: Value) -> Document {
+    let mut text = json!({
+        "id": "t", "type": "text", "content": "Hello\nworld!", "x": 100, "y": 50, "width": 200, "height": 80,
+        "font_size": 10, "fill": "#000000"
+    });
+    text.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    document(json!([text]))
+}
+
+fn text_of(scene: &Scene) -> (&SceneNode, &TextContent) {
+    let node = node(scene, "t");
+    match &node.content {
+        Content::Text(text) => (node, text),
+        other => panic!("expected text, got {other:?}"),
+    }
+}
+
+#[test]
+fn text_is_laid_out_with_the_measurer() {
+    // Letters are 6 wide and lines 12 tall: "Hello" is 30, "world!" 36.
+    let scene = at(
+        &text_node(json!({ "case": "upper", "letter_spacing": 10 })),
+        0.0,
+    );
+    let (node, text) = text_of(&scene);
+    assert_eq!(text.text, "HELLO\nWORLD!");
+    assert_eq!(text.style.font_size, 10.0);
+    assert_eq!(text.style.line_height, 12.0);
+    assert_eq!(text.style.letter_spacing, 1.0);
+    assert_eq!(text.style.align, TextAlign::Left);
+    assert_eq!(text.fill, solid("#000000"));
+    assert_eq!(text.wrap_width, None);
+    assert_eq!(
+        text.units,
+        [TextUnit {
+            start: 0,
+            end: 12,
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+            blur: 0.0
+        }]
+    );
+    // Six letters of 7 with five gaps of... the spacing follows every letter but the last.
+    assert_eq!((node.width, node.height), (41.0, 24.0));
+}
+
+#[test]
+fn an_auto_sized_text_box_grows_from_its_alignment() {
+    let frame = |extra: Value| {
+        let scene = at(&text_node(extra), 0.0);
+        let (node, text) = text_of(&scene);
+        let corner = node.transform.apply(Point::ZERO);
+        (corner.x, corner.y, node.width, node.height, text.offset_y)
+    };
+    // The stored box is 200 x 80 at (100, 50); the text is 36 x 24.
+    assert_eq!(frame(json!({})), (100.0, 50.0, 36.0, 24.0, 0.0));
+    assert_eq!(
+        frame(json!({ "align": "right" })),
+        (264.0, 50.0, 36.0, 24.0, 0.0)
+    );
+    assert_eq!(
+        frame(json!({ "align": "center", "vertical_align": "middle" })),
+        (182.0, 78.0, 36.0, 24.0, 0.0)
+    );
+    // Only the height follows the text: it wraps at the stored width.
+    assert_eq!(
+        frame(json!({ "auto_size": "height", "vertical_align": "bottom" })),
+        (100.0, 106.0, 200.0, 24.0, 0.0)
+    );
+    // A fixed box keeps its size and places the text block inside it.
+    assert_eq!(
+        frame(json!({ "auto_size": "fixed", "vertical_align": "middle" })),
+        (100.0, 50.0, 200.0, 80.0, 28.0)
+    );
+    assert_eq!(
+        frame(json!({ "auto_size": "fixed", "vertical_align": "bottom", "height": 10 })),
+        (100.0, 50.0, 200.0, 10.0, -14.0)
+    );
+}
+
+#[test]
+fn text_wraps_at_the_width_of_a_fixed_box() {
+    let scene = at(
+        &text_node(json!({ "content": "aaa bbb cccc dd", "auto_size": "height", "width": 50 })),
+        0.0,
+    );
+    let (node, text) = text_of(&scene);
+    assert_eq!(text.wrap_width, Some(50.0));
+    assert_eq!((node.width, node.height), (50.0, 24.0), "two lines of 12");
+
+    let empty = at(&text_node(json!({ "content": "" })), 0.0);
+    let (node, text) = text_of(&empty);
+    assert!(text.units.is_empty());
+    assert_eq!(
+        (node.width, node.height),
+        (0.0, 12.0),
+        "an empty text is one line tall"
+    );
+}
+
+#[test]
+fn values_are_reported_per_property() {
+    let document = document(json!([
+        { "id": "e", "type": "ellipse", "x": 5, "blur": 2, "shadow": { "y": 3 }, "stroke": { "width": 4 } },
+        { "id": "i", "type": "image", "source": "a.png" },
+        { "id": "f", "type": "show", "target": "e", "start": 0 }
+    ]));
+    let value = |layer: &str, property: Property| value_at(&document, &id(layer), property, 0.0);
+    assert_eq!(value("e", Property::X), Some(PropertyValue::Number(5.0)));
+    assert_eq!(
+        value("e", Property::Opacity),
+        Some(PropertyValue::Number(100.0))
+    );
+    assert_eq!(value("e", Property::Blur), Some(PropertyValue::Number(2.0)));
+    assert_eq!(
+        value("e", Property::Visible),
+        Some(PropertyValue::Flag(true))
+    );
+    assert_eq!(value("e", Property::Fill), Some(PropertyValue::Paint(None)));
+    assert!(
+        matches!(value("e", Property::Stroke), Some(PropertyValue::Stroke(Some(stroke))) if stroke.width == 4.0)
+    );
+    assert!(
+        matches!(value("e", Property::Shadow), Some(PropertyValue::Shadow(Some(shadow))) if shadow.y == 3.0)
+    );
+    assert_eq!(
+        value("e", Property::CornerRadius),
+        None,
+        "an ellipse has no corners"
+    );
+    assert_eq!(value("i", Property::Fill), None, "an image has no fill");
+    assert_eq!(
+        value("i", Property::CornerRadius),
+        Some(PropertyValue::CornerRadius(CornerRadius::Uniform(0.0)))
+    );
+    assert_eq!(value("f", Property::X), None, "not a layer");
+    assert_eq!(value("nope", Property::X), None);
+    for property in Property::ALL {
+        assert_eq!(Property::parse(property.as_str()), Some(property));
+    }
+    assert_eq!(Property::parse("colour"), None);
+}
+
+#[test]
+fn timeline_helpers() {
+    let document = document(json!([
+        { "id": "r", "type": "rect" },
+        { "id": "folder", "type": "animation_group" },
+        { "id": "a", "type": "fade_in", "target": "r", "start": 0, "end": 500, "parent": "folder" },
+        { "id": "b", "type": "move", "target": "r", "start": 400, "end": 900 },
+        { "id": "c", "type": "show", "target": "r", "start": 450 }
+    ]));
+    assert_eq!(duration_of(&document, &id("ab")), Some(2000.0));
+    assert_eq!(duration_of(&document, &id("r")), None);
+    assert_eq!(duration_of(&document, &id("nope")), None);
+    let active = |time: f64| -> Vec<&str> {
+        animations_active_at(&document, &id("ab"), time)
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect()
+    };
+    assert_eq!(active(0.0), ["a"]);
+    assert_eq!(active(450.0), ["a", "b", "c"]);
+    assert_eq!(active(500.0), ["a", "b"]);
+    assert_eq!(active(950.0), [""; 0]);
+}
+
+#[test]
+fn only_artboards_can_be_evaluated() {
+    let document = document(json!([{ "id": "r", "type": "rect" }]));
+    let measurer = MonospaceMeasurer::default();
+    assert_eq!(
+        evaluate(&document, &id("nope"), 0.0, &measurer),
+        Err(EvalError::UnknownArtboard(id("nope")))
+    );
+    let error = evaluate(&document, &id("r"), 0.0, &measurer).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "rect \"r\" is not an artboard; a scene is evaluated for a whole artboard, here \"ab\""
+    );
+}
+
+#[test]
+fn at_rest_no_animation_applies() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "x": 10 },
+        { "id": "o", "type": "opacity", "target": "r", "start": 500, "end": 900, "from": 0 },
+        { "id": "m", "type": "move", "target": "r", "start": 500, "end": 900, "from": { "x": 200 } },
+        { "id": "s", "type": "show", "target": "r", "start": 500 }
+    ]));
+    assert!(at(&document, 0.0).nodes.is_empty());
+    let rest = evaluate_at_rest(&document, &id("ab"), &MonospaceMeasurer::default()).unwrap();
+    assert_eq!(rest.nodes.len(), 1);
+    assert_eq!(rest.nodes[0].transform, Affine::translate(10.0, 0.0));
+    assert_eq!(rest.nodes[0].opacity, 1.0);
+}
+
+#[test]
+fn a_frame_depends_only_on_the_document_and_the_time() {
+    let document = document(json!([
+        { "id": "r", "type": "rect" },
+        { "id": "m", "type": "move", "target": "r", "start": 0, "end": 900, "to": { "x": 200 }, "easing": { "type": "bounce" } },
+        { "id": "t", "type": "rotate", "target": "r", "start": 100, "end": 700, "to": 360, "easing": { "type": "elastic" } }
+    ]));
+    let forward: Vec<Scene> = [0.0, 250.0, 500.0, 750.0]
+        .map(|time| at(&document, time))
+        .into();
+    let backward: Vec<Scene> = [750.0, 500.0, 250.0, 0.0]
+        .map(|time| at(&document, time))
+        .into();
+    assert_eq!(forward, backward.into_iter().rev().collect::<Vec<_>>());
+    assert_ne!(forward[1], forward[2]);
+    // Odd times are handled: before the start is the start.
+    assert_eq!(at(&document, -50.0), at(&document, 0.0));
+    assert_eq!(at(&document, f64::NAN), at(&document, 0.0));
+    assert_eq!(at(&document, 1e9).time_ms, 1e9);
+}

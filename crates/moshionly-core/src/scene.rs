@@ -349,11 +349,25 @@ impl SceneNode {
             Content::Path { path, .. } => path
                 .control_bounds()
                 .is_some_and(|bounds| bounds.contains(local)),
-            Content::Ellipse { .. } => {
-                let (rx, ry) = (self.width / 2.0, self.height / 2.0);
-                rx > 0.0
-                    && ry > 0.0
-                    && ((local.x - rx) / rx).powi(2) + ((local.y - ry) / ry).powi(2) <= 1.0
+            Content::Ellipse { fill, stroke, .. } => {
+                let inside = |inset: f64| {
+                    let (rx, ry) = (self.width / 2.0 - inset, self.height / 2.0 - inset);
+                    let (dx, dy) = (local.x - self.width / 2.0, local.y - self.height / 2.0);
+                    rx > 0.0 && ry > 0.0 && (dx / rx).powi(2) + (dy / ry).powi(2) <= 1.0
+                };
+                inside(0.0) && !outline_only(fill, stroke).is_some_and(inside)
+            }
+            Content::Rect { fill, stroke, .. } => {
+                let inside = |inset: f64| {
+                    Rect::new(
+                        inset,
+                        inset,
+                        self.width - 2.0 * inset,
+                        self.height - 2.0 * inset,
+                    )
+                    .contains(local)
+                };
+                inside(0.0) && !outline_only(fill, stroke).is_some_and(inside)
             }
             _ => self.frame().contains(local),
         };
@@ -361,6 +375,18 @@ impl SceneNode {
             chain.pop();
         }
         hit
+    }
+}
+
+/// For a shape that is drawn as an outline only, how far in from its edge a
+/// point still counts as on the outline. `None` for a shape with a fill, or
+/// with nothing at all (which is then found by its box).
+fn outline_only(fill: &Option<ScenePaint>, stroke: &Option<SceneStroke>) -> Option<f64> {
+    /// Thin outlines get a margin that can be clicked.
+    const REACH: f64 = 6.0;
+    match (fill, stroke) {
+        (None, Some(stroke)) => Some(stroke.width.max(REACH)),
+        _ => None,
     }
 }
 
@@ -385,9 +411,10 @@ impl Scene {
     /// Empty when the point is on nothing.
     ///
     /// Rectangles, text, images and stars count as their box, ellipses as
-    /// the full ellipse, paths as the box around their points. Clips and
-    /// masks hide what they cut off. Repeated ids (a group and its own
-    /// background) are listed once.
+    /// the full ellipse, paths as the box around their points. A rectangle
+    /// or ellipse that is only an outline is hit near its edge, not through
+    /// its empty middle. Clips and masks hide what they cut off. Repeated
+    /// ids (a group and its own background) are listed once.
     pub fn hit_test(&self, point: Point) -> Vec<NodeId> {
         if !Rect::new(0.0, 0.0, self.width, self.height).contains(point) {
             return Vec::new();
@@ -551,6 +578,55 @@ mod tests {
         assert_eq!(hit(&masked, 250.0, 150.0), ["group", "dot"]);
         assert_eq!(masked.node_count(), 6);
         assert!(masked.find(&NodeId::from("mask")).is_some());
+    }
+
+    #[test]
+    fn outlines_are_hit_near_their_edge_only() {
+        let mut scene = sample();
+        let outline = |width: f64| {
+            Some(SceneStroke {
+                paint: ScenePaint::solid(Color::BLACK),
+                width,
+                position: StrokePosition::Center,
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+            })
+        };
+        scene.nodes[0].content = Content::Rect {
+            radii: [0.0; 4],
+            fill: None,
+            stroke: outline(1.0),
+        };
+        assert_eq!(
+            hit(&scene, 2.0, 25.0),
+            ["back"],
+            "thin outlines have some reach"
+        );
+        assert!(hit(&scene, 25.0, 25.0).is_empty(), "the middle is empty");
+        scene.nodes[0].content = Content::Rect {
+            radii: [0.0; 4],
+            fill: None,
+            stroke: outline(20.0),
+        };
+        assert_eq!(hit(&scene, 15.0, 25.0), ["back"]);
+        // A shape with nothing to draw is still found by its box.
+        scene.nodes[0].content = Content::Ellipse {
+            start_angle: 0.0,
+            sweep: 360.0,
+            inner_radius: 0.0,
+            fill: None,
+            stroke: None,
+        };
+        assert_eq!(hit(&scene, 25.0, 25.0), ["back"]);
+        scene.nodes[0].content = Content::Ellipse {
+            start_angle: 0.0,
+            sweep: 360.0,
+            inner_radius: 0.0,
+            fill: None,
+            stroke: outline(2.0),
+        };
+        assert!(hit(&scene, 25.0, 25.0).is_empty());
+        assert_eq!(hit(&scene, 25.0, 3.0), ["back"]);
     }
 
     #[test]
