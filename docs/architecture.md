@@ -18,7 +18,7 @@ This document is the contract between the parts of Moshionly. If code and this d
 | `moshionly-core` | nothing heavy | Document model, edits, undo, file format, schema, easing, and evaluation of a document at a time into a `Scene` |
 | `moshionly-render` | core, Skia | Turns a `Scene` into pixels. Fonts, text layout, images, effects |
 | `moshionly-export` | core, render | PNG, GIF, MP4 and other video, Lottie |
-| `moshionly-agent` | core, render, export | The tool surface for AI agents and the MCP server that exposes it |
+| `moshionly-agent` | core | The tool surface for AI agents and the MCP server that exposes it. Rendering and export are supplied by the host through traits |
 | `moshionly-ai` | none of the above | Chat providers: subscriptions through installed agent CLIs, and API keys |
 | `moshionly-app` | all | The desktop editor (egui) and the `moshionly` command |
 
@@ -139,7 +139,7 @@ Export steps through an artboard at `1000 / fps` millisecond intervals, renders 
 
 Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
 
-The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port while the app is open, and over MCP on stdio through `moshionly mcp` for headless use.
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use. The same local port accepts designs sent by the Figma plugin.
 
 ## AI providers
 
