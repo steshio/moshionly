@@ -28,6 +28,7 @@ mod tool;
 
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
 pub use cli::claude_code::{CLAUDE_CODE_ID, ClaudeCode, ClaudeCodeOptions};
+pub use cli::cursor_agent::{CURSOR_AGENT_ID, CursorAgent, CursorAgentOptions};
 pub use error::{AiError, ErrorKind};
 pub use event::{ChatEvent, EventReceiver, EventSender, StopReason, event_channel};
 pub use paths::{config_dir, default_working_dir};

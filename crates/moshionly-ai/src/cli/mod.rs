@@ -2,6 +2,7 @@
 //! to. Moshionly runs the binary and reads its output, nothing more.
 
 pub(crate) mod claude_code;
+pub(crate) mod cursor_agent;
 pub(crate) mod discover;
 pub(crate) mod process;
 pub(crate) mod prompt;
