@@ -21,7 +21,9 @@ pub mod index;
 pub mod io;
 mod json;
 pub mod model;
+pub mod scene;
 pub mod schema;
+pub mod text;
 pub mod tree;
 pub mod validate;
 
