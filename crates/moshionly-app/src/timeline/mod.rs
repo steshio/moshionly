@@ -10,20 +10,28 @@
 //! - [`TimelineState`] is the zoom and scroll, which the widget does own.
 //! - [`TimeScale`] and the functions beside it are the time-to-pixel maths,
 //!   the ruler's ticks and the way times are written.
+//! - [`Snapper`] is the snapping rule, and [`moved`], [`resized`] and their
+//!   neighbours are the rules of editing bars, all as plain functions.
 
 mod bars;
+mod edit;
 mod header;
 mod layout;
 mod model;
 mod scale;
+mod snap;
 mod state;
 mod widget;
 
+pub use edit::{
+    MIN_ACTION, MIN_SCENE, Original, clamp_move, marquee_hits, merged, moved, resized, scene_end,
+};
 pub use layout::{LABELS_MIN, MIN_BAR_WIDTH, TRACK_PAD, TRACKS_MIN, TimelineLayout, label_width};
 pub use model::{Bar, Edge, Group, Row, TimelineEvent, last_end, rows};
 pub use scale::{
     MAX_POINTS_PER_SECOND, MIN_POINTS_PER_SECOND, Ticks, TimeScale, clamp_zoom, grid_step,
     scroll_after_zoom, slider_to_zoom, tick_label, ticks, timecode, zoom_to_fit, zoom_to_slider,
 };
+pub use snap::{Snapped, Snapper};
 pub use state::TimelineState;
-pub use widget::{Timeline, TimelineOutput, selection_after_click};
+pub use widget::{Timeline, TimelineOutput, edge_zone, selection_after_click};

@@ -78,6 +78,13 @@ impl TimelineLayout {
         }
     }
 
+    /// The width the scene should take when it is zoomed to fit: from time
+    /// zero to a little before the zoom controls, so the tab at the end of
+    /// the scene stays in reach.
+    pub fn fit_width(&self) -> f32 {
+        (self.zoom.left() - self.tracks.left() - TRACK_PAD * 2.0).max(1.0)
+    }
+
     /// The top of the row at `index`, on screen.
     pub fn row_top(&self, index: usize) -> f32 {
         self.tracks.top() - self.scroll_y + index as f32 * self.row_height

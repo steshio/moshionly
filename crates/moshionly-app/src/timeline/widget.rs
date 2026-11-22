@@ -1,14 +1,18 @@
 //! The timeline widget.
 
-use egui::{Align, Id, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2};
+use egui::{
+    Align, CursorIcon, Id, Layout, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2,
+};
 
 use super::{
     bars::{self, BarLook},
+    edit::{self, Original},
     header,
     layout::{self, LABELS_MIN, TRACK_PAD, TRACKS_MIN, TimelineLayout},
-    model::{self, Group, Row, TimelineEvent},
+    model::{self, Edge, Group, Row, TimelineEvent},
     scale::{self, clamp_zoom, scroll_after_zoom},
-    state::TimelineState,
+    snap::Snapper,
+    state::{Drag, TimelineState},
 };
 use crate::{
     key::Key,
@@ -16,8 +20,10 @@ use crate::{
     widgets::{Grow, ListRow, row_toggle, splitter},
 };
 
-/// How much of the tracks' width the scene takes after "fit".
-const FIT_FILL: f64 = 0.86;
+/// How near a snapping target must be to attract, in points.
+const SNAP_REACH: f32 = 6.0;
+/// The widest a step of the snapping grid may be, in points.
+const GRID_WIDTH: f32 = 10.0;
 /// Empty room under the last row.
 const BOTTOM_PAD: f32 = 24.0;
 
@@ -33,7 +39,17 @@ const BOTTOM_PAD: f32 = 24.0;
 ///   about the pointer.
 /// - **Click or drag in the ruler** to move the playhead.
 /// - **Click a bar** to select it; Shift or ⌘ adds to or removes from the
-///   selection. Click empty space to clear it.
+///   selection. Click empty space to clear it, or drag over empty space to
+///   select with a rubber band.
+/// - **Drag a bar** to move it, together with the rest of the selection.
+///   **Drag either end** to resize it. A layer's summary bar moves all of
+///   the layer's actions.
+/// - **Drag the tab at the end of the scene** to change its length.
+///
+/// Dragged things snap to the edges of other bars, the playhead and the ends
+/// of the scene, with a guide line where they meet, and otherwise to a time
+/// grid that follows the zoom. Holding ⌘ while dragging turns snapping off
+/// (or on, when it is switched off).
 #[must_use = "call show()"]
 pub struct Timeline<'a> {
     state: &'a mut TimelineState,
@@ -136,9 +152,8 @@ impl<'a> Timeline<'a> {
 
         // Zoom so the scene fits: on first show and when asked.
         if state.fit_requested && rect.width() > 0.0 {
-            let labels = layout::label_width(state.label_width, rect.width());
-            let tracks = rect.width() - labels - TRACK_PAD * 2.0;
-            state.points_per_second = scale::zoom_to_fit(end.max(1.0) / FIT_FILL, tracks);
+            let room = TimelineLayout::compute(rect, state, theme).fit_width();
+            state.points_per_second = scale::zoom_to_fit(end.max(1.0), room);
             state.scroll_x = 0.0;
             state.fit_requested = false;
         }
@@ -155,6 +170,26 @@ impl<'a> Timeline<'a> {
         let layout = TimelineLayout::compute(rect, state, theme);
         let s = layout.scale;
 
+        // The pointer, and how dragged things snap this frame. Holding the
+        // command key inverts the snapping switch.
+        let (toggle, command, primary_down, press_origin, pointer) = ui.input(|i| {
+            (
+                i.modifiers.shift || i.modifiers.command,
+                i.modifiers.command,
+                i.pointer.primary_down(),
+                i.pointer.press_origin(),
+                i.pointer.latest_pos(),
+            )
+        });
+        let snap_on = snapping != command;
+        let snapper = |targets: Vec<f64>, with_grid: bool| {
+            if !snap_on {
+                return Snapper::off();
+            }
+            let grid = with_grid.then(|| scale::grid_step(s.points_per_ms, GRID_WIDTH));
+            Snapper::new(targets, grid, f64::from(SNAP_REACH / s.points_per_ms))
+        };
+
         // Backgrounds. Outside the scene the tracks are tinted.
         let body = Rect::from_min_max(layout.labels.min, rect.max);
         let body_painter = ui.painter_at(body);
@@ -164,45 +199,77 @@ impl<'a> Timeline<'a> {
             tracks_painter.rect_filled(outside, 0.0, c.timeline_outside);
         }
 
-        // A click on empty track clears the selection.
-        let background = ui.interact(layout.tracks, id.with("tracks"), Sense::click());
-        if background.clicked() && !selection.is_empty() {
+        // Empty track: a click clears the selection, a drag is a rubber band.
+        let background = ui.interact(layout.tracks, id.with("tracks"), Sense::click_and_drag());
+        if background.clicked() && !toggle && !selection.is_empty() {
             events.push(TimelineEvent::SelectionChanged { bars: Vec::new() });
         }
+        if background.drag_started()
+            && state.drag.is_none()
+            && let Some(origin) = press_origin.or(pointer)
+        {
+            state.drag = Some(Drag::Marquee {
+                time: s.time(origin.x),
+                y: origin.y - layout.row_top(0),
+                base: if toggle {
+                    selection.to_vec()
+                } else {
+                    Vec::new()
+                },
+            });
+        }
 
-        // Rows: tint, bar, label.
-        let toggle = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        // Rows: tint, bar, label. `placed` collects where every editable bar
+        // is, for the rubber band.
+        let mut placed: Vec<(Key, Rect)> = Vec::new();
         for (index, row) in rows.iter().enumerate() {
             let row_rect = layout.row_rect(index);
-            if row_rect.bottom() < body.top() || row_rect.top() > body.bottom() {
-                continue;
-            }
+            let on_screen = row_rect.bottom() >= body.top() && row_rect.top() <= body.bottom();
             match *row {
                 Row::Group(g) => {
+                    if !on_screen {
+                        continue;
+                    }
                     let group = &groups[g];
                     if selected_group == Some(&group.key) {
                         body_painter.rect_filled(row_rect, 0.0, c.accent_soft.gamma_multiply(0.5));
                     }
-                    if let Some((start, end)) = group.span() {
-                        let bar_rect = layout.bar_rect(index, start, end);
+                    if let Some(span) = group.span() {
+                        let bar_rect = layout.bar_rect(index, span.0, span.1);
+                        let sense = if group.locked {
+                            Sense::hover()
+                        } else {
+                            Sense::click_and_drag()
+                        };
                         let response = interact_in(
                             ui,
                             bar_rect,
                             layout.tracks,
                             id.with(("summary", group.key.as_str())),
-                            Sense::click(),
+                            sense,
                         );
+                        let all: Vec<Key> = group.bars.iter().map(|bar| bar.key.clone()).collect();
                         let look = BarLook {
-                            selected: group.bars.iter().all(|bar| selection.contains(&bar.key)),
-                            hovered: response.as_ref().is_some_and(|r| r.hovered()),
+                            selected: all.iter().all(|key| selection.contains(key)),
+                            hovered: response.as_ref().is_some_and(|r| r.hovered())
+                                && !group.locked,
                             faded: group.hidden || group.locked,
                         };
                         bars::paint_summary(ui, &tracks_painter, bar_rect, look);
-                        // The summary stands for all the layer's actions.
-                        if response.is_some_and(|r| r.clicked()) && !group.locked {
-                            events.push(TimelineEvent::SelectionChanged {
-                                bars: group.bars.iter().map(|bar| bar.key.clone()).collect(),
-                            });
+                        // The summary stands for all the layer's actions:
+                        // a click selects them, a drag moves them.
+                        if let Some(response) = response {
+                            let grabbed = response.drag_started() && state.drag.is_none();
+                            if (response.clicked() || grabbed) && selection != all.as_slice() {
+                                events.push(TimelineEvent::SelectionChanged { bars: all.clone() });
+                            }
+                            if grabbed {
+                                state.drag = Some(Drag::Bars {
+                                    span,
+                                    grab_time: press_origin.map_or(span.0, |p| s.time(p.x)),
+                                    originals: originals_of(groups, &all),
+                                });
+                            }
                         }
                     }
                     group_label(ui, &layout, index, group, &mut events);
@@ -210,15 +277,21 @@ impl<'a> Timeline<'a> {
                 Row::Bar(g, b) => {
                     let group = &groups[g];
                     let bar = &group.bars[b];
+                    let bar_rect = layout.bar_rect(index, bar.start, bar.end);
+                    if !group.locked {
+                        placed.push((bar.key.clone(), bar_rect));
+                    }
+                    if !on_screen {
+                        continue;
+                    }
                     let selected = selection.contains(&bar.key);
                     if selected {
                         body_painter.rect_filled(row_rect, 0.0, c.accent_soft);
                     }
-                    let bar_rect = layout.bar_rect(index, bar.start, bar.end);
                     let sense = if group.locked {
                         Sense::hover()
                     } else {
-                        Sense::click()
+                        Sense::click_and_drag()
                     };
                     let response = interact_in(
                         ui,
@@ -234,6 +307,46 @@ impl<'a> Timeline<'a> {
                     };
                     bars::paint_bar(ui, &tracks_painter, bar_rect, &bar.label, bar.tone, look);
 
+                    // The ends: grabbing one resizes the bar.
+                    for edge in [Edge::Start, Edge::End] {
+                        if group.locked {
+                            break;
+                        }
+                        let zone = edge_zone(bar_rect, edge, theme.size.bar_edge_grab);
+                        let Some(grip) = interact_in(
+                            ui,
+                            zone,
+                            layout.tracks,
+                            id.with(("edge", bar.key.as_str(), edge)),
+                            Sense::drag(),
+                        ) else {
+                            continue;
+                        };
+                        if grip.hovered() {
+                            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                        }
+                        if grip.drag_started() && state.drag.is_none() {
+                            let edge_time = match edge {
+                                Edge::Start => bar.start,
+                                Edge::End => bar.end,
+                            };
+                            let grabbed_at =
+                                press_origin.or(pointer).map_or(edge_time, |p| s.time(p.x));
+                            state.drag = Some(Drag::Edge {
+                                key: bar.key.clone(),
+                                edge,
+                                original: (bar.start, bar.end),
+                                grab_offset: grabbed_at - edge_time,
+                            });
+                            if !selected {
+                                events.push(TimelineEvent::SelectionChanged {
+                                    bars: vec![bar.key.clone()],
+                                });
+                            }
+                        }
+                    }
+
+                    // The body: a click selects, a drag moves the selection.
                     let label_clicked = bar_label(ui, &layout, index, bar, selected);
                     let clicked = response.as_ref().is_some_and(|r| r.clicked()) || label_clicked;
                     if clicked && !group.locked {
@@ -241,11 +354,116 @@ impl<'a> Timeline<'a> {
                             bars: selection_after_click(selection, &bar.key, toggle),
                         });
                     }
-                    if response.is_some_and(|r| r.double_clicked()) {
+                    if response.as_ref().is_some_and(|r| r.double_clicked()) {
                         events.push(TimelineEvent::BarActivated {
                             key: bar.key.clone(),
                         });
                     }
+                    if response.is_some_and(|r| r.drag_started()) && state.drag.is_none() {
+                        // Dragging a bar that is not selected selects it first.
+                        let moving = if selected {
+                            selection.to_vec()
+                        } else {
+                            let next = selection_after_click(selection, &bar.key, toggle);
+                            events.push(TimelineEvent::SelectionChanged { bars: next.clone() });
+                            next
+                        };
+                        state.drag = Some(Drag::Bars {
+                            span: (bar.start, bar.end),
+                            grab_time: press_origin.map_or(bar.start, |p| s.time(p.x)),
+                            originals: originals_of(groups, &moving),
+                        });
+                    }
+                }
+            }
+        }
+
+        // The drag in progress. Everything is worked out from where things
+        // were when the drag began.
+        if !primary_down {
+            if state.drag.is_some() && state.drag_changed {
+                events.push(TimelineEvent::EditFinished);
+            }
+            state.drag = None;
+            state.guide = None;
+            state.drag_changed = false;
+        } else if let (Some(drag), Some(pointer)) = (state.drag.clone(), pointer) {
+            state.guide = None;
+            match drag {
+                Drag::Bars {
+                    span,
+                    grab_time,
+                    originals,
+                } => {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                    let delta = s.time(pointer.x) - grab_time;
+                    let moving = |key: &Key| originals.iter().any(|(k, ..)| k == key);
+                    let mut targets = bar_edges(groups, moving);
+                    targets.extend([0.0, duration, playhead]);
+                    let snapped = snapper(targets, true).snap_span(span.0 + delta, span.1 + delta);
+                    let wanted = snapped.time - span.0;
+                    let delta = edit::clamp_move(&originals, wanted);
+                    // No guide when the move stopped short of the target.
+                    state.guide = snapped.guide.filter(|_| delta == wanted);
+                    for (key, start, end) in edit::moved(&originals, delta) {
+                        if times_of(groups, &key) != Some((start, end)) {
+                            events.push(TimelineEvent::BarMoved { key, start, end });
+                            state.drag_changed = true;
+                        }
+                    }
+                }
+                Drag::Edge {
+                    key,
+                    edge,
+                    original,
+                    grab_offset,
+                } => {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                    let mut targets = bar_edges(groups, |k| *k == key);
+                    targets.extend([0.0, duration, playhead]);
+                    let snapped = snapper(targets, true).snap(s.time(pointer.x) - grab_offset);
+                    let (start, end) = edit::resized(original, edge, snapped.time);
+                    let landed = match edge {
+                        Edge::Start => start,
+                        Edge::End => end,
+                    };
+                    state.guide = snapped.guide.filter(|_| landed == snapped.time);
+                    if times_of(groups, &key) != Some((start, end)) {
+                        events.push(TimelineEvent::BarResized {
+                            key,
+                            edge,
+                            start,
+                            end,
+                        });
+                        state.drag_changed = true;
+                    }
+                }
+                Drag::Duration { grab_offset } => {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                    let mut targets = bar_edges(groups, |_| false);
+                    targets.push(playhead);
+                    let snapped = snapper(targets, true).snap(s.time(pointer.x) - grab_offset);
+                    let next = edit::scene_end(snapped.time);
+                    state.guide = snapped.guide.filter(|_| next == snapped.time);
+                    if next != duration {
+                        events.push(TimelineEvent::DurationChanged { duration: next });
+                        state.drag_changed = true;
+                    }
+                }
+                Drag::Marquee { time, y, base } => {
+                    let origin = pos2(s.x(time), layout.row_top(0) + y);
+                    let band = Rect::from_two_pos(origin, pointer);
+                    let next = edit::merged(&base, edit::marquee_hits(&placed, band));
+                    if next != selection {
+                        events.push(TimelineEvent::SelectionChanged { bars: next });
+                    }
+                    tracks_painter.rect(
+                        band.intersect(layout.tracks),
+                        0.0,
+                        c.marquee_fill,
+                        Stroke::new(1.0, c.accent),
+                        StrokeKind::Inside,
+                    );
                 }
             }
         }
@@ -254,14 +472,53 @@ impl<'a> Timeline<'a> {
         header::ruler(ui, &layout, duration);
         let ruler = ui.interact(layout.ruler, id.with("ruler"), Sense::click_and_drag());
         if ruler.is_pointer_button_down_on()
+            && state.drag.is_none()
             && let Some(pointer) = ruler.interact_pointer_pos()
         {
-            let time = s.time(pointer.x).round().clamp(0.0, duration);
+            // The playhead snaps to the edges of bars but not to the grid,
+            // so scrubbing stays smooth.
+            let mut targets = bar_edges(groups, |_| false);
+            targets.extend([0.0, duration]);
+            let time = snapper(targets, false)
+                .snap(s.time(pointer.x))
+                .time
+                .clamp(0.0, duration);
             if time != playhead {
                 events.push(TimelineEvent::PlayheadMoved { time });
             }
         }
-        header::duration_marker(ui, &layout, duration, false);
+
+        // The tab at the end of the scene.
+        let end_tab = interact_in(
+            ui,
+            header::duration_grab(&layout, duration),
+            layout.ruler,
+            id.with("duration"),
+            Sense::drag(),
+        );
+        let end_tab_hot = end_tab.as_ref().is_some_and(|r| r.hovered())
+            || matches!(state.drag, Some(Drag::Duration { .. }));
+        if end_tab_hot {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+        if end_tab.is_some_and(|r| r.drag_started()) && state.drag.is_none() {
+            let grabbed_at = press_origin.or(pointer).map_or(duration, |p| s.time(p.x));
+            state.drag = Some(Drag::Duration {
+                grab_offset: grabbed_at - duration,
+            });
+        }
+        header::duration_marker(ui, &layout, duration, end_tab_hot);
+
+        // The snapping guide, where a dragged thing met a target.
+        if let Some(guide) = state.guide {
+            let area = Rect::from_min_max(layout.ruler.left_top(), rect.max);
+            ui.painter_at(area).vline(
+                s.x(guide).floor() + 0.5,
+                (area.top() + theme.size.ruler_ticks)..=area.bottom(),
+                Stroke::new(1.0, c.guide),
+            );
+        }
+
         header::playhead(ui, &layout, playhead);
         header::transport(
             ui,
@@ -306,6 +563,56 @@ impl<'a> Timeline<'a> {
         scrollbars(ui, id, &layout, content, state);
 
         TimelineOutput { events, layout }
+    }
+}
+
+/// The start and end of every bar whose key `skip` does not match: the
+/// moments a dragged thing can line up with.
+fn bar_edges(groups: &[Group], skip: impl Fn(&Key) -> bool) -> Vec<f64> {
+    groups
+        .iter()
+        .flat_map(|group| &group.bars)
+        .filter(|bar| !skip(&bar.key))
+        .flat_map(|bar| [bar.start, bar.end])
+        .collect()
+}
+
+/// The current start and end of the bar with `key`.
+fn times_of(groups: &[Group], key: &Key) -> Option<(f64, f64)> {
+    groups
+        .iter()
+        .flat_map(|group| &group.bars)
+        .find(|bar| bar.key == *key)
+        .map(|bar| (bar.start, bar.end))
+}
+
+/// The bars named by `keys` with their current times, leaving out those in
+/// locked layers: what a drag of the selection moves.
+fn originals_of(groups: &[Group], keys: &[Key]) -> Vec<Original> {
+    groups
+        .iter()
+        .filter(|group| !group.locked)
+        .flat_map(|group| &group.bars)
+        .filter(|bar| keys.contains(&bar.key))
+        .map(|bar| (bar.key.clone(), bar.start, bar.end))
+        .collect()
+}
+
+/// The strip at one end of a bar that resizes it when dragged. Part of it
+/// hangs outside the bar, and inside it takes at most a third, so even a
+/// short bar keeps a middle to move it by.
+pub fn edge_zone(bar: Rect, edge: Edge, grab: f32) -> Rect {
+    let inside = grab.min(bar.width() / 3.0);
+    let outside = grab / 2.0;
+    match edge {
+        Edge::Start => Rect::from_min_max(
+            pos2(bar.left() - outside, bar.top()),
+            pos2(bar.left() + inside, bar.bottom()),
+        ),
+        Edge::End => Rect::from_min_max(
+            pos2(bar.right() - inside, bar.top()),
+            pos2(bar.right() + outside, bar.bottom()),
+        ),
     }
 }
 
@@ -605,6 +912,48 @@ mod tests {
     }
 
     #[test]
+    fn the_ends_of_a_bar_have_grab_strips() {
+        let bar = Rect::from_min_max(pos2(100.0, 10.0), pos2(200.0, 30.0));
+        let start = edge_zone(bar, Edge::Start, 7.0);
+        let end = edge_zone(bar, Edge::End, 7.0);
+        assert_eq!(
+            start,
+            Rect::from_min_max(pos2(96.5, 10.0), pos2(107.0, 30.0))
+        );
+        assert_eq!(
+            end,
+            Rect::from_min_max(pos2(193.0, 10.0), pos2(203.5, 30.0))
+        );
+        // A short bar keeps a third of itself for moving.
+        let short = Rect::from_min_max(pos2(100.0, 10.0), pos2(106.0, 30.0));
+        let start = edge_zone(short, Edge::Start, 7.0);
+        let end = edge_zone(short, Edge::End, 7.0);
+        assert_eq!(start.right(), 102.0);
+        assert_eq!(end.left(), 104.0);
+    }
+
+    #[test]
+    fn locked_layers_stay_out_of_a_drag_and_everything_else_is_a_target() {
+        use super::super::model::tests::{bar, group};
+        let mut groups = vec![
+            group("a", vec![bar("a1", 0.0, 100.0), bar("a2", 50.0, 400.0)]),
+            group("b", vec![bar("b1", 200.0, 300.0)]),
+        ];
+        groups[1].locked = true;
+        let all = keys(&["a1", "a2", "b1"]);
+        assert_eq!(
+            originals_of(&groups, &all),
+            [(Key::new("a1"), 0.0, 100.0), (Key::new("a2"), 50.0, 400.0)]
+        );
+        assert_eq!(
+            bar_edges(&groups, |key| *key == "a1"),
+            [50.0, 400.0, 200.0, 300.0]
+        );
+        assert_eq!(times_of(&groups, &Key::new("b1")), Some((200.0, 300.0)));
+        assert_eq!(times_of(&groups, &Key::new("zz")), None);
+    }
+
+    #[test]
     fn the_scroll_handle_shows_how_much_is_in_view() {
         // Half the content is in view: the handle is half the groove.
         assert_eq!(scroll_handle(200.0, 1000.0, 500.0, 0.0), (0.0, 100.0));
@@ -624,8 +973,7 @@ mod tests {
         let mut state = TimelineState {
             scroll_x: 99_999.0,
             scroll_y: -40.0,
-            fit_requested: false,
-            ..TimelineState::default()
+            ..TimelineState::with_zoom(200.0)
         };
         let layout = TimelineLayout::compute(rect, &state, Theme::light());
         // Three rows fit without scrolling; four seconds do not.
