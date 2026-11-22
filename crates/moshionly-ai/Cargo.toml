@@ -1,0 +1,18 @@
+[package]
+name = "moshionly-ai"
+description = "Chat providers for Moshionly: subscriptions through installed agent CLIs, and API keys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["sync"] }
+tokio-util = "0.7.20"
