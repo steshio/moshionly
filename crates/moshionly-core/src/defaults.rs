@@ -1,12 +1,38 @@
-//! Default values of optional properties.
+//! Default values, and the switch that decides whether they are written out.
 //!
 //! Every optional property has one default, defined here or as the type's
-//! `Default`. Serialising leaves properties at their default out, so files
-//! stay small.
+//! `Default`. Serialising normally leaves properties at their default out, so
+//! files stay small. Two callers need the opposite: the JSON Schema (which
+//! shows defaults) and "full" node dumps for inspectors and AI agents. They
+//! wrap their work in [`with_defaults`], which makes every `is_*` helper in
+//! this module answer "do not skip" on the current thread.
+
+use std::cell::Cell;
+
+thread_local! {
+    static WRITE_DEFAULTS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether defaults are currently being written out on this thread.
+fn writing_defaults() -> bool {
+    WRITE_DEFAULTS.with(Cell::get)
+}
+
+/// Runs `work` with default values written out instead of skipped.
+pub(crate) fn with_defaults<R>(work: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WRITE_DEFAULTS.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(WRITE_DEFAULTS.with(|flag| flag.replace(true)));
+    work()
+}
 
 /// `skip_serializing_if` helper for properties whose default is `Default::default()`.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    *value == T::default()
+    !writing_defaults() && *value == T::default()
 }
 
 /// Defines a named default: a function that returns it (for `serde(default = ..)`)
@@ -19,7 +45,7 @@ macro_rules! named_default {
         }
 
         pub(crate) fn $skip(value: &$ty) -> bool {
-            *value == $value
+            !writing_defaults() && *value == $value
         }
     };
 }
@@ -87,3 +113,106 @@ named_default!(
     f64,
     50.0
 );
+named_default!(
+    /// A multiplier that changes nothing.
+    one,
+    is_one,
+    f64,
+    1.0
+);
+named_default!(
+    /// Fully opaque, as a percentage.
+    hundred,
+    is_hundred,
+    f64,
+    100.0
+);
+named_default!(
+    /// Width and height of a new layer, in pixels.
+    layer_size,
+    is_layer_size,
+    f64,
+    100.0
+);
+named_default!(
+    /// Length of a new artboard's timeline, in milliseconds.
+    artboard_duration,
+    is_artboard_duration,
+    f64,
+    4000.0
+);
+named_default!(
+    /// A full turn, in degrees.
+    full_turn,
+    is_full_turn,
+    f64,
+    360.0
+);
+named_default!(
+    /// Points on a new star.
+    star_points,
+    is_star_points,
+    u32,
+    5
+);
+named_default!(
+    /// Inner radius of a new star as a fraction of its outer radius.
+    star_inner_radius,
+    is_star_inner_radius,
+    f64,
+    0.4
+);
+named_default!(
+    /// Family of the default font.
+    font_family,
+    is_font_family,
+    String,
+    "Inter".to_owned()
+);
+named_default!(
+    /// Font size of new text, in pixels.
+    font_size,
+    is_font_size,
+    f64,
+    48.0
+);
+named_default!(
+    /// Line height of new text, as a percentage of the font size.
+    line_height,
+    is_line_height,
+    f64,
+    120.0
+);
+named_default!(
+    /// Regular font weight.
+    font_weight,
+    is_font_weight,
+    u16,
+    400
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_skipped_unless_forced() {
+        assert!(is_default(&0.0_f64));
+        assert!(is_hundred(&100.0));
+        assert!(!is_hundred(&99.0));
+        with_defaults(|| {
+            assert!(!is_default(&0.0_f64));
+            assert!(!is_hundred(&100.0));
+        });
+        assert!(is_hundred(&100.0), "the switch resets afterwards");
+    }
+
+    #[test]
+    fn nested_scopes_restore_the_outer_state() {
+        with_defaults(|| {
+            with_defaults(|| assert!(!is_one(&1.0)));
+            assert!(!is_one(&1.0), "still forced inside the outer scope");
+        });
+        assert!(is_one(&1.0));
+    }
+}
