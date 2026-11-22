@@ -8,6 +8,7 @@
 //! The rules it implements are written down in `docs/architecture.md` and, for
 //! the file format, in `docs/file-format.md`.
 
+pub mod build;
 pub mod color;
 mod defaults;
 pub mod document;
