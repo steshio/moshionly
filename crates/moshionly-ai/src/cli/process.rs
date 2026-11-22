@@ -90,6 +90,9 @@ pub(crate) enum LineAction {
     /// The output is complete. The child is given a moment to exit and is
     /// stopped if it lingers.
     Finish,
+    /// Something is wrong and the rest of the output is not wanted. The
+    /// child is stopped at once and [`ProcessExit::Stopped`] is returned.
+    Abort,
 }
 
 /// How a child ended.
@@ -102,7 +105,8 @@ pub(crate) enum ProcessExit {
         /// The last part of what it wrote to stderr.
         stderr: String,
     },
-    /// It was stopped because `stop` completed.
+    /// It was stopped, because `stop` completed or a line asked for
+    /// [`LineAction::Abort`].
     Stopped,
 }
 
@@ -176,9 +180,19 @@ where
                 Ok(_) => {
                     let text = String::from_utf8_lossy(&line);
                     let text = text.trim_end_matches(['\n', '\r']);
-                    if !text.is_empty() && on_line(text) == LineAction::Finish {
-                        output_complete = true;
-                        break;
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match on_line(text) {
+                        LineAction::Continue => {}
+                        LineAction::Finish => {
+                            output_complete = true;
+                            break;
+                        }
+                        LineAction::Abort => {
+                            terminate(&mut child, &group).await;
+                            return Ok(ProcessExit::Stopped);
+                        }
                     }
                 }
             },
@@ -547,6 +561,18 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(exit, ProcessExit::Exited { code: Some(0), .. }));
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn aborting_from_a_line_stops_the_child_at_once() {
+        let started = std::time::Instant::now();
+        let exit = run_streaming(sh("echo bad; sleep 300"), std::future::pending(), |_| {
+            LineAction::Abort
+        })
+        .await
+        .unwrap();
+        assert_eq!(exit, ProcessExit::Stopped);
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

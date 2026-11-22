@@ -21,13 +21,16 @@ mod chat;
 mod cli;
 mod error;
 mod event;
+mod paths;
 mod provider;
 pub mod redact;
 mod tool;
 
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
+pub use cli::claude_code::{CLAUDE_CODE_ID, ClaudeCode, ClaudeCodeOptions};
 pub use error::{AiError, ErrorKind};
 pub use event::{ChatEvent, EventReceiver, EventSender, StopReason, event_channel};
+pub use paths::{config_dir, default_working_dir};
 pub use provider::{
     Capabilities, ChatProvider, ModelInfo, ProviderInfo, ProviderKind, Readiness, ReadyState,
     ToolTransport,

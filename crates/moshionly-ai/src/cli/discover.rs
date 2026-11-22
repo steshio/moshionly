@@ -16,16 +16,15 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Finds an executable by name.
 ///
-/// `override_path` is a location chosen by the user in settings and wins when
-/// it points at an executable. Otherwise the first of `names` found in
-/// [`search_dirs`] is returned.
+/// `override_path` is a location chosen by the user in settings. When it is
+/// given, only that file is considered: a user who pointed at a specific
+/// binary should hear that it is gone rather than silently get another one.
+/// Otherwise the first of `names` found in [`search_dirs`] is returned.
 pub(crate) fn find_binary(names: &[&str], override_path: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = override_path
-        && is_executable(path)
-    {
-        return Some(path.to_path_buf());
+    match override_path {
+        Some(path) => is_executable(path).then(|| path.to_path_buf()),
+        None => find_in(names, &search_dirs()),
     }
-    find_in(names, &search_dirs())
 }
 
 /// Looks for the first of `names` in `dirs`, in directory order.
@@ -233,12 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn an_override_wins_only_when_it_is_executable() {
+    fn an_override_is_the_only_place_looked_at() {
         let dir = tempfile::tempdir().unwrap();
         let good = write_script(dir.path(), "custom-agent", 0o755);
-        assert_eq!(find_binary(&["nope"], Some(&good)), Some(good));
-        let bad = dir.path().join("missing");
-        assert_eq!(find_binary(&["moshionly-no-such-agent"], Some(&bad)), None);
+        assert_eq!(find_binary(&["sh"], Some(&good)), Some(good));
+        // `sh` exists on every search path, but the override says otherwise.
+        let missing = dir.path().join("missing");
+        assert_eq!(find_binary(&["sh"], Some(&missing)), None);
     }
 
     #[test]
