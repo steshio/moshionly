@@ -21,6 +21,9 @@ mod chat;
 mod cli;
 mod error;
 mod event;
+// The API providers that use this module arrive in the next commits.
+#[allow(dead_code)]
+mod http;
 mod paths;
 mod provider;
 pub mod redact;

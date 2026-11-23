@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{AiError, ErrorKind};
 use crate::redact::scrub;
@@ -169,6 +170,15 @@ impl EventSender {
     /// cancellation.
     pub async fn closed(&self) {
         self.sender.closed().await;
+    }
+}
+
+/// Completes when a turn should stop: the caller cancelled, or nobody is
+/// listening to the events any more.
+pub(crate) async fn stopped(cancel: &CancellationToken, events: &EventSender) {
+    tokio::select! {
+        () = cancel.cancelled() => {}
+        () = events.closed() => {}
     }
 }
 

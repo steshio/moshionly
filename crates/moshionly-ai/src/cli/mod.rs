@@ -13,20 +13,10 @@ pub(crate) mod prompt;
 pub(crate) mod test_support;
 
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 
 use crate::error::{AiError, ErrorKind};
-use crate::event::EventSender;
+pub(crate) use crate::event::stopped;
 use crate::tool::summarize_text;
-
-/// Completes when a run should stop: the caller cancelled, or nobody is
-/// listening to the events any more.
-pub(crate) async fn stopped(cancel: &CancellationToken, events: &EventSender) {
-    tokio::select! {
-        () = cancel.cancelled() => {}
-        () = events.closed() => {}
-    }
-}
 
 /// Guesses what went wrong from text an agent CLI printed when it failed
 /// without a structured error. Each CLI words these differently, so this
@@ -212,6 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_completes_on_cancel_or_when_the_receiver_goes_away() {
+        use tokio_util::sync::CancellationToken;
+
         let cancel = CancellationToken::new();
         let (events, receiver) = crate::event::event_channel();
         cancel.cancel();
