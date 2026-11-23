@@ -1,9 +1,10 @@
 //! Animated GIF.
 //!
-//! A GIF is written in two passes. The first renders a sample of frames,
-//! small, to choose one palette that suits the whole animation (see
-//! [`palette`]). The second renders every frame at full size, maps it onto
-//! the palette (see [`dither`]) and stores only what changed:
+//! A GIF is written in two passes. The first renders every frame, small,
+//! and counts their colours to choose one palette that suits the whole
+//! animation (see [`palette`]); a colour that shows for a single frame is
+//! counted like any other. The second renders every frame at full size,
+//! maps it onto the palette (see [`dither`]) and stores only what changed:
 //!
 //! - a frame that looks exactly like the one before is not stored; the
 //!   frame before is shown for longer instead;
@@ -40,31 +41,42 @@ use dither::Indexer;
 use palette::{ColorCounts, Palette};
 
 /// How the palette is chosen at each quality.
+///
+/// Every frame is counted, each at the same reduced size. The size shares
+/// `total_pixels` out between the frames, so a short animation is counted
+/// in detail and a long one stays quick, within limits: never so small that
+/// a small shape loses every pixel of its exact colour, and never larger
+/// than needed.
 struct Effort {
     /// Palette entries for colours; one more is kept for transparency.
     colors: usize,
-    /// Frames sampled to choose the palette.
-    samples: usize,
-    /// Pixels in each sampled frame, at most.
-    sample_pixels: f64,
+    /// Pixels counted over the whole animation, when the limits allow.
+    total_pixels: f64,
+    /// Pixels each frame is counted at, at least.
+    min_frame_pixels: f64,
+    /// Pixels each frame is counted at, at most.
+    max_frame_pixels: f64,
 }
 
 fn effort(quality: Quality) -> Effort {
     match quality {
         Quality::Draft => Effort {
             colors: 128,
-            samples: 12,
-            sample_pixels: 160_000.0,
+            total_pixels: 2_000_000.0,
+            min_frame_pixels: 60_000.0,
+            max_frame_pixels: 160_000.0,
         },
         Quality::Standard => Effort {
             colors: 255,
-            samples: 24,
-            sample_pixels: 360_000.0,
+            total_pixels: 9_000_000.0,
+            min_frame_pixels: 160_000.0,
+            max_frame_pixels: 360_000.0,
         },
         Quality::High => Effort {
             colors: 255,
-            samples: 48,
-            sample_pixels: 1_000_000.0,
+            total_pixels: 48_000_000.0,
+            min_frame_pixels: 360_000.0,
+            max_frame_pixels: 1_000_000.0,
         },
     }
 }
@@ -115,18 +127,21 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
         .map_err(|error| ExportError::io("written", path, error))
 }
 
-/// Renders a few of the frames small and chooses the palette from their
-/// colours.
+/// Renders every frame small and chooses the palette from their colours.
+///
+/// The counts of every frame are added up, which does not depend on the
+/// order the frames are drawn in, and the palette is chosen from the total,
+/// so the same animation always gets the same palette.
 fn choose_palette(cx: &mut Context<'_>, all: &[Moment]) -> Result<Palette, ExportError> {
     let plan = cx.plan;
     let effort = effort(plan.quality);
-    let samples = effort.samples.min(all.len());
-    let moments: Vec<Moment> = (0..samples).map(|k| all[k * all.len() / samples]).collect();
     let pixels = f64::from(plan.width) * f64::from(plan.height);
-    let shrink = (effort.sample_pixels / pixels).sqrt().min(1.0);
+    let frame_pixels = (effort.total_pixels / all.len().max(1) as f64)
+        .clamp(effort.min_frame_pixels, effort.max_frame_pixels);
+    let shrink = (frame_pixels / pixels).sqrt().min(1.0);
     let options = plan.render.with_scale(plan.scale * shrink);
     let pass = Pass {
-        moments: &moments,
+        moments: all,
         options,
         frame_bytes: (pixels * shrink * shrink) as usize * 8,
         report_progress: false,

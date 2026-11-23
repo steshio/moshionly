@@ -1,8 +1,8 @@
 //! Choosing a GIF's colours, and finding the nearest one quickly.
 //!
 //! A GIF shows at most 256 colours. One palette is chosen for the whole
-//! animation, from a sample of its frames, so a colour never shifts from
-//! one frame to the next and pixels that do not change keep the same
+//! animation, from the colours of all its frames, so a colour never shifts
+//! from one frame to the next and pixels that do not change keep the same
 //! palette entry.
 //!
 //! The palette is chosen by splitting the colour space: start with one box

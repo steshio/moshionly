@@ -5,9 +5,11 @@ mod common;
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use gif::{ColorOutput, DecodeOptions, DisposalMethod, Repeat};
-use moshionly_export::{Background, Format, FrameRate, Loop, Moment, Quality, Settings};
+use moshionly_core::{NodeId, io};
+use moshionly_export::{Background, ExportJob, Format, FrameRate, Loop, Moment, Quality, Settings};
 use moshionly_render::RenderOptions;
 
 /// A decoded GIF: how it loops, and every frame as it is shown, in full,
@@ -192,4 +194,49 @@ fn a_transparent_gif_lets_the_background_through() {
     }
     // The corner, outside the card, is clear in the first frame.
     assert_eq!(timeline[0][3], 0);
+}
+
+#[test]
+fn a_colour_seen_for_only_a_few_frames_keeps_its_exact_colour() {
+    // A red square shows for three frames (1320 to 1400 ms at 25 fps) in a
+    // five second animation of a blue square on white.
+    let document = Arc::new(
+        io::parse(
+            r##"{"format":"moshionly","version":1,"name":"Flash","nodes":[
+            {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Board",
+             "width":200,"height":100,"duration":5000,"fill":"#FFFFFF"},
+            {"id":"blue","parent":"board","index":"a0","type":"rect","name":"Blue",
+             "x":10,"y":20,"width":60,"height":60,"fill":"#0D99FF"},
+            {"id":"red","parent":"board","index":"a1","type":"rect","name":"Red",
+             "x":120,"y":20,"width":60,"height":60,"fill":"#FF3B30"},
+            {"id":"in","parent":"board","index":"a2","type":"fade_in","target":"red",
+             "start":1300,"end":1301},
+            {"id":"out","parent":"board","index":"a3","type":"fade_out","target":"red",
+             "start":1400,"end":1401}
+        ]}"##,
+        )
+        .unwrap(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flash.gif");
+    let job = ExportJob::new(document, NodeId::from("board"), Format::Gif, &path)
+        .with_settings(Settings::default().with_frame_rate(FrameRate::FPS_25))
+        .with_renderer(common::renderer());
+    let (result, _) = common::run(&job);
+    assert_eq!(result.unwrap().frames, 125);
+
+    let gif = decode(&path);
+    let timeline = gif.timeline(4);
+    assert_eq!(timeline.len(), 125);
+    // The middle of the red square.
+    let at = (50 * gif.width + 150) * 4;
+    for (frame, expected) in [
+        (32, [255, 255, 255]),
+        (33, [255, 59, 48]),
+        (34, [255, 59, 48]),
+        (35, [255, 59, 48]),
+        (36, [255, 255, 255]),
+    ] {
+        assert_eq!(timeline[frame][at..at + 3], expected, "frame {frame}");
+    }
 }

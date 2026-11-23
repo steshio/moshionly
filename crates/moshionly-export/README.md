@@ -72,7 +72,7 @@ its own size, 30 frames per second, on its own background.
 
   | | Draft | Standard | High |
   |---|---|---|---|
-  | GIF | 128 colours, palette from 12 frames | 256 colours, from 24 frames | 256 colours, from 48 larger frames |
+  | GIF | 128 colours, counted from small frames | 256 colours, from larger frames | 256 colours, from larger frames still |
   | MP4 | Fast, visible compression | Compression hard to see | Larger files for a master |
   | WebM | VP9 CRF 40 | CRF 30 | CRF 20, slower |
   | ProRes | 4444, coarser quantiser | 4444 | 4444 XQ |
@@ -106,10 +106,11 @@ failed or cancelled export leaves nothing behind. A PNG sequence is written
 into a new folder, or an empty one; a folder with files in it is never
 written into.
 
-- **GIF**: one palette for the whole animation, chosen from a sample of
-  frames by splitting the colour space where the colours are furthest apart
-  and refining, with exact counts so that large flat colours such as a brand
-  colour stay exact. Dithering is an ordered pattern that mixes the two
+- **GIF**: one palette for the whole animation, chosen from the colours of
+  every frame (each drawn small for counting, so a colour that shows for a
+  single frame still gets in) by splitting the colour space where the
+  colours are furthest apart and refining, with exact counts so that flat
+  colours such as a brand colour stay exact. Dithering is an ordered pattern that mixes the two
   nearest palette colours in the right proportion; unlike error diffusion it
   does not crawl from frame to frame. Each frame stores only the rectangle
   that changed, with unchanged pixels see-through, and frames that look the
