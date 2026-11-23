@@ -4,7 +4,7 @@
 
 Moshionly is a native app written in Rust. It runs on macOS first, with Linux and Windows to follow. Your projects are files on your own disk.
 
-> **Status: early.** The project is being built in the open, crate by crate. The engine, the AI providers and the editor's window are in place; the editor still shows sample content because it is not yet wired to the engine. See [the roadmap](#roadmap) for exactly what works today.
+> **Status: early.** The project is being built in the open, crate by crate. The engine, the renderer, the AI providers, the agent tools with their MCP server, the Figma plugin and the editor's window are in place; the editor still shows sample content because it is not yet wired to the engine. See [the roadmap](#roadmap) for exactly what works today.
 
 ![The Moshionly editor](docs/images/editor-light.png)
 
@@ -50,11 +50,25 @@ To try the engine on a real file, print a frame of the demo project as data:
 cargo run -p moshionly-core --example inspect -- crates/moshionly-core/examples/demo.moshi 800
 ```
 
+Or draw that frame as a picture (the last number is the scale):
+
+```bash
+cargo run --release -p moshionly-render --example render -- crates/moshionly-core/examples/demo.moshi 800 frame.png 1
+```
+
+To let an AI agent such as Claude Code work in a file, serve it over MCP and point the agent at the address it prints:
+
+```bash
+cargo run -p moshionly-agent --example serve -- crates/moshionly-core/examples/demo.moshi
+```
+
 To see which AI providers are ready on your machine:
 
 ```bash
 cargo run -p moshionly-ai --example chat -- --list
 ```
+
+To bring a design over from Figma, load the plugin in Figma's desktop app as [plugins/figma/README.md](plugins/figma/README.md) explains.
 
 Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`) to unlock ProRes and WebM export.
 
@@ -91,12 +105,12 @@ Done:
 - [x] Animation engine: actions, presets, easing, text animation, counters
 - [x] AI providers: Claude Code, Cursor Agent, Codex and Gemini command-line agents, the Anthropic API and any OpenAI-compatible API
 - [x] Editor window: theme, controls, canvas with pan and zoom, timeline, command palette (showing sample content)
+- [x] Skia renderer: shapes, gradients, strokes, masks, shadows, blur, images, text with bundled Inter
+- [x] Agent tools and MCP server, and the endpoint the Figma plugin sends to
+- [x] Figma plugin and re-import (tested against sample designs; not yet run inside Figma)
 
 Next:
 
-- [ ] Skia renderer
-- [ ] Agent tools and MCP server
-- [ ] Figma plugin and re-import
 - [ ] Wire the editor to the engine: real layers, inspector, timeline and playback
 - [ ] Export: PNG, GIF, MP4, Lottie
 - [ ] Chat panel in the editor
