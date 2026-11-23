@@ -196,8 +196,9 @@ mod tests {
 
     #[test]
     fn the_custom_preset_leaves_the_address_to_the_user() {
-        assert_eq!(CUSTOM.base_url, "");
-        assert!(!CUSTOM.needs_api_key);
+        let custom = openai_preset("custom").unwrap();
+        assert_eq!(custom.base_url, "");
+        assert!(!custom.needs_api_key);
     }
 
     #[test]
