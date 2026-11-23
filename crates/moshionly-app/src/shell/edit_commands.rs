@@ -153,29 +153,7 @@ impl Shell {
     /// Moves the selected layers in the stacking order.
     fn reorder(&mut self, step: Reorder) {
         let document = std::sync::Arc::clone(self.editor.document());
-        let mut ids = self.editor.selection.ids().to_vec();
-        // Front first when moving forward, so the layers do not swap with
-        // each other; back first when moving backward.
-        let order = |id: &NodeId| {
-            document
-                .siblings(id)
-                .iter()
-                .position(|sibling| sibling == id)
-                .unwrap_or(0)
-        };
-        ids.sort_by_key(order);
-        if matches!(step, Reorder::Forward | Reorder::ToBack) {
-            ids.reverse();
-        }
-        let mut working = (*document).clone();
-        let mut edits: Vec<Edit> = Vec::new();
-        for id in &ids {
-            if let Ok(more) = build::reorder(&working, id, step)
-                && working.apply(&more).is_ok()
-            {
-                edits.extend(more);
-            }
-        }
+        let edits = reorder_edits(&document, self.editor.selection.ids(), step);
         let summary = match step {
             Reorder::ToFront => "Bring to front",
             Reorder::Forward => "Bring forward",
@@ -184,6 +162,49 @@ impl Shell {
         };
         self.apply_or_toast(summary, &edits);
     }
+}
+
+/// The edits that move `ids` one step or all the way in the stacking
+/// order. The selected layers move as a block: one step forward moves each
+/// in front of the next layer that is not selected, and a block already at
+/// the front stays as it is, so selected layers never swap with each
+/// other. Backward is the same the other way.
+pub(super) fn reorder_edits(document: &Document, ids: &[NodeId], step: Reorder) -> Vec<Edit> {
+    let mut ids = ids.to_vec();
+    // Front first when moving forward, so that each layer moves into a
+    // place the one before it left; back first when moving backward.
+    let order = |id: &NodeId| {
+        document
+            .siblings(id)
+            .iter()
+            .position(|sibling| sibling == id)
+            .unwrap_or(0)
+    };
+    ids.sort_by_key(order);
+    if matches!(step, Reorder::Forward | Reorder::ToBack) {
+        ids.reverse();
+    }
+    let mut working = document.clone();
+    let mut edits: Vec<Edit> = Vec::new();
+    for id in &ids {
+        // One step never passes another selected layer.
+        let siblings = working.siblings(id);
+        let at = siblings.iter().position(|sibling| sibling == id);
+        let next = match (step, at) {
+            (Reorder::Forward, Some(at)) => siblings.get(at + 1),
+            (Reorder::Backward, Some(at)) => at.checked_sub(1).and_then(|at| siblings.get(at)),
+            _ => None,
+        };
+        if next.is_some_and(|next| ids.contains(next)) {
+            continue;
+        }
+        if let Ok(more) = build::reorder(&working, id, step)
+            && working.apply(&more).is_ok()
+        {
+            edits.extend(more);
+        }
+    }
+    edits
 }
 
 /// Whether `id` is a layer that holds layers and can be dissolved.
@@ -240,6 +261,42 @@ mod tests {
     use moshionly_core::io;
 
     use super::*;
+
+    #[test]
+    fn selected_layers_move_in_the_stacking_order_as_a_block() {
+        let document = io::parse(
+            r##"{"format":"moshionly","version":1,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard"},
+            {"id":"a","parent":"ab","index":"a0","type":"rect"},
+            {"id":"b","parent":"ab","index":"a1","type":"rect"},
+            {"id":"c","parent":"ab","index":"a2","type":"rect"},
+            {"id":"d","parent":"ab","index":"a3","type":"rect"}
+            ]}"##,
+        )
+        .unwrap();
+        let order = |selected: &[&str], step: Reorder| -> Vec<String> {
+            let ids: Vec<NodeId> = selected.iter().map(|id| NodeId::from(*id)).collect();
+            let mut moved = document.clone();
+            moved.apply(&reorder_edits(&document, &ids, step)).unwrap();
+            moved
+                .children(&NodeId::from("ab"), Family::Layer)
+                .iter()
+                .map(|id| id.to_string())
+                .collect()
+        };
+        // Already at the front or the back: nothing changes.
+        assert_eq!(order(&["c", "d"], Reorder::Forward), ["a", "b", "c", "d"]);
+        assert_eq!(order(&["a", "b"], Reorder::Backward), ["a", "b", "c", "d"]);
+        // A block moves one step together.
+        assert_eq!(order(&["a", "b"], Reorder::Forward), ["c", "a", "b", "d"]);
+        assert_eq!(order(&["c", "d"], Reorder::Backward), ["a", "c", "d", "b"]);
+        // Apart, each moves one step; the front one stays at the front.
+        assert_eq!(order(&["b", "d"], Reorder::Forward), ["a", "c", "b", "d"]);
+        assert_eq!(order(&["a", "c"], Reorder::Backward), ["a", "c", "b", "d"]);
+        // All the way keeps their order.
+        assert_eq!(order(&["a", "c"], Reorder::ToFront), ["b", "d", "a", "c"]);
+        assert_eq!(order(&["b", "d"], Reorder::ToBack), ["b", "d", "a", "c"]);
+    }
 
     #[test]
     fn layers_are_pasted_beside_the_selection_or_into_a_container() {
