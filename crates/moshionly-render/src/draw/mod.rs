@@ -11,8 +11,8 @@ mod paint;
 pub(crate) mod stroke;
 mod text;
 
+use moshionly_core::Rect;
 use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint, TextContent};
-use moshionly_core::{Color, Rect};
 use skia_safe as sk;
 
 use crate::assets::{self, AssetLoader};
@@ -53,15 +53,20 @@ impl<'a> Painter<'a> {
     }
 
     /// Draws a whole scene: background first, then the nodes back to front,
-    /// everything clipped to the artboard.
+    /// everything clipped to the artboard. A colour the scene is drawn
+    /// `Over` fills everything the canvas can show, so the edge pixels the
+    /// artboard only partly covers, and a region reaching past the
+    /// artboard, are not left see-through.
     pub(crate) fn scene(&mut self, scene: &Scene, background: Background) {
         let canvas = self.canvas;
         let artboard = convert::rect(&Rect::new(0.0, 0.0, scene.width, scene.height));
+        if let Background::Over(color) = background {
+            let mut paint = sk::Paint::default();
+            paint.set_color4f(convert::color(color), None);
+            canvas.draw_paint(&paint);
+        }
         canvas.save();
         canvas.clip_rect(artboard, sk::ClipOp::Intersect, true);
-        if let Background::Over(color) = background {
-            self.fill_artboard(artboard, color);
-        }
         if background != Background::Transparent
             && let Some(fill) = scene
                 .background
@@ -74,12 +79,6 @@ impl<'a> Painter<'a> {
             self.node(node);
         }
         canvas.restore();
-    }
-
-    fn fill_artboard(&self, artboard: sk::Rect, color: Color) {
-        let mut paint = sk::Paint::default();
-        paint.set_color4f(convert::color(color), None);
-        self.canvas.draw_rect(artboard, &paint);
     }
 
     /// Draws one node and everything inside it.

@@ -35,10 +35,7 @@ pub(crate) fn draw(
     opacity: f32,
 ) {
     let (width, height) = frame.size;
-    let outline = Outline {
-        path: geometry::rect(width, height, frame.radii),
-        closed: true,
-    };
+    let outline = Outline::new(geometry::rect(width, height, frame.radii), true);
     canvas.save();
     canvas.clip_path(&outline.path, sk::ClipOp::Intersect, true);
     match picture {

@@ -4,7 +4,9 @@
 //! Skia only strokes centred on a path. A stroke inside the edge is drawn
 //! twice as wide and clipped to the inside of the shape, so only its inner
 //! half is left; a stroke outside is clipped to the outside instead. A path
-//! that is not closed has no inside, so its stroke is always centred.
+//! that is not closed has no inside, so its stroke is always centred. In a
+//! path with closed and open pieces, each piece is stroked as its kind
+//! asks.
 
 use moshionly_core::model::{StrokeCap, StrokeJoin, StrokePosition};
 use moshionly_core::scene::SceneStroke;
@@ -62,6 +64,17 @@ pub(crate) fn side(stroke: &SceneStroke, closed: bool) -> Option<sk::ClipOp> {
 
 /// Strokes `outline` on `canvas`, faded by `opacity`.
 pub(crate) fn draw(canvas: &sk::Canvas, outline: &Outline, stroke: &SceneStroke, opacity: f32) {
+    if outline.split.is_some() && side(stroke, true).is_some() {
+        // The closed pieces are stroked on one side and the open ones
+        // centred. Filling the area both cover draws them in one go, so a
+        // see-through stroke is not doubled where they overlap.
+        if let (Some(area), Some(paint)) =
+            (area(outline, stroke), paint::fill(&stroke.paint, opacity))
+        {
+            canvas.draw_path(&area, &paint);
+        }
+        return;
+    }
     let Some(paint) = paint(stroke, outline.closed, opacity) else {
         return;
     };
@@ -82,6 +95,15 @@ pub(crate) fn draw(canvas: &sk::Canvas, outline: &Outline, stroke: &SceneStroke,
 /// coordinates. Hit testing and bounds use it, so a stroke is found and
 /// measured where it is drawn.
 pub(crate) fn area(outline: &Outline, stroke: &SceneStroke) -> Option<sk::Path> {
+    outline
+        .parts()
+        .filter_map(|part| part_area(part, stroke))
+        .reduce(|all, one| all.op(&one, sk::PathOp::Union).unwrap_or(all))
+}
+
+/// The area a stroke covers along an outline whose pieces are all of one
+/// kind.
+fn part_area(outline: &Outline, stroke: &SceneStroke) -> Option<sk::Path> {
     let paint = paint(stroke, outline.closed, 1.0)?;
     let mut builder = sk::PathBuilder::new();
     if !sk::path_utils::fill_path_with_paint(&outline.path, &paint, &mut builder, None, None) {
@@ -119,10 +141,31 @@ mod tests {
     }
 
     fn square() -> Outline {
-        Outline {
-            path: geometry::rect(40.0, 40.0, &[0.0; 4]),
-            closed: true,
-        }
+        Outline::new(geometry::rect(40.0, 40.0, &[0.0; 4]), true)
+    }
+
+    /// The square of [`square`] as a pen path, with an open line under it.
+    fn square_and_line() -> Outline {
+        let outline = geometry::pen(&PathData {
+            subpaths: vec![
+                Subpath {
+                    anchors: vec![
+                        Anchor::corner(0.0, 0.0),
+                        Anchor::corner(40.0, 0.0),
+                        Anchor::corner(40.0, 40.0),
+                        Anchor::corner(0.0, 40.0),
+                    ],
+                    closed: true,
+                },
+                Subpath {
+                    anchors: vec![Anchor::corner(0.0, 46.0), Anchor::corner(40.0, 46.0)],
+                    closed: false,
+                },
+            ],
+            fill_rule: FillRule::NonZero,
+        });
+        assert!(outline.split.is_some());
+        outline
     }
 
     /// Strokes the outline, offset by 10 so outside strokes fit, and reads
@@ -180,6 +223,24 @@ mod tests {
         let pixmap = image.peek_pixels().unwrap();
         let column: Vec<u8> = (16..24).map(|y| pixmap.get_color((20, y)).a()).collect();
         assert_eq!(column, [0, 0, 255, 255, 255, 255, 0, 0]);
+    }
+
+    #[test]
+    fn closed_pieces_keep_their_side_next_to_open_ones() {
+        // The same rows as for the square alone.
+        let inside = alpha_row(&square_and_line(), &stroke(4.0, StrokePosition::Inside));
+        assert_eq!(&inside[7..16], [0, 0, 0, 255, 255, 255, 255, 0, 0]);
+        assert_eq!(&inside[44..51], [0, 0, 255, 255, 255, 255, 0]);
+        let outside = alpha_row(&square_and_line(), &stroke(4.0, StrokePosition::Outside));
+        assert_eq!(&outside[5..12], [0, 255, 255, 255, 255, 0, 0]);
+        assert_eq!(outside[30], 0, "the middle stays empty");
+
+        // The open line is stroked centred on it, and the area says so.
+        let area = area(&square_and_line(), &stroke(4.0, StrokePosition::Inside)).unwrap();
+        assert!(area.contains((2.0, 20.0)));
+        assert!(!area.contains((-1.0, 20.0)));
+        assert!(area.contains((20.0, 45.0)) && area.contains((20.0, 47.0)));
+        assert!(!area.contains((20.0, 49.0)));
     }
 
     #[test]

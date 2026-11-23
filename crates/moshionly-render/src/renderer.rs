@@ -205,6 +205,32 @@ mod tests {
     }
 
     #[test]
+    fn an_opaque_colour_behind_makes_every_frame_opaque() {
+        let renderer = renderer();
+        let mut red = scene(Some(ScenePaint::solid(Color::rgb(255, 0, 0))));
+        (red.width, red.height) = (100.0, 100.0);
+        let over = RenderOptions::new().with_background(Background::Over(Color::WHITE));
+
+        // 33.3 pixels: the last row and column are only partly artboard.
+        let frame = renderer.render(&red, &over.with_scale(0.333)).unwrap();
+        assert_eq!((frame.width(), frame.height()), (34, 34));
+        assert!(frame.is_opaque());
+        let [r, g, b, a] = frame.premultiplied_pixel(33, 0).unwrap();
+        assert_eq!(a, 255);
+        assert!(r == 255 && g == b && g > 128, "red over white: {r} {g} {b}");
+
+        // A region reaching past the artboard is opaque too.
+        let region = over.with_region(Rect::new(50.0, 50.0, 100.0, 100.0));
+        let frame = renderer.render(&red, &region).unwrap();
+        assert!(frame.is_opaque());
+        assert_eq!(
+            frame.premultiplied_pixel(99, 99),
+            Some([255, 255, 255, 255])
+        );
+        assert_eq!(frame.premultiplied_pixel(0, 0), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
     fn scale_and_region_choose_the_pixels() {
         let renderer = renderer();
         // Black on the left edge, white on the right edge.

@@ -217,12 +217,12 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
 }
 
-/// Skia's text style for a scene text style.
-fn skia_style(style: &TextStyle) -> (sk::textlayout::TextStyle, StrutStyle) {
+/// Skia's text style for a scene text style, in `family`.
+fn skia_style(style: &TextStyle, family: &str) -> (sk::textlayout::TextStyle, StrutStyle) {
     let size =
         finite_or(style.font_size, FONT_SIZE_RANGE.0).clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1);
     let line_height = finite_or(style.line_height, size * 1.2).max(0.0);
-    let families = families(&style.font.family);
+    let families = families(family);
     let font_style = sk::FontStyle::new(
         sk::font_style::Weight::from(i32::from(style.font.weight.clamp(1, 1000))),
         sk::font_style::Width::NORMAL,
@@ -293,7 +293,8 @@ fn lay_out(
     style: &TextStyle,
     wrap_width: Option<f64>,
 ) -> TextBlock {
-    let (text_style, strut) = skia_style(style);
+    // Names are matched ignoring case, as `has_family` says.
+    let (text_style, strut) = skia_style(style, state.registered_name(&style.font.family));
     let mut paragraph_style = ParagraphStyle::new();
     paragraph_style.set_text_style(&text_style);
     paragraph_style.set_strut_style(strut);
@@ -890,6 +891,42 @@ mod tests {
             );
             assert_eq!(block.clusters.len(), sample.graphemes(true).count());
         }
+    }
+
+    #[test]
+    fn registered_families_are_found_whatever_their_case() {
+        // Inter Medium under another family name, so that falling back to
+        // Inter Regular shows.
+        let mut font = include_bytes!("../assets/fonts/Inter-Medium.ttf").to_vec();
+        let (from, to) = ("Inter".encode_utf16(), "Toast".encode_utf16());
+        let (from, to): (Vec<u8>, Vec<u8>) = (
+            from.flat_map(u16::to_be_bytes).collect(),
+            to.flat_map(u16::to_be_bytes).collect(),
+        );
+        let mut at = 0;
+        while let Some(found) = font[at..].windows(from.len()).position(|w| w == from) {
+            font[at + found..at + found + to.len()].copy_from_slice(&to);
+            at += found + to.len();
+        }
+        let library = FontLibrary::bundled();
+        assert_eq!(library.add_font_bytes(font).unwrap()[0].family, "Toast");
+
+        let width = |family: &str| {
+            let mut style = style(30.0, 36.0, 0.0, TextAlign::Left);
+            style.font.family = family.into();
+            library
+                .measure(&TextRequest {
+                    text: "Hello world",
+                    style: &style,
+                    wrap_width: None,
+                })
+                .width
+        };
+        let toast = width("Toast");
+        assert_ne!(toast, width("Inter"), "medium is wider than regular");
+        assert_eq!(width("toast"), toast);
+        assert_eq!(width("TOAST"), toast);
+        assert!(library.has_family("toast"));
     }
 
     #[test]

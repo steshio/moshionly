@@ -5,13 +5,16 @@
 //! [`moshionly_core::io::resolve_asset`] says which. The
 //! [`AssetLoader`] reads and decodes the image once and keeps the decoded
 //! pixels, up to a memory budget, so frames after the first cost nothing.
-//! A file that changes on disk is read again.
+//! A file that changes on disk is read again. A kept image is found by a
+//! short sample of its source, so a `data:` URI megabytes long is not
+//! hashed whole on every frame.
 //!
 //! Decoding uses the `image` crate, which is the same code on every
 //! platform. Photos are turned upright by their orientation tag.
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
@@ -26,6 +29,14 @@ pub const DEFAULT_BUDGET: usize = 256 << 20;
 
 /// The longest side of an image that is decoded.
 const MAX_SIDE: u32 = 16_384;
+
+/// The most pixels an image that is decoded may have: as many as the
+/// largest frame, 512 MB once decoded. A small file can claim far more,
+/// so the size is checked before any pixel is decoded.
+const MAX_PIXELS: u64 = frame::MAX_FRAME_PIXELS;
+
+/// The largest image file that is read, in bytes: 256 MB.
+const MAX_FILE_BYTES: u64 = 256 << 20;
 
 /// Finds, decodes and keeps the images of image layers.
 ///
@@ -59,16 +70,45 @@ impl Default for AssetLoader {
 /// A decoded image and what it was decoded from.
 #[derive(Clone)]
 struct Entry {
+    /// The source the image was decoded from.
+    source: String,
     image: sk::Image,
     /// For files, when the file was last changed, to notice edits.
     modified: Option<SystemTime>,
+    /// The memory the image and its source take.
     bytes: usize,
     used: u64,
 }
 
+/// What a kept image is found by: the length of its source and a hash of a
+/// sample of it. See [`key`].
+type Key = (usize, u64);
+
+/// The key of `source`. A `data:` URI can be megabytes long, and hashing
+/// all of it would cost more on every frame than drawing the image, so
+/// only its start, its end and a few short runs between are hashed. The
+/// source kept with the image is compared whole to confirm a match.
+fn key(source: &str) -> Key {
+    const RUN: usize = 64;
+    const RUNS: usize = 64;
+    let bytes = source.as_bytes();
+    let mut hasher = DefaultHasher::new();
+    if bytes.len() <= RUN * (RUNS + 2) {
+        bytes.hash(&mut hasher);
+    } else {
+        let step = (bytes.len() - RUN) / (RUNS + 1);
+        for run in 0..=RUNS + 1 {
+            let start = (run * step).min(bytes.len() - RUN);
+            bytes[start..start + RUN].hash(&mut hasher);
+        }
+        bytes[bytes.len() - RUN..].hash(&mut hasher);
+    }
+    (bytes.len(), hasher.finish())
+}
+
 struct Store {
     project_file: Option<PathBuf>,
-    images: HashMap<String, Entry>,
+    images: HashMap<Key, Entry>,
     bytes: usize,
     budget: usize,
     clock: u64,
@@ -148,8 +188,7 @@ impl AssetLoader {
                 if let Some(image) = self.store().kept(source, Some(modified)) {
                     return Ok(image);
                 }
-                let bytes = std::fs::read(&path).map_err(|error| describe_io(&path, &error))?;
-                (bytes, Some(modified))
+                (read_file(&path, MAX_FILE_BYTES)?, Some(modified))
             }
             Asset::Data { bytes, .. } => (bytes, None),
         };
@@ -171,41 +210,44 @@ impl Store {
     fn kept(&mut self, source: &str, modified: Option<SystemTime>) -> Option<sk::Image> {
         self.clock += 1;
         let clock = self.clock;
-        let entry = self.images.get_mut(source)?;
-        if entry.modified != modified {
+        let entry = self.images.get_mut(&key(source))?;
+        if entry.modified != modified || entry.source != source {
             return None;
         }
         entry.used = clock;
         Some(entry.image.clone())
     }
 
-    /// Keeps a decoded image, making room for it.
+    /// Keeps a decoded image, making room for it. Another source with the
+    /// same key gives way.
     fn keep(&mut self, source: &str, image: sk::Image, modified: Option<SystemTime>) {
         self.clock += 1;
-        let bytes = image_bytes(&image);
+        let bytes = image_bytes(&image) + source.len();
         let entry = Entry {
+            source: source.to_owned(),
             image,
             modified,
             bytes,
             used: self.clock,
         };
-        if let Some(old) = self.images.insert(source.to_owned(), entry) {
+        let key = key(source);
+        if let Some(old) = self.images.insert(key, entry) {
             self.bytes -= old.bytes;
         }
         self.bytes += bytes;
-        self.trim(Some(source));
+        self.trim(Some(key));
     }
 
     /// Forgets the least recently used images until the rest fit the
     /// budget, keeping `keep`.
-    fn trim(&mut self, keep: Option<&str>) {
+    fn trim(&mut self, keep: Option<Key>) {
         while self.bytes > self.budget {
             let oldest = self
                 .images
                 .iter()
-                .filter(|(source, _)| Some(source.as_str()) != keep)
+                .filter(|(key, _)| Some(**key) != keep)
                 .min_by_key(|(_, entry)| entry.used)
-                .map(|(source, _)| source.clone());
+                .map(|(key, _)| *key);
             let Some(oldest) = oldest else {
                 break;
             };
@@ -216,11 +258,46 @@ impl Store {
     }
 }
 
-/// When a file was last changed.
+/// When a file was last changed. Anything but a plain file, such as a
+/// folder, a device or a pipe, is refused here, before it is opened:
+/// reading `/dev/zero` never ends, and opening a pipe can wait forever.
 fn modified(path: &Path) -> Result<SystemTime, String> {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
+    let metadata = std::fs::metadata(path).map_err(|error| describe_io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not an image file", path.display()));
+    }
+    metadata
+        .modified()
         .map_err(|error| describe_io(path, &error))
+}
+
+/// The bytes of the file at `path`, refused when it is not a plain file or
+/// holds more than `limit` bytes. The limit holds while reading too, in
+/// case the file changes after it was looked at.
+fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let too_large = || {
+        format!(
+            "{} is larger than an image file may be ({} MB)",
+            path.display(),
+            limit >> 20
+        )
+    };
+    let file = std::fs::File::open(path).map_err(|error| describe_io(path, &error))?;
+    let metadata = file.metadata().map_err(|error| describe_io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not an image file", path.display()));
+    }
+    if metadata.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| describe_io(path, &error))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 fn describe_io(path: &Path, error: &std::io::Error) -> String {
@@ -252,10 +329,18 @@ fn decode(bytes: &[u8]) -> Result<sk::Image, String> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(MAX_PIXELS * frame::BYTES_PER_PIXEL as u64);
     reader.limits(limits);
     let mut decoder = reader
         .into_decoder()
         .map_err(|error| format!("the image cannot be decoded: {error}"))?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!(
+            "the image is {width} by {height} pixels, more than the {} million an image may have",
+            MAX_PIXELS / 1_000_000
+        ));
+    }
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
@@ -272,9 +357,10 @@ fn decode(bytes: &[u8]) -> Result<sk::Image, String> {
         sk::AlphaType::Premul,
         None,
     );
+    // Skia takes the pixels over, so they are never held twice.
     let image = sk::images::raster_from_data(
         &info,
-        sk::Data::new_copy(&pixels),
+        sk::Data::new_with_owner(pixels),
         width as usize * frame::BYTES_PER_PIXEL,
     )
     .ok_or("the image is too large to draw")?;
@@ -355,13 +441,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_plain_files_of_a_sensible_size_are_read() {
+        let folder = folder("plain");
+        let loader = AssetLoader::default();
+        let error = loader.natural_size(folder.to_str().unwrap()).unwrap_err();
+        assert!(error.ends_with("is not an image file"), "{error}");
+        // A device that never ends is refused before it is opened.
+        #[cfg(unix)]
+        {
+            let error = loader.natural_size("/dev/zero").unwrap_err();
+            assert!(error.ends_with("is not an image file"), "{error}");
+        }
+
+        let path = folder.join("big.png");
+        std::fs::write(&path, [0u8; 20]).unwrap();
+        assert_eq!(read_file(&path, 20).unwrap().len(), 20);
+        let error = read_file(&path, 19).unwrap_err();
+        assert!(
+            error.contains("larger than an image file may be"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// The header of an uncompressed BMP file of `width` by `height`
+    /// pixels, with none of its pixels.
+    fn bmp_header(width: i32, height: i32) -> Vec<u8> {
+        let mut bytes = b"BM".to_vec();
+        bytes.extend(54u32.to_le_bytes()); // file size
+        bytes.extend([0; 4]);
+        bytes.extend(54u32.to_le_bytes()); // where the pixels start
+        bytes.extend(40u32.to_le_bytes()); // size of this header
+        bytes.extend(width.to_le_bytes());
+        bytes.extend(height.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes()); // planes
+        bytes.extend(24u16.to_le_bytes()); // bits per pixel
+        bytes.extend([0; 24]);
+        bytes
+    }
+
+    #[test]
+    fn an_image_with_too_many_pixels_is_refused_before_decoding() {
+        let loader = AssetLoader::default();
+        // 54 bytes that claim 144 million pixels.
+        let error = loader
+            .natural_size(&data_uri("image/bmp", &bmp_header(12_000, 12_000)))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "the image is 12000 by 12000 pixels, more than the 134 million an image may have"
+        );
+        // A header of a sensible size gets as far as its missing pixels.
+        let error = loader
+            .natural_size(&data_uri("image/bmp", &bmp_header(4, 4)))
+            .unwrap_err();
+        assert!(error.starts_with("the image cannot be decoded"), "{error}");
+    }
+
+    #[test]
     fn images_are_kept_within_the_budget() {
         let loader = AssetLoader::default();
-        // 10 by 10 is 400 bytes, 533 with the smaller copies.
+        // 10 by 10 is 400 bytes, 533 with the smaller copies, and the
+        // source is kept too.
         let a = data_uri("image/png", &png(10, 10, |_, _| [1, 2, 3, 255]));
         let b = data_uri("image/png", &png(10, 10, |_, _| [4, 5, 6, 255]));
         let first = loader.load(&a).unwrap();
-        assert_eq!(loader.memory_used(), 533);
+        assert_eq!(loader.memory_used(), 533 + a.len());
         assert_eq!(
             loader.load(&a).unwrap().unique_id(),
             first.unique_id(),
@@ -369,10 +514,31 @@ pub(crate) mod tests {
         );
         let loader = loader.with_budget(600);
         loader.load(&b).unwrap();
-        assert_eq!(loader.memory_used(), 533, "the older image made room");
+        assert_eq!(
+            loader.memory_used(),
+            533 + b.len(),
+            "the older image made room"
+        );
         assert_ne!(loader.load(&a).unwrap().unique_id(), first.unique_id());
         loader.clear();
         assert_eq!(loader.memory_used(), 0);
+    }
+
+    #[test]
+    fn long_sources_that_differ_only_between_their_samples_are_told_apart() {
+        let loader = AssetLoader::default();
+        // The same length, start and end; the images inside differ.
+        let source = |width, height| {
+            let uri = data_uri("image/png", &png(width, height, |_, _| [9, 9, 9, 255]));
+            format!("{}{uri}{}", " ".repeat(20_000), " ".repeat(20_000))
+        };
+        let (wide, tall) = (source(4, 2), source(2, 4));
+        assert_eq!(wide.len(), tall.len());
+        assert_eq!(key(&wide), key(&tall), "the samples miss the middle");
+        assert_eq!(loader.natural_size(&wide), Ok((4, 2)));
+        assert_eq!(loader.natural_size(&tall), Ok((2, 4)));
+        assert_eq!(loader.natural_size(&wide), Ok((4, 2)));
+        assert_ne!(key(&wide), key(&wide.replacen(' ', "x", 1)));
     }
 
     #[test]

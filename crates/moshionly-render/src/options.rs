@@ -15,7 +15,8 @@ pub struct RenderOptions {
     pub background: Background,
     /// The part of the artboard to render, in artboard coordinates. The
     /// frame then holds only that part. `None` renders the whole artboard.
-    /// Whatever lies outside the artboard stays transparent.
+    /// Whatever lies outside the artboard stays transparent, or shows the
+    /// colour of a [`Background::Over`].
     pub region: Option<Rect>,
 }
 
@@ -29,8 +30,9 @@ pub enum Background {
     /// Nothing, even when the artboard has a fill: for stickers, overlays
     /// and video with an alpha channel.
     Transparent,
-    /// The artboard's fill over this colour. With an opaque colour the whole
-    /// frame is opaque, which is what video and JPEG need.
+    /// The artboard's fill over this colour, which fills the whole frame.
+    /// With an opaque colour the whole frame is opaque, which is what video
+    /// and JPEG need.
     Over(Color),
 }
 
