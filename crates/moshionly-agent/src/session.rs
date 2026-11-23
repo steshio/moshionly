@@ -222,6 +222,13 @@ impl Session {
         self.saved_revision != Some(self.revision)
     }
 
+    /// Says that the document as it is now has nothing worth saving, as if
+    /// it had just been saved: for a new document nobody has touched yet,
+    /// which has no file. Any later change makes it unsaved again.
+    pub fn mark_clean(&mut self) {
+        self.saved_revision = Some(self.revision);
+    }
+
     /// Applies a batch of edits as one undo step made by `origin`.
     ///
     /// The batch is applied completely or not at all. Returns whether it
@@ -985,6 +992,21 @@ mod tests {
         assert_eq!(reopened.document().name, "Renamed");
         assert!(!reopened.has_unsaved_changes());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_document_can_start_clean() {
+        let mut session = session();
+        assert!(session.has_unsaved_changes());
+        session.mark_clean();
+        assert!(!session.has_unsaved_changes());
+        assert_eq!(session.path(), None);
+        session.rename("Renamed");
+        assert!(session.has_unsaved_changes(), "a change counts again");
+        session.replace(Document::new("New"), None);
+        assert!(session.has_unsaved_changes());
+        session.mark_clean();
+        assert!(!session.has_unsaved_changes());
     }
 
     #[test]
