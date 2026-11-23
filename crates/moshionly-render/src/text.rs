@@ -67,9 +67,36 @@ pub(crate) struct GlyphRun {
     pub positions: Vec<sk::Point>,
     /// Byte offset in the text where each glyph's cluster starts.
     pub starts: Vec<usize>,
+    /// The ink of each glyph, around its origin.
+    pub bounds: Vec<sk::Rect>,
 }
 
 impl TextBlock {
+    /// The box around the ink of the glyphs whose letters start in
+    /// `range`, or of all glyphs. `None` when nothing is drawn.
+    pub(crate) fn ink(&self, range: Option<&std::ops::Range<usize>>) -> Option<Rect> {
+        let mut ink: Option<sk::Rect> = None;
+        for run in &self.runs {
+            for ((start, bounds), position) in
+                run.starts.iter().zip(&run.bounds).zip(&run.positions)
+            {
+                if range.is_some_and(|range| !range.contains(start)) || bounds.is_empty() {
+                    continue;
+                }
+                let glyph = bounds.with_offset(*position);
+                ink = Some(ink.map_or(glyph, |ink| sk::Rect::join2(ink, glyph)));
+            }
+        }
+        ink.map(|ink| {
+            Rect::new(
+                f64::from(ink.left),
+                f64::from(ink.top),
+                f64::from(ink.width()),
+                f64::from(ink.height()),
+            )
+        })
+    }
+
     /// The answer core's measurer gives.
     pub(crate) fn to_layout(&self) -> TextLayout {
         TextLayout {
@@ -412,6 +439,8 @@ impl<'a> Builder<'a> {
             font.set_baseline_snap(false);
             font.set_edging(sk::font::Edging::AntiAlias);
             let count = info.count();
+            let mut bounds = vec![sk::Rect::default(); count];
+            font.get_bounds(info.glyphs(), &mut bounds, None);
             runs.push((
                 line,
                 GlyphRun {
@@ -428,6 +457,7 @@ impl<'a> Builder<'a> {
                         .iter()
                         .map(|start| *start as usize)
                         .collect(),
+                    bounds,
                 },
             ));
         });

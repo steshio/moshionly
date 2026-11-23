@@ -69,6 +69,26 @@ pub(crate) fn shadow(shadow: &Shadow) -> Option<sk::ImageFilter> {
     )
 }
 
+/// How far `node`'s shadow and blur reach past what it draws, as a margin
+/// on each side: left, top, right, bottom. Three standard deviations hold
+/// all of a Gaussian that can be seen in 8 bits.
+pub(crate) fn reach(node: &SceneNode) -> [f64; 4] {
+    let spread = |blur: f64| sigma(blur).map_or(0.0, |sigma| 3.0 * f64::from(sigma));
+    let mut margin = [0.0; 4];
+    if let Some(shadow) = node.shadow.as_ref().filter(|shadow| shadow.color.a > 0) {
+        let offset = |value: f64| if value.is_finite() { value } else { 0.0 };
+        let (x, y, blur) = (offset(shadow.x), offset(shadow.y), spread(shadow.blur));
+        margin = [
+            (blur - x).max(0.0),
+            (blur - y).max(0.0),
+            (blur + x).max(0.0),
+            (blur + y).max(0.0),
+        ];
+    }
+    let blur = spread(node.blur);
+    margin.map(|side| side + blur)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +159,20 @@ mod tests {
             ..Shadow::default()
         };
         assert!(filter(&node(0.0, Some(invisible))).is_none());
+    }
+
+    #[test]
+    fn the_reach_covers_the_offset_and_the_blur() {
+        let shadow = Shadow {
+            color: Color::BLACK,
+            x: 5.0,
+            y: -2.0,
+            blur: 4.0,
+        };
+        // Sigma 2, so the shadow spreads 6 around its offset copy.
+        assert_eq!(reach(&node(0.0, Some(shadow))), [1.0, 8.0, 11.0, 4.0]);
+        // A blur of 2 (sigma 1) adds 3 on every side.
+        assert_eq!(reach(&node(2.0, Some(shadow))), [4.0, 11.0, 14.0, 7.0]);
+        assert_eq!(reach(&node(0.0, None)), [0.0; 4]);
     }
 }

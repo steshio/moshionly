@@ -1,6 +1,6 @@
 //! The renderer: a scene and options in, a frame out.
 
-use moshionly_core::Scene;
+use moshionly_core::{NodeId, Point, Scene};
 use skia_safe as sk;
 
 use crate::assets::AssetLoader;
@@ -8,6 +8,7 @@ use crate::draw::Painter;
 use crate::error::{RenderError, RenderWarning};
 use crate::fonts::FontLibrary;
 use crate::frame::{BYTES_PER_PIXEL, Frame};
+use crate::hit::{Geometry, HIT_TOLERANCE, LayerBounds};
 use crate::options::{Background, RenderOptions};
 
 /// Draws scenes.
@@ -80,6 +81,37 @@ impl Renderer {
     /// Returns what was drawn differently from what the scene asked for.
     pub fn render_into(&self, scene: &Scene, canvas: &sk::Canvas) -> Vec<RenderWarning> {
         self.draw(scene, canvas, Background::Artboard)
+    }
+
+    /// The layers under `point`, in artboard coordinates, frontmost first.
+    ///
+    /// A layer is under the point when what it draws is: its fill, its
+    /// stroke (thin strokes count within [`HIT_TOLERANCE`] artboard
+    /// pixels), its image, or for text its box. Transforms, clips and masks
+    /// are respected, and a shape that draws nothing is found by its
+    /// outline so it can still be selected. Groups are not listed for
+    /// themselves, only through a background or outline of their own; find
+    /// the group a layer belongs to in the document. Each id appears once.
+    pub fn hit_test(&self, scene: &Scene, point: Point) -> Vec<NodeId> {
+        self.hit_test_within(scene, point, HIT_TOLERANCE)
+    }
+
+    /// [`hit_test`](Self::hit_test) with thin strokes counting within
+    /// `tolerance` artboard pixels. An editor zoomed to 4x might pass a
+    /// quarter of the default to keep the reach the same on screen.
+    pub fn hit_test_within(&self, scene: &Scene, point: Point, tolerance: f64) -> Vec<NodeId> {
+        self.geometry().hit_test(scene, point, tolerance)
+    }
+
+    /// Where the layer `id` is in `scene`: its box's corners and the box
+    /// around what it draws, in artboard coordinates. `None` when the
+    /// layer is not in the scene (hidden at that moment, for example).
+    pub fn bounds_of(&self, scene: &Scene, id: &NodeId) -> Option<LayerBounds> {
+        self.geometry().bounds_of(scene, id)
+    }
+
+    fn geometry(&self) -> Geometry<'_> {
+        Geometry { fonts: &self.fonts }
     }
 
     fn draw(

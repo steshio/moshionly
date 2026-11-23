@@ -15,6 +15,7 @@ mod draw;
 pub mod error;
 pub mod fonts;
 pub mod frame;
+pub mod hit;
 pub mod options;
 pub mod renderer;
 mod text;
@@ -23,6 +24,7 @@ pub use assets::AssetLoader;
 pub use error::{RenderError, RenderWarning};
 pub use fonts::{FontError, FontFace, FontFamily, FontLibrary};
 pub use frame::Frame;
+pub use hit::{HIT_TOLERANCE, LayerBounds};
 pub use options::{Background, RenderOptions};
 pub use renderer::Renderer;
 

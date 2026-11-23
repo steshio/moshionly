@@ -78,6 +78,28 @@ pub(crate) fn draw(canvas: &sk::Canvas, outline: &Outline, stroke: &SceneStroke,
     }
 }
 
+/// The area a stroke covers, as a filled path in the outline's
+/// coordinates. Hit testing and bounds use it, so a stroke is found and
+/// measured where it is drawn.
+pub(crate) fn area(outline: &Outline, stroke: &SceneStroke) -> Option<sk::Path> {
+    let paint = paint(stroke, outline.closed, 1.0)?;
+    let mut builder = sk::PathBuilder::new();
+    if !sk::path_utils::fill_path_with_paint(&outline.path, &paint, &mut builder, None, None) {
+        return None;
+    }
+    let widened = builder.detach();
+    Some(match side(stroke, outline.closed) {
+        None => widened,
+        Some(op) => {
+            let keep = match op {
+                sk::ClipOp::Intersect => sk::PathOp::Intersect,
+                _ => sk::PathOp::Difference,
+            };
+            widened.op(&outline.path, keep).unwrap_or(widened)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +180,42 @@ mod tests {
         let pixmap = image.peek_pixels().unwrap();
         let column: Vec<u8> = (16..24).map(|y| pixmap.get_color((20, y)).a()).collect();
         assert_eq!(column, [0, 0, 255, 255, 255, 255, 0, 0]);
+    }
+
+    #[test]
+    fn caps_and_joins_change_the_ends_and_corners() {
+        let line = open_line(10.0, 50.0);
+        let reach = |cap| {
+            let mut stroke = stroke(10.0, StrokePosition::Center);
+            stroke.cap = cap;
+            area(&line, &stroke).unwrap().compute_tight_bounds().left
+        };
+        assert_eq!(reach(StrokeCap::Butt), 10.0);
+        assert_eq!(reach(StrokeCap::Square), 5.0);
+        assert!((reach(StrokeCap::Round) - 5.0).abs() < 0.1);
+
+        // A mitred corner reaches the corner of the widened square; a
+        // bevelled one cuts it off.
+        let corner = |join| {
+            let mut stroke = stroke(10.0, StrokePosition::Center);
+            stroke.join = join;
+            area(&square(), &stroke).unwrap().contains((-4.5, -4.5))
+        };
+        assert!(corner(StrokeJoin::Miter));
+        assert!(!corner(StrokeJoin::Bevel));
+        assert!(!corner(StrokeJoin::Round));
+    }
+
+    #[test]
+    fn stroke_areas_follow_the_position() {
+        let inside = area(&square(), &stroke(4.0, StrokePosition::Inside)).unwrap();
+        assert!(inside.contains((2.0, 20.0)));
+        assert!(!inside.contains((-1.0, 20.0)));
+        assert!(!inside.contains((6.0, 20.0)));
+        let outside = area(&square(), &stroke(4.0, StrokePosition::Outside)).unwrap();
+        assert!(outside.contains((-2.0, 20.0)));
+        assert!(!outside.contains((1.0, 20.0)));
+        assert!(area(&square(), &stroke(0.0, StrokePosition::Center)).is_none());
+        assert!(area(&square(), &stroke(f64::NAN, StrokePosition::Center)).is_none());
     }
 }

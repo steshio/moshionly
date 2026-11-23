@@ -4,11 +4,11 @@
 //! coordinate space: the painter saves the canvas, applies the node's
 //! transform, draws, and restores.
 
-mod effects;
-mod geometry;
+pub(crate) mod effects;
+pub(crate) mod geometry;
 mod image;
 mod paint;
-mod stroke;
+pub(crate) mod stroke;
 mod text;
 
 use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint, TextContent};
