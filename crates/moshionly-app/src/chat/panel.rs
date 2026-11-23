@@ -65,6 +65,8 @@ pub struct PanelView<'a> {
     pub dialog_open: bool,
 }
 
+/// The side of an attached picture's thumbnail in the composer.
+const ATTACHMENT_SIDE: f32 = 48.0;
 /// The fewest lines the composer shows.
 const COMPOSER_MIN_ROWS: usize = 2;
 /// The most lines the composer grows to before it scrolls.
@@ -82,7 +84,7 @@ pub fn panel(
     divider(ui);
 
     let rest = ui.available_rect_before_wrap();
-    let composer_height = composer_height(ui, view.draft, &view);
+    let composer_height = composer_height(ui, rest.width(), view.draft, &view);
     let composer_top = (rest.bottom() - composer_height).max(rest.top());
     let body = Rect::from_min_max(rest.min, pos2(rest.right(), composer_top));
     let composer = Rect::from_min_max(pos2(rest.left(), composer_top), rest.max);
@@ -457,8 +459,9 @@ pub fn suggestions(has_selection: bool) -> [&'static str; 3] {
     }
 }
 
-/// How tall the composer is for `draft`: two lines at least, eight at most.
-fn composer_height(ui: &Ui, draft: &str, view: &PanelView<'_>) -> f32 {
+/// How tall the composer is in a panel `width` wide for `draft`: two lines
+/// at least, eight at most, and the attached pictures above them.
+fn composer_height(ui: &Ui, width: f32, draft: &str, view: &PanelView<'_>) -> f32 {
     let theme = Theme::of(ui);
     let line = theme.type_scale.body * 1.4;
     // A trailing line break counts: the caret sits on the new, empty line.
@@ -469,7 +472,9 @@ fn composer_height(ui: &Ui, draft: &str, view: &PanelView<'_>) -> f32 {
     let mut height =
         theme.space.lg * 2.0 + theme.space.md * 2.0 + rows * line + 24.0 + theme.space.xs;
     if !view.attachments.is_empty() {
-        height += 48.0 + theme.space.sm;
+        let strip_width = width - theme.space.lg * 2.0 - theme.space.md * 2.0;
+        height +=
+            strip_height(view.attachments.len(), strip_width, theme.space.sm) + theme.space.sm;
     }
     if view.notice.is_some() {
         height += theme.size.control;
@@ -531,9 +536,10 @@ fn composer_box(
     let mut inner = frame.shrink(theme.space.md);
 
     if !view.attachments.is_empty() {
-        let strip = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 48.0));
+        let height = strip_height(view.attachments.len(), inner.width(), theme.space.sm);
+        let strip = Rect::from_min_size(inner.min, Vec2::new(inner.width(), height));
         attachment_strip(ui, strip, view.attachments, busy, images, actions);
-        inner.min.y += 48.0 + theme.space.sm;
+        inner.min.y += height + theme.space.sm;
     }
 
     let buttons = Rect::from_min_max(pos2(inner.left(), inner.bottom() - 24.0), inner.max);
@@ -698,11 +704,26 @@ fn notice(ui: &mut Ui, rect: Rect, text: &str) {
     let text_rect = Rect::from_min_max(pos2(rect.left() + 20.0, rect.top()), rect.max);
     let galley = paint::elided(ui, text, theme.small(), c.text_secondary, text_rect.width());
     let response = ui.interact(rect, ui.make_persistent_id("chat-notice"), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
     paint::galley_in(ui.painter(), text_rect, Align2::LEFT_CENTER, galley);
     tooltip(response, text, None);
 }
 
-/// The pictures waiting to be sent, each with a remove button.
+/// How many thumbnails fit side by side in a strip `width` wide, with
+/// `gap` between them: at least one.
+fn strip_columns(width: f32, gap: f32) -> usize {
+    (((width + gap) / (ATTACHMENT_SIDE + gap)).floor() as usize).max(1)
+}
+
+/// How tall the strip of `count` attached pictures is when it is `width`
+/// wide: as many rows as they need, so every one is in sight.
+fn strip_height(count: usize, width: f32, gap: f32) -> f32 {
+    let rows = count.div_ceil(strip_columns(width, gap));
+    rows as f32 * (ATTACHMENT_SIDE + gap) - if rows > 0 { gap } else { 0.0 }
+}
+
+/// The pictures waiting to be sent, each with a remove button, in rows
+/// that fill `rect`.
 fn attachment_strip(
     ui: &mut Ui,
     rect: Rect,
@@ -713,15 +734,14 @@ fn attachment_strip(
 ) {
     let theme = Theme::of(ui);
     let c = &theme.color;
-    let side = rect.height();
+    let (side, gap) = (ATTACHMENT_SIDE, theme.space.sm);
+    let columns = strip_columns(rect.width(), gap);
     for (index, picture) in attachments.iter().enumerate() {
+        let (row, column) = (index / columns, index % columns);
         let cell = Rect::from_min_size(
-            rect.min + Vec2::new(index as f32 * (side + theme.space.sm), 0.0),
+            rect.min + Vec2::new(column as f32, row as f32) * (side + gap),
             Vec2::splat(side),
         );
-        if cell.right() > rect.right() {
-            break;
-        }
         ui.painter().rect_filled(cell, theme.radius.sm, c.well);
         match images.texture(ui.ctx(), picture) {
             Some(texture) => {
@@ -822,6 +842,19 @@ fn stop_button(ui: &mut Ui, stopping: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_pictures_wrap_onto_as_many_rows_as_they_need() {
+        // Four 48 pt pictures with 8 pt gaps fit in 264 pt; a fifth wraps.
+        assert_eq!(strip_columns(264.0, 8.0), 4);
+        assert_eq!(strip_height(0, 264.0, 8.0), 0.0);
+        assert_eq!(strip_height(4, 264.0, 8.0), 48.0);
+        assert_eq!(strip_height(5, 264.0, 8.0), 104.0);
+        assert_eq!(strip_height(8, 264.0, 8.0), 104.0);
+        // Too narrow for even one still shows them, one per row.
+        assert_eq!(strip_columns(20.0, 8.0), 1);
+        assert_eq!(strip_height(2, 20.0, 8.0), 104.0);
+    }
 
     #[test]
     fn suggestions_follow_the_selection() {

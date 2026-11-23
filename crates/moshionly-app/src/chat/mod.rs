@@ -87,7 +87,7 @@ pub use conversation::{
     ToolState, Usage,
 };
 pub use executor::AgentTools;
-pub use images::{AttachError, MAX_ATTACHMENT_BYTES};
+pub use images::{AttachError, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS};
 pub use moshionly_agent::guide::Focus;
 pub use source::{ProviderSource, RegistrySource};
 
@@ -215,8 +215,14 @@ impl Chat {
         self.notice = None;
     }
 
-    /// Attaches a picture to the next message.
+    /// Attaches a picture to the next message. A message already holding
+    /// [`MAX_ATTACHMENTS`] pictures takes no more; a note above the
+    /// composer says so.
     pub fn attach(&mut self, image: ImageData) {
+        if self.attachments.len() >= MAX_ATTACHMENTS {
+            self.notice = Some(too_many_pictures());
+            return;
+        }
         self.attachments.push(image);
     }
 
@@ -349,12 +355,21 @@ impl Chat {
         };
         self.notice = None;
         for path in paths {
+            if self.attachments.len() >= MAX_ATTACHMENTS {
+                self.notice = Some(too_many_pictures());
+                break;
+            }
             match images::read_attachment(&path) {
                 Ok(image) => self.attachments.push(image),
                 Err(error) => self.notice = Some(controller::sentence(&error.to_string())),
             }
         }
     }
+}
+
+/// The note shown when a message cannot take more pictures.
+fn too_many_pictures() -> String {
+    format!("A message can carry up to {MAX_ATTACHMENTS} pictures.")
 }
 
 /// The instructions for the AI: the agent guide and what the person is

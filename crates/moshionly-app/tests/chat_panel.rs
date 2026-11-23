@@ -12,11 +12,11 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::{Harness, kittest::Queryable as _};
 use moshionly_agent::{Host, SessionHandle, Tools};
 use moshionly_ai::{
-    AiSettings, ChatEvent, ErrorKind, KeyStore as _, MemoryKeyStore, ModelInfo, ProviderRegistry,
-    ReadyState, StopReason,
+    AiSettings, ChatEvent, ErrorKind, ImageData, KeyStore as _, MemoryKeyStore, ModelInfo,
+    ProviderRegistry, ReadyState, StopReason,
 };
 use moshionly_app::chat::testing::{ScriptedProvider, ScriptedSource, Step, status, statuses};
-use moshionly_app::chat::{AnswerState, Chat, ChatInputs, Focus, KeyNote};
+use moshionly_app::chat::{AnswerState, Chat, ChatInputs, Focus, KeyNote, MAX_ATTACHMENTS};
 use moshionly_app::theme;
 use moshionly_core::{Document, NodeId, build};
 
@@ -36,6 +36,15 @@ struct State {
 /// The chat over `source`, with keys in `keys`, filling a window wide
 /// enough for the settings dialog.
 fn harness(source: ScriptedSource, keys: Arc<MemoryKeyStore>) -> Harness<'static, State> {
+    harness_sized(source, keys, vec2(900.0, 800.0))
+}
+
+/// The chat over `source`, with keys in `keys`, filling a window of `size`.
+fn harness_sized(
+    source: ScriptedSource,
+    keys: Arc<MemoryKeyStore>,
+    size: egui::Vec2,
+) -> Harness<'static, State> {
     let registry = ProviderRegistry::new(AiSettings::default(), keys);
     let chat = Chat::with_source(registry, Arc::new(source), None);
     let mut document = Document::new("Test");
@@ -50,7 +59,7 @@ fn harness(source: ScriptedSource, keys: Arc<MemoryKeyStore>) -> Harness<'static
         changed: false,
     };
     let mut harness = Harness::builder()
-        .with_size(vec2(900.0, 800.0))
+        .with_size(size)
         .with_context_setup(theme::install)
         .build_ui_state(
             |ui, state: &mut State| {
@@ -358,6 +367,63 @@ fn an_answer_with_nothing_in_it_says_so_and_offers_another_try() {
     let messages = harness.state().chat.controller().conversation().messages();
     assert_eq!(messages.len(), 2, "the message was sent again, not added");
     assert_eq!(messages[0].text(), "Fade the title in");
+}
+
+#[test]
+fn every_attached_picture_can_be_seen_and_removed() {
+    let provider = ScriptedProvider::new("anthropic", vec![Step::text("Nice.")]);
+    // The panel at its usual width, where four pictures fit in a row.
+    let mut harness = harness_sized(
+        ready(&["anthropic"]).with_provider(provider.clone()),
+        Arc::default(),
+        vec2(320.0, 720.0),
+    );
+    for shade in 0..6 {
+        harness.state_mut().chat.attach(ImageData::png(vec![shade]));
+    }
+    harness.run_steps(2);
+    let removes = harness.query_all_by_label("Remove picture").count();
+    assert_eq!(removes, 6, "every picture has its remove button");
+
+    // The last one, on the second row, can be removed.
+    harness
+        .query_all_by_label("Remove picture")
+        .last()
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    assert_eq!(harness.query_all_by_label("Remove picture").count(), 5);
+
+    // A message carries eight at most; the rest are refused with a note.
+    for shade in 10..15 {
+        harness.state_mut().chat.attach(ImageData::png(vec![shade]));
+    }
+    harness.run_steps(2);
+    assert_eq!(
+        harness.query_all_by_label("Remove picture").count(),
+        MAX_ATTACHMENTS
+    );
+    assert!(
+        harness
+            .query_by_label_contains("up to 8 pictures")
+            .is_some(),
+        "the limit is explained"
+    );
+
+    harness.get_by_label("Send").click();
+    settle(&mut harness, |state| {
+        idle(state) && !state.chat.controller().conversation().is_empty()
+    });
+    let images: Vec<Vec<u8>> = provider.requests()[0].messages[0]
+        .images
+        .iter()
+        .map(|image| image.data.clone())
+        .collect();
+    let expected: Vec<Vec<u8>> = [0, 1, 2, 3, 4, 10, 11, 12]
+        .into_iter()
+        .map(|shade| vec![shade])
+        .collect();
+    assert_eq!(images, expected, "the pictures in sight are the ones sent");
 }
 
 #[test]

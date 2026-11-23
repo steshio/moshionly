@@ -15,6 +15,10 @@ const MAX_SIDE: u32 = 1024;
 /// The largest picture file that can be attached, in bytes.
 pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
+/// The most pictures one message can carry. Each one costs the AI time and
+/// tokens, and they all stay in sight above the message box.
+pub const MAX_ATTACHMENTS: usize = 8;
+
 /// Decoded pictures, by their content.
 #[derive(Default)]
 pub struct ImageCache {
