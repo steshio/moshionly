@@ -196,6 +196,13 @@ impl Frame {
         &mut self.pixels
     }
 
+    /// Makes every pixel transparent and forgets the warnings, keeping the
+    /// memory.
+    pub(crate) fn clear(&mut self) {
+        self.pixels.fill(0);
+        self.warnings.clear();
+    }
+
     /// Attaches the warnings gathered while drawing.
     pub(crate) fn set_warnings(&mut self, warnings: Vec<RenderWarning>) {
         self.warnings = warnings;

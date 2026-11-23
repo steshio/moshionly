@@ -48,8 +48,30 @@ impl Renderer {
     /// `options.region` when that is set. See [`RenderOptions::frame_size`].
     pub fn render(&self, scene: &Scene, options: &RenderOptions) -> Result<Frame, RenderError> {
         let (width, height) = options.frame_size(scene)?;
-        let region = options.region_of(scene);
         let mut frame = Frame::new(width, height)?;
+        self.render_to(scene, options, &mut frame)?;
+        Ok(frame)
+    }
+
+    /// Renders a scene into `frame`, reusing its memory when it already
+    /// has the size this render needs. For playback and export, which draw
+    /// frame after frame of the same size, this saves allocating and
+    /// clearing a new buffer each time.
+    ///
+    /// On error the frame is left as it was.
+    pub fn render_to(
+        &self,
+        scene: &Scene,
+        options: &RenderOptions,
+        frame: &mut Frame,
+    ) -> Result<(), RenderError> {
+        let (width, height) = options.frame_size(scene)?;
+        if (frame.width(), frame.height()) == (width, height) {
+            frame.clear();
+        } else {
+            *frame = Frame::new(width, height)?;
+        }
+        let region = options.region_of(scene);
         let info = sk::ImageInfo::new(
             (width as i32, height as i32),
             sk::ColorType::RGBA8888,
@@ -67,7 +89,7 @@ impl Renderer {
             self.draw(scene, canvas, options.background)
         };
         frame.set_warnings(warnings);
-        Ok(frame)
+        Ok(())
     }
 
     /// Draws a scene onto a canvas the caller owns, on the artboard's own
@@ -219,6 +241,37 @@ mod tests {
         assert_eq!(frame.premultiplied_pixel(9, 9).unwrap()[3], 255);
         assert_eq!(frame.premultiplied_pixel(10, 9), Some([0, 0, 0, 0]));
         assert_eq!(frame.premultiplied_pixel(9, 10), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn frames_of_the_same_size_are_reused() {
+        let renderer = renderer();
+        let red = scene(Some(ScenePaint::solid(Color::rgb(255, 0, 0))));
+        let mut frame = renderer.render(&red, &RenderOptions::new()).unwrap();
+        let memory = frame.premultiplied().as_ptr();
+
+        // Drawn again from clear, in the same memory.
+        let mut half = scene(None);
+        half.nodes = vec![square("s", 0.0, 0.0, 10.0, Color::BLACK)];
+        renderer
+            .render_to(&half, &RenderOptions::new(), &mut frame)
+            .unwrap();
+        assert_eq!(frame.premultiplied().as_ptr(), memory);
+        assert_eq!(frame.premultiplied_pixel(5, 5), Some([0, 0, 0, 255]));
+        assert_eq!(frame.premultiplied_pixel(30, 5), Some([0, 0, 0, 0]));
+        assert_eq!(
+            frame,
+            renderer.render(&half, &RenderOptions::new()).unwrap()
+        );
+
+        // Another size gets new memory.
+        renderer
+            .render_to(&half, &RenderOptions::new().with_scale(2.0), &mut frame)
+            .unwrap();
+        assert_eq!((frame.width(), frame.height()), (80, 40));
+        let error = renderer.render_to(&half, &RenderOptions::new().with_scale(0.0), &mut frame);
+        assert!(error.is_err());
+        assert_eq!(frame.width(), 80, "left as it was");
     }
 
     #[test]
