@@ -109,19 +109,33 @@ impl Playback {
     }
 }
 
+/// How near a time must be to a frame, as a fraction of a frame, to count
+/// as on it. The times [`step_frames`] hands out are rounded to a
+/// thousandth of a millisecond, which puts them up to about 3e-5 of a frame
+/// either side of the frame they stand for; this is well above that and
+/// well below anything a person could place by hand.
+const ON_FRAME: f64 = 1e-3;
+
 /// The time `frames` frames (at [`FRAME_RATE`]) after `time`, or before it
 /// for a negative count, within a scene `duration` long. Steps land on
 /// frame boundaries: one step from between two frames goes to the next
 /// frame in that direction.
 pub fn step_frames(time: f64, frames: i32, duration: f64) -> f64 {
     let frame = 1000.0 / FRAME_RATE;
-    // A little give, so a time a hair off a boundary counts as on it.
+    // Work in whole frames. A time on a frame (give or take the rounding
+    // below) counts from that frame; one between two frames counts from
+    // the frame behind it in the direction of the step, so one step
+    // reaches the next frame that way.
     let here = time / frame;
-    let target = if frames >= 0 {
-        (here + 1e-6).floor() + f64::from(frames)
+    let nearest = here.round();
+    let from = if (here - nearest).abs() < ON_FRAME {
+        nearest
+    } else if frames >= 0 {
+        here.floor()
     } else {
-        (here - 1e-6).ceil() + f64::from(frames)
+        here.ceil()
     };
+    let target = from + f64::from(frames);
     // Frame boundaries are fractions of a millisecond; keep them tidy.
     let there = (target * frame * 1000.0).round() / 1000.0;
     there.clamp(0.0, duration.max(0.0))
@@ -230,5 +244,59 @@ mod tests {
         assert_eq!(step_frames(4000.0, 1, 4000.0), 4000.0);
         let back = step_frames(4000.0, -10, 4000.0);
         assert!((back - 230.0 * frame).abs() < 1e-3, "{back}");
+    }
+
+    /// Steps `frames` at a time from `time` until the end of a 4 second
+    /// scene in that direction, as the keys do: each step starts from the
+    /// time the one before handed out. Checks every step lands one step's
+    /// worth of frames further on, and returns how many steps it took.
+    fn step_through(mut time: f64, frames: i32) -> usize {
+        let frame: f64 = 1000.0 / 60.0;
+        let end = if frames > 0 { 4000.0 } else { 0.0 };
+        let mut steps = 0;
+        while time != end {
+            let next = step_frames(time, frames, 4000.0);
+            let expected = ((time / frame).round() + f64::from(frames)) * frame;
+            let expected = expected.clamp(0.0, 4000.0);
+            assert!(
+                (next - expected).abs() < 1e-3,
+                "step {steps} of {frames} from {time} went to {next}, not {expected}"
+            );
+            time = next;
+            steps += 1;
+            assert!(steps <= 300, "stuck at {time}");
+        }
+        steps
+    }
+
+    #[test]
+    fn steps_never_get_stuck_on_frames_that_round_badly() {
+        // 4 seconds at 60 frames a second is 240 frames.
+        assert_eq!(step_through(0.0, 1), 240);
+        assert_eq!(step_through(4000.0, -1), 240);
+        assert_eq!(step_through(0.0, 10), 24);
+        assert_eq!(step_through(4000.0, -10), 24);
+        // The times that once stuck, both ways.
+        assert_eq!(step_frames(33.333, 1, 4000.0), 50.0);
+        assert_eq!(step_frames(16.667, -1, 4000.0), 0.0);
+        assert_eq!(step_frames(3966.667, -1, 4000.0), 3950.0);
+        assert_eq!(step_frames(33.333, 10, 4000.0), 200.0);
+    }
+
+    #[test]
+    fn steps_from_between_frames_land_on_the_next_frame_that_way() {
+        let frame: f64 = 1000.0 / 60.0;
+        // 25 ms is between frame 1 (16.667) and frame 2 (33.333).
+        assert!((step_frames(25.0, 1, 4000.0) - 2.0 * frame).abs() < 1e-3);
+        assert!((step_frames(25.0, -1, 4000.0) - frame).abs() < 1e-3);
+        assert!((step_frames(25.0, 10, 4000.0) - 11.0 * frame).abs() < 1e-3);
+        // Just off a frame by more than rounding counts as between frames.
+        assert!((step_frames(33.4, -1, 4000.0) - 2.0 * frame).abs() < 1e-3);
+        assert!((step_frames(33.3, 1, 4000.0) - 2.0 * frame).abs() < 1e-3);
+        // A scene that does not end on a frame: the end is as far as it goes,
+        // and a step back from it lands on the frame before.
+        assert_eq!(step_frames(4000.0, 1, 4010.0), 4010.0);
+        assert_eq!(step_frames(4010.0, 1, 4010.0), 4010.0);
+        assert_eq!(step_frames(4010.0, -1, 4010.0), 4000.0);
     }
 }
