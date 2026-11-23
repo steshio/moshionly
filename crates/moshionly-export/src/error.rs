@@ -84,6 +84,18 @@ pub enum ExportError {
     /// The GIF encoder failed.
     #[error("the GIF could not be encoded: {0}")]
     Gif(String),
+    /// Something went wrong inside Moshionly while a frame was being made:
+    /// a fault in the program, not in the project.
+    #[error(
+        "frame {frame} could not be made because something went wrong inside Moshionly \
+         ({message}); please report this, with the project file if you can"
+    )]
+    Internal {
+        /// The frame, counting from 0.
+        frame: u64,
+        /// What went wrong, as the program said it.
+        message: String,
+    },
 }
 
 impl ExportError {

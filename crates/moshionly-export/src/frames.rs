@@ -7,8 +7,10 @@
 //! frames ahead of the encoder, so memory stays bounded however long the
 //! export is.
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread;
@@ -91,7 +93,10 @@ pub(crate) struct Pass {
 ///
 /// Stops at the first error, from rendering, `prepare` or `consume`, and
 /// soon after the export is cancelled, without waiting for frames that are
-/// not yet needed.
+/// not yet needed. A panic while a worker makes a frame, which would be a
+/// fault in the program, stops it too, as [`ExportError::Internal`]. A
+/// panic in `consume` or the progress callback, which run on the calling
+/// thread, is passed on to the caller once the workers have stopped.
 pub(crate) fn render_in_order<T: Send>(
     source: FrameSource<'_>,
     pass: &Pass,
@@ -125,11 +130,22 @@ pub(crate) fn render_in_order<T: Send>(
                     let Some(moment) = pass.moments.get(index) else {
                         break;
                     };
-                    let result = source
-                        .render(index, moment, &pass.options)
-                        .and_then(|frame| {
-                            let warnings = frame.warnings().to_vec();
-                            prepare(index, frame).map(|value| (value, warnings))
+                    let make = || {
+                        source
+                            .render(index, moment, &pass.options)
+                            .and_then(|frame| {
+                                let warnings = frame.warnings().to_vec();
+                                prepare(index, frame).map(|value| (value, warnings))
+                            })
+                    };
+                    // A frame that is never sent would be waited for
+                    // forever, so a panic is sent as this frame's error.
+                    let result =
+                        panic::catch_unwind(AssertUnwindSafe(make)).unwrap_or_else(|payload| {
+                            Err(ExportError::Internal {
+                                frame: index,
+                                message: panic_message(payload.as_ref()),
+                            })
                         });
                     if sender.send((index, result)).is_err() {
                         break;
@@ -168,12 +184,34 @@ pub(crate) fn render_in_order<T: Send>(
             }
             Ok(())
         };
+        // Wakes workers waiting for room so they see there is nothing more
+        // to do, also when `hand_over` panics; the scope then waits for
+        // them to finish.
+        let stop = StopOnDrop(&gate);
         let outcome = hand_over();
-        // Wakes workers waiting for room so they see there is nothing
-        // more to do; the scope then waits for them to finish.
-        gate.stop();
+        drop(stop);
         outcome
     })
+}
+
+/// What a panic said, for an error message.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "an unexpected error".to_owned()
+    }
+}
+
+/// Stops the gate when dropped, however the scope it is in is left.
+struct StopOnDrop<'a>(&'a Gate);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
 }
 
 /// Hands out frame numbers to workers, no further ahead of the encoder
@@ -243,6 +281,99 @@ impl Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use moshionly_core::io;
+    use moshionly_render::{AssetLoader, FontLibrary};
+
+    use crate::progress::CancelToken;
+    use crate::timing::{FrameRate, FrameTimes};
+
+    /// Draws 120 frames of a tiny artboard through [`render_in_order`] on
+    /// another thread, four frames ahead at most, calling `prepare` and
+    /// `consume` with each frame's number. Fails the test if it has not
+    /// returned or panicked within 20 seconds.
+    fn run_pass(
+        prepare: impl Fn(u64) + Sync + Send + 'static,
+        mut consume: impl FnMut(u64) + Send + 'static,
+    ) -> thread::Result<Result<(), ExportError>> {
+        let (done, outcome) = mpsc::channel();
+        thread::spawn(move || {
+            let document = io::parse(
+                r#"{"format":"moshionly","version":1,"name":"T","nodes":[
+                    {"id":"board","parent":null,"index":"a0","type":"artboard","width":4,
+                     "height":4,"duration":4000}
+                ]}"#,
+            )
+            .unwrap();
+            let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+            let artboard = NodeId::from("board");
+            let source = FrameSource {
+                document: &document,
+                artboard: &artboard,
+                renderer: &renderer,
+            };
+            let times = FrameTimes::whole(4000.0, FrameRate::FPS_30).unwrap();
+            let pass = Pass {
+                moments: Moments::Frames(times),
+                options: RenderOptions::new(),
+                frame_bytes: MEMORY_BUDGET / 4,
+                report_progress: true,
+            };
+            let cancel = CancelToken::new();
+            let mut progress = |_| {};
+            let mut reporter = Reporter::new(&mut progress, &cancel, times.len());
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                render_in_order(
+                    source,
+                    &pass,
+                    &mut reporter,
+                    &|index, _| {
+                        prepare(index);
+                        Ok(())
+                    },
+                    &mut |index, ()| {
+                        consume(index);
+                        Ok(())
+                    },
+                )
+            }));
+            let _ = done.send(result);
+        });
+        outcome
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the frames were drawn or failed, rather than waiting forever")
+    }
+
+    #[test]
+    fn a_panic_while_drawing_a_frame_ends_the_export_with_an_error() {
+        let outcome = run_pass(
+            |index| {
+                if index == 3 {
+                    panic!("frame 3 is broken");
+                }
+            },
+            |_| {},
+        );
+        match outcome {
+            Ok(Err(ExportError::Internal { frame: 3, message })) => {
+                assert!(message.contains("frame 3 is broken"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_panic_while_taking_a_frame_reaches_the_caller() {
+        let outcome = run_pass(
+            |_| {},
+            |index| {
+                if index == 3 {
+                    panic!("the encoder is broken");
+                }
+            },
+        );
+        assert!(outcome.is_err(), "the panic is passed on: {outcome:?}");
+    }
 
     #[test]
     fn the_gate_keeps_workers_within_the_window() {
