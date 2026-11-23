@@ -21,6 +21,9 @@ pub struct Bar {
     pub start: f64,
     /// End, in milliseconds. Never before `start`.
     pub end: f64,
+    /// Whether the action happens at one moment (show, hide): a marker at
+    /// `start` with no length. It moves but has no ends to resize.
+    pub instant: bool,
 }
 
 /// A layer and the actions that target it: a header row with a summary bar,
@@ -263,6 +266,7 @@ pub(super) mod tests {
             tone: Tone::Accent,
             start,
             end,
+            instant: false,
         }
     }
 

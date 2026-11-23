@@ -45,8 +45,9 @@ const REVEAL_MARGIN: f32 = 12.0;
 ///   selection. Click empty space to clear it, or drag over empty space to
 ///   select with a rubber band.
 /// - **Drag a bar** to move it, together with the rest of the selection.
-///   **Drag either end** to resize it. A layer's summary bar moves all of
-///   the layer's actions.
+///   **Drag either end** to resize it; the marker of an action that
+///   happens at one moment has no ends and only moves. A layer's summary
+///   bar moves all of the layer's actions.
 /// - **Drag the tab at the end of the scene** to change its length.
 ///
 /// Dragged things snap to the edges of other bars, the playhead and the ends
@@ -344,9 +345,10 @@ impl<'a> Timeline<'a> {
                     };
                     bars::paint_bar(ui, &tracks_painter, bar_rect, &bar.label, bar.tone, look);
 
-                    // The ends: grabbing one resizes the bar.
+                    // The ends: grabbing one resizes the bar. A marker of
+                    // an instant has no length to change: all of it moves.
                     for edge in [Edge::Start, Edge::End] {
-                        if group.locked {
+                        if group.locked || bar.instant {
                             break;
                         }
                         let zone = edge_zone(bar_rect, edge, theme.size.bar_edge_grab);

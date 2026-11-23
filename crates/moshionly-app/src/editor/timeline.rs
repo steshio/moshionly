@@ -94,6 +94,7 @@ fn bar_of(document: &Document, node: &Node, with_layer: bool) -> Option<(NodeId,
         tone: action_tone(ty),
         start,
         end: end.max(start),
+        instant: action_family(ty) == Some(ActionFamily::Instant),
     };
     Some((target.clone(), bar))
 }
@@ -179,7 +180,8 @@ mod tests {
             {"id":"m1","parent":"ab","index":"a1","type":"move","name":"Drift","target":"front","start":200,"end":900,"to":{"x":10,"y":0}},
             {"id":"folder","parent":"ab","index":"a2","type":"animation_group","name":"Outro"},
             {"id":"o1","parent":"folder","index":"a0","type":"fade_out","target":"back","start":3000,"end":3500},
-            {"id":"bg","parent":"ab","index":"a3","type":"fill","target":"ab","start":0,"end":1000,"to":"#000000"}
+            {"id":"bg","parent":"ab","index":"a3","type":"fill","target":"ab","start":0,"end":1000,"to":"#000000"},
+            {"id":"off","parent":"ab","index":"a4","type":"hide","target":"back","start":2000}
             ]}"##,
         )
         .unwrap()
@@ -198,7 +200,12 @@ mod tests {
         assert_eq!(outro.bars[0].tone, Tone::Rose);
         assert_eq!((outro.bars[0].start, outro.bars[0].end), (3000.0, 3500.0));
         let back: Vec<&str> = groups[2].bars.iter().map(|b| b.label.as_str()).collect();
-        assert_eq!(back, ["Fade in"]);
+        assert_eq!(back, ["Fade in", "Hide"]);
+        // A hide is a marker with no length; a fade has ends.
+        let hide = &groups[2].bars[1];
+        assert!(hide.instant);
+        assert_eq!((hide.start, hide.end), (2000.0, 2000.0));
+        assert!(!groups[2].bars[0].instant);
         assert_eq!(groups[1].bars[0].label, "Drift");
         assert_eq!(groups[1].bars[0].tone, Tone::Accent);
         assert_eq!(groups[2].bars[0].tone, Tone::Teal);
