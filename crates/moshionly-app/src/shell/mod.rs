@@ -784,6 +784,11 @@ impl Shell {
     /// Carries out a command if it is one the shell owns. Returns false for
     /// the others.
     fn run(&mut self, ctx: &Context, id: CommandId) -> bool {
+        // A drag on the canvas is one undo step only while nothing else
+        // touches the document: a command that does ends the drag first.
+        if ends_a_canvas_drag(id) {
+            self.end_canvas_drag();
+        }
         match id {
             CommandId::ToggleChat => {
                 self.settings.panels.chat_open = !self.settings.panels.chat_open;
@@ -933,6 +938,33 @@ impl Shell {
         self.settings.theme = mode;
         theme::set_mode(ctx, mode);
     }
+}
+
+/// Whether a command, run while a drag on the canvas is going on, ends
+/// that drag first: the commands that change the document, switch the
+/// tool, or open a dialog (during which the button may be let go unseen).
+fn ends_a_canvas_drag(id: CommandId) -> bool {
+    matches!(
+        id,
+        CommandId::Undo
+            | CommandId::Redo
+            | CommandId::Cut
+            | CommandId::Paste
+            | CommandId::Duplicate
+            | CommandId::Delete
+            | CommandId::Group
+            | CommandId::Ungroup
+            | CommandId::BringToFront
+            | CommandId::BringForward
+            | CommandId::SendBackward
+            | CommandId::SendToBack
+            | CommandId::NewProject
+            | CommandId::OpenProject
+            | CommandId::Save
+            | CommandId::SaveAs
+            | CommandId::ImportImage
+            | CommandId::Export
+    ) || Tool::from_command(id).is_some()
 }
 
 /// The pointer shape a tool shows over the canvas.

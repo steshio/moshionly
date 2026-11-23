@@ -781,3 +781,38 @@ fn a_click_on_a_slider_is_one_undo_step_of_its_own() {
         "only the move was undone"
     );
 }
+
+#[test]
+fn undo_in_the_middle_of_a_drag_ends_the_drag_as_one_step() {
+    let mut harness = harness();
+    let before = position(&harness, "card");
+    let from = screen(&harness, pos2(400.0, 650.0));
+    harness.hover_at(from);
+    harness.drag_at(from);
+    for step in 1..=3 {
+        harness.hover_at(from + vec2(10.0, -8.0) * step as f32);
+        harness.run();
+    }
+    assert_ne!(position(&harness, "card"), before, "the card follows");
+    // Undo with the button still held: the move so far is one step, and
+    // it is undone.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "card"), before);
+    // The rest of the drag does nothing more.
+    for step in 4..=8 {
+        harness.hover_at(from + vec2(10.0, -8.0) * step as f32);
+        harness.run();
+    }
+    harness.drop_at(from + vec2(80.0, -64.0));
+    harness.run();
+    assert_eq!(position(&harness, "card"), before);
+    let editor = harness.state().editor();
+    assert!(!editor.in_gesture());
+    assert_eq!(
+        editor.undo_label(),
+        None,
+        "no steps were made after the undo"
+    );
+    assert_eq!(editor.redo_label().as_deref(), Some("Redo Move"));
+}

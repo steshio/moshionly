@@ -300,7 +300,7 @@ impl Shell {
             }
             ViewportEvent::DragStopped { .. } => {
                 if let Some(CanvasDrag::Create(drag)) = self.drag.take() {
-                    if text {
+                    if drag.text {
                         // The words are typed next, in the same undo step.
                         self.text_edit = self.editor.begin_text_edit(&drag.id, true);
                     } else {
@@ -518,6 +518,29 @@ impl Shell {
             }
             _ => {}
         }
+    }
+
+    /// Ends whatever drag is going on on the canvas, before something else
+    /// changes the document: a move, resize or turn becomes its undo step,
+    /// a drawn shape is kept, a text box with no words yet is dropped, and
+    /// a marquee stops. A path being drawn with the pen is left to go on.
+    pub(super) fn end_canvas_drag(&mut self) {
+        match self.drag.take() {
+            Some(CanvasDrag::Selection(_)) => self.editor.end_drag(),
+            Some(CanvasDrag::Create(drag)) => {
+                if drag.text {
+                    if let Err(error) = self.editor.cancel_gesture() {
+                        self.toasts.push(Toast::error(error.problem.message));
+                    }
+                } else {
+                    self.editor.end_create(&drag);
+                }
+                self.editor.tool = Tool::Select;
+            }
+            Some(CanvasDrag::Marquee { .. }) | None => {}
+            Some(pen @ CanvasDrag::PenHandles) => self.drag = Some(pen),
+        }
+        self.guides.clear();
     }
 
     /// Ends a drag of the select tool.
