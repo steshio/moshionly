@@ -1,6 +1,6 @@
 [package]
 name = "moshionly-export"
-description = "Moshionly export: PNG, PNG sequences, GIF and MP4, and WebM and ProRes through ffmpeg"
+description = "Moshionly export: PNG, PNG sequences, GIF, MP4 and Lottie, and WebM and ProRes through ffmpeg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
 openh264 = "0.9"
 # Only for two constants: turning OpenH264's own log off.
 openh264-sys2 = { version = "0.9", default-features = false }
+serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 thiserror = "2"
 
