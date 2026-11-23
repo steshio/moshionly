@@ -15,7 +15,6 @@
     --on-accent: var(--figma-color-text-onbrand, #ffffff);
     --danger: var(--figma-color-text-danger, #dc3412);
     --success: var(--figma-color-text-success, #14ae5c);
-    --warning: var(--figma-color-text-warning, #b86200);
     --focus: var(--figma-color-border-selected, #0d99ff);
   }
   * { box-sizing: border-box; }
@@ -48,7 +47,7 @@
   }
   button.primary { flex: 1; border-color: transparent; background: var(--accent); color: var(--on-accent); }
   button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-  button:hover:not(:disabled) { background: var(--bg-subtle); }
+  button:not(.primary):hover:not(:disabled) { background: var(--bg-subtle); }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
   button:disabled { opacity: 0.45; cursor: default; }
   .progress { height: 4px; margin-top: 12px; border-radius: 2px; background: var(--bg-subtle); overflow: hidden; }
@@ -56,11 +55,11 @@
   .status { margin-top: 8px; min-height: 16px; }
   .status.error { color: var(--danger); }
   .status.ok { color: var(--success); }
-  .notes { flex: 1; overflow-y: auto; border-bottom: none; }
+  .notes { flex: 1; min-height: 0; overflow-y: auto; border-bottom: none; }
   .notes ul { list-style: none; margin: 0; padding: 0; }
   .notes li { padding: 6px 0; border-top: 1px solid var(--border); }
   .notes li:first-child { border-top: none; }
-  .notes .layer { font-weight: 500; }
+  .notes .layer { display: block; font-weight: 500; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -96,6 +95,139 @@
     <ul id="notes-list"></ul>
   </section>
 
+<!--
+  Delivery: sending the design to the Moshionly app and copying it. Kept in
+  its own script, without touching the page, so the tests can run it in
+  Node against a stand-in server.
+-->
+<script id="delivery">
+  'use strict';
+
+  const MoshionlyDelivery = (() => {
+    /** Where the Moshionly app listens for designs, on this computer only. */
+    const IMPORT_URLS = ['http://localhost:47821/import', 'http://127.0.0.1:47821/import'];
+
+    /** The largest design the app takes at once. */
+    const MAX_BODY_BYTES = 64 * 1024 * 1024;
+
+    /** How long to wait for the app to answer. */
+    const TIMEOUT_MS = 60000;
+
+    function byteLength(text) {
+      return new TextEncoder().encode(text).length;
+    }
+
+    function describeSize(bytes) {
+      if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    /**
+     * Posts the design's JSON to the app. The answer says whether it got
+     * there, in words for the person: `kind` is "pending" (the app is
+     * asking the person where to put it), "refused", "too-large" or
+     * "offline".
+     */
+    async function sendDesign(body, options) {
+      const settings = options || {};
+      const send = settings.fetch || fetch;
+      const urls = settings.urls || IMPORT_URLS;
+      const size = settings.size === undefined ? byteLength(body) : settings.size;
+      if (size > MAX_BODY_BYTES) {
+        return {
+          ok: false,
+          kind: 'too-large',
+          message:
+            'This design is ' + describeSize(size) + ', more than the 64 MB Moshionly takes at once. ' +
+            'Send fewer frames at a time.',
+        };
+      }
+      let timedOut = false;
+      for (const url of urls) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), settings.timeoutMs || TIMEOUT_MS);
+        let response;
+        try {
+          response = await send(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          // Nothing answers at this address: try the next one.
+          timedOut = timedOut || (error && error.name === 'AbortError');
+          continue;
+        } finally {
+          clearTimeout(timer);
+        }
+        let answer = null;
+        try {
+          answer = await response.json();
+        } catch (error) {
+          answer = null;
+        }
+        if (response.ok && answer && answer.ok !== false) {
+          return {
+            ok: true,
+            kind: 'pending',
+            message: 'Sent. Moshionly is asking where to put the design: switch to Moshionly to accept it.',
+          };
+        }
+        if (response.status === 413) {
+          return { ok: false, kind: 'too-large', message: 'The design is too large for Moshionly to take at once. Send fewer frames at a time.' };
+        }
+        const reason = answer && answer.error ? answer.error : 'It answered with status ' + response.status + '.';
+        return { ok: false, kind: 'refused', message: 'Moshionly did not take the design. ' + reason };
+      }
+      return {
+        ok: false,
+        kind: 'offline',
+        message: timedOut
+          ? 'Moshionly did not answer. Check that the app is open and not busy, then send again.'
+          : 'Moshionly is not running. Open the Moshionly app and send again, or use Copy and paste the design into Moshionly.',
+      };
+    }
+
+    /**
+     * Puts `text` on the clipboard as plain text. The panel's frame may not
+     * use the asynchronous clipboard, so the text goes through a copy event
+     * first; this needs a recent click, which is why the panel offers
+     * "Copy now" when it fails.
+     */
+    async function copyText(text, environment) {
+      const page = environment.document;
+      let copied = false;
+      const listener = (event) => {
+        event.clipboardData.setData('text/plain', text);
+        event.preventDefault();
+        copied = true;
+      };
+      page.addEventListener('copy', listener);
+      try {
+        page.execCommand('copy');
+      } catch (error) {
+        copied = false;
+      } finally {
+        page.removeEventListener('copy', listener);
+      }
+      if (copied) return true;
+      try {
+        const clipboard = environment.navigator && environment.navigator.clipboard;
+        if (clipboard && clipboard.writeText) {
+          await clipboard.writeText(text);
+          return true;
+        }
+      } catch (error) {
+        // Not allowed in this frame.
+      }
+      return false;
+    }
+
+    return { IMPORT_URLS, MAX_BODY_BYTES, byteLength, describeSize, sendDesign, copyText };
+  })();
+</script>
+
 <script>
   'use strict';
 
@@ -103,11 +235,23 @@
     selection: document.getElementById('selection'),
     send: document.getElementById('send'),
     copy: document.getElementById('copy'),
+    progress: document.getElementById('progress'),
+    bar: document.getElementById('bar'),
     status: document.getElementById('status'),
+    notes: document.getElementById('notes'),
+    notesTitle: document.getElementById('notes-title'),
+    notesList: document.getElementById('notes-list'),
   };
+
+  const state = { empty: true, busy: false, readyToCopy: null };
 
   function post(message) {
     parent.postMessage({ pluginMessage: message }, '*');
+  }
+
+  function currentMode() {
+    const chosen = document.querySelector('input[name="mode"]:checked');
+    return chosen ? chosen.value : 'new_artboards';
   }
 
   function describeSelection(summary) {
@@ -117,11 +261,142 @@
     return count + ' selected: ' + names;
   }
 
-  window.onmessage = (event) => {
+  function refreshButtons() {
+    view.send.disabled = state.busy || state.empty;
+    view.copy.disabled = state.busy || (state.empty && !state.readyToCopy);
+    view.copy.textContent = state.readyToCopy ? 'Copy now' : 'Copy';
+  }
+
+  function showStatus(text, tone) {
+    view.status.textContent = text || '';
+    view.status.className = 'status' + (tone ? ' ' + tone : '');
+  }
+
+  function showProgress(fraction) {
+    view.progress.hidden = fraction === null;
+    view.bar.style.width = Math.round(Math.max(0, Math.min(1, fraction || 0)) * 100) + '%';
+  }
+
+  function showNotes(notes) {
+    view.notesList.textContent = '';
+    if (!notes || notes.length === 0) {
+      view.notes.hidden = true;
+      return;
+    }
+    view.notesTitle.textContent =
+      (notes.length === 1 ? '1 note' : notes.length + ' notes') + ': what Moshionly shows differently';
+    for (const note of notes) {
+      const item = document.createElement('li');
+      const layer = document.createElement('span');
+      layer.className = 'layer';
+      layer.textContent = note.layer_name || 'Unnamed layer';
+      item.append(layer, document.createTextNode(note.message));
+      view.notesList.append(item);
+    }
+    view.notes.hidden = false;
+  }
+
+  function begin(purpose) {
+    state.busy = true;
+    state.readyToCopy = null;
+    refreshButtons();
+    showNotes(null);
+    showProgress(0);
+    showStatus('Reading layers…');
+    post({ type: 'convert', purpose, mode: currentMode() });
+  }
+
+  function finish(text, tone) {
+    state.busy = false;
+    refreshButtons();
+    showProgress(null);
+    showStatus(text, tone);
+  }
+
+  async function copyReady() {
+    const ready = state.readyToCopy;
+    const copied = await MoshionlyDelivery.copyText(ready.json, { document, navigator });
+    if (copied) {
+      state.readyToCopy = null;
+      finish('Copied ' + ready.label + '. In Moshionly, paste with Cmd+V (Ctrl+V on Windows and Linux).', 'ok');
+    } else {
+      finish('The design is ready (' + ready.label + '). Click Copy now to put it on the clipboard.');
+    }
+  }
+
+  async function deliver(message) {
+    const size = MoshionlyDelivery.byteLength(message.json);
+    const label =
+      (message.layers === 1 ? '1 layer' : message.layers + ' layers') + ', ' + MoshionlyDelivery.describeSize(size);
+    showNotes(message.notes);
+    if (message.purpose === 'copy') {
+      state.readyToCopy = { json: message.json, label };
+      await copyReady();
+      return;
+    }
+    showStatus('Sending ' + label + '…');
+    const outcome = await MoshionlyDelivery.sendDesign(message.json, { size });
+    finish(outcome.message, outcome.ok ? 'ok' : 'error');
+  }
+
+  /** Shrinks a picture for the plugin, which has no canvas of its own. */
+  async function shrinkPicture(message) {
+    try {
+      const bitmap = await createImageBitmap(new Blob([message.bytes], { type: message.mime }));
+      const canvas = document.createElement('canvas');
+      canvas.width = message.width;
+      canvas.height = message.height;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(bitmap, 0, 0, message.width, message.height);
+      const type = message.mime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.9));
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      post({ type: 'shrunk', id: message.id, bytes, mime: type });
+    } catch (error) {
+      post({ type: 'shrunk', id: message.id, bytes: null });
+    }
+  }
+
+  view.send.addEventListener('click', () => begin('send'));
+  view.copy.addEventListener('click', () => (state.readyToCopy ? copyReady() : begin('copy')));
+  for (const input of document.querySelectorAll('input[name="mode"]')) {
+    input.addEventListener('change', () => post({ type: 'set-mode', mode: currentMode() }));
+  }
+
+  window.onmessage = async (event) => {
     const message = event.data && event.data.pluginMessage;
     if (!message) return;
-    if (message.type === 'selection') {
-      view.selection.textContent = describeSelection(message.summary);
+    switch (message.type) {
+      case 'selection':
+        state.empty = !message.summary || message.summary.empty;
+        view.selection.textContent = describeSelection(message.summary);
+        refreshButtons();
+        break;
+      case 'mode': {
+        const input = document.querySelector('input[name="mode"][value="' + message.mode + '"]');
+        if (input) input.checked = true;
+        break;
+      }
+      case 'progress': {
+        const total = Math.max(1, message.total);
+        const images = message.phase === 'images';
+        // Reading layers is the first half of the bar, pictures the second.
+        showProgress((images ? 0.5 : 0) + (0.5 * message.done) / total);
+        showStatus((images ? 'Exporting pictures: ' : 'Reading layers: ') + message.done + ' of ' + message.total);
+        break;
+      }
+      case 'converted':
+        await deliver(message);
+        break;
+      case 'failed':
+        finish(message.message, 'error');
+        break;
+      case 'shrink':
+        await shrinkPicture(message);
+        break;
+      default:
+        break;
     }
   };
 

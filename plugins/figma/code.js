@@ -2252,11 +2252,76 @@ async function convertSelection(selection, options) {
 }
 
 // ---------------------------------------------------------------------------
+// The envelope Moshionly receives
+// ---------------------------------------------------------------------------
+
+const ENVELOPE_FORMAT = 'moshionly-import';
+const ENVELOPE_VERSION = 1;
+
+/** What the person chose in the panel for a design sent before. */
+const IMPORT_MODES = new Set(['new_artboards', 'replace_matching']);
+
+/**
+ * The envelope Moshionly's `/import` endpoint and its paste take:
+ * the layers, where they came from, the person's choice for designs sent
+ * before, and the notes about what was approximated or flattened.
+ *
+ * @param {{nodes: object[], notes: object[]}} result  a conversion whose
+ *   pictures have been fetched (see `resolveAssets`)
+ * @param {{fileName?: string, fileKey: string, mode?: string}} info
+ */
+function buildEnvelope(result, info) {
+  const waiting = result.nodes.find(
+    (layer) => typeof layer.source === 'string' && layer.source.startsWith(PENDING_SOURCE),
+  );
+  if (waiting) throw new Error('the picture of "' + waiting.name + '" was not fetched');
+  const envelope = {
+    format: ENVELOPE_FORMAT,
+    version: ENVELOPE_VERSION,
+    source: { app: 'figma', file_name: String(info.fileName || ''), file_key: String(info.fileKey || '') },
+  };
+  if (IMPORT_MODES.has(info.mode)) envelope.mode = info.mode;
+  envelope.nodes = result.nodes;
+  envelope.notes = result.notes;
+  return envelope;
+}
+
+/**
+ * Converts a selection all the way to the envelope's JSON: layers, then
+ * pictures, then the envelope.
+ *
+ * @param {ReadonlyArray<object>} selection
+ * @param {{fileKey: string, fileName?: string, mode?: string,
+ *   loader: object, onProgress?: function(object): void,
+ *   pause?: function(): Promise<void>}} options
+ * @returns {Promise<{envelope: object, json: string}>}
+ */
+async function exportSelection(selection, options) {
+  const result = await convertSelection(selection, options);
+  await resolveAssets(result, options.loader, options);
+  const envelope = buildEnvelope(result, options);
+  return { envelope, json: JSON.stringify(envelope) };
+}
+
+// ---------------------------------------------------------------------------
 // Inside Figma
 // ---------------------------------------------------------------------------
 
 /** The panel's size in Figma, in pixels. */
 const PANEL_SIZE = { width: 340, height: 560 };
+
+/** Where the person's choice of mode is remembered between runs. */
+const MODE_STORAGE_KEY = 'moshionly.mode';
+
+/** Plugin data on the document that names it when Figma gives no file key. */
+const FILE_ID_KEY = 'moshionly-file-id';
+
+/** How long the panel may take to shrink one picture. */
+const SHRINK_TIMEOUT_MS = 20000;
+
+let busy = false;
+const shrinkRequests = new Map();
+let nextShrinkId = 1;
 
 function postSelection() {
   figma.ui.postMessage({
@@ -2264,6 +2329,103 @@ function postSelection() {
     fileName: figma.root.name,
     summary: summarizeSelection(figma.currentPage.selection),
   });
+}
+
+/**
+ * The key of this Figma file, which `source_id` values start with so that
+ * a design sent again matches the layers it made before.
+ *
+ * Figma tells plugins the key when the manifest asks for it
+ * (`enablePrivatePluginApi`), which works for plugins loaded from their
+ * manifest. Otherwise the plugin keeps a random id of its own in the
+ * document's plugin data, which is invisible and travels with the file.
+ */
+function fileKeyOf() {
+  if (figma.fileKey) return figma.fileKey;
+  try {
+    const stored = figma.root.getPluginData(FILE_ID_KEY);
+    if (stored) return stored;
+    let made = 'local-';
+    for (let index = 0; index < 16; index += 1) made += 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)];
+    figma.root.setPluginData(FILE_ID_KEY, made);
+    return made;
+  } catch (error) {
+    // A file the person may only view: name it by its name.
+    let hash = 0;
+    for (const char of String(figma.root.name)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+    return 'name-' + hash.toString(36);
+  }
+}
+
+/** Asks the panel to shrink a picture; `null` when it cannot. */
+function shrinkInPanel(bytes, mime, width, height) {
+  return new Promise((resolve) => {
+    const id = nextShrinkId;
+    nextShrinkId += 1;
+    const timer = setTimeout(() => {
+      shrinkRequests.delete(id);
+      resolve(null);
+    }, SHRINK_TIMEOUT_MS);
+    shrinkRequests.set(id, (answer) => {
+      clearTimeout(timer);
+      resolve(answer);
+    });
+    figma.ui.postMessage({ type: 'shrink', id, bytes, mime, width, height });
+  });
+}
+
+/** Fetches pictures from the open document. */
+const figmaLoader = {
+  async image(hash) {
+    const image = figma.getImageByHash(hash);
+    if (!image) throw new Error('the image is not in this file');
+    const bytes = await image.getBytesAsync();
+    const size = await image.getSizeAsync();
+    return { bytes, width: size.width, height: size.height };
+  },
+  render(node, scale) {
+    return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } });
+  },
+  shrink: shrinkInPanel,
+  base64(bytes) {
+    return figma.base64Encode(bytes);
+  },
+};
+
+/** Converts the selection for the panel, which sends or copies it. */
+async function convertForPanel(purpose, mode) {
+  if (busy) return;
+  busy = true;
+  try {
+    const selection = figma.currentPage.selection;
+    if (summarizeSelection(selection).empty) {
+      figma.ui.postMessage({ type: 'failed', purpose, message: 'Select frames or layers to send first.' });
+      return;
+    }
+    const { envelope, json } = await exportSelection(selection, {
+      fileKey: fileKeyOf(),
+      fileName: figma.root.name,
+      mode,
+      loader: figmaLoader,
+      onProgress: (progress) => figma.ui.postMessage(Object.assign({ type: 'progress' }, progress)),
+      pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    });
+    figma.ui.postMessage({
+      type: 'converted',
+      purpose,
+      json,
+      layers: envelope.nodes.length,
+      notes: envelope.notes,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: 'failed',
+      purpose,
+      message: 'The design could not be converted: ' + ((error && error.message) || error),
+    });
+  } finally {
+    busy = false;
+  }
 }
 
 function startPlugin() {
@@ -2275,12 +2437,29 @@ function startPlugin() {
   });
   figma.on('selectionchange', postSelection);
   figma.on('currentpagechange', postSelection);
-  figma.ui.onmessage = (message) => {
+  figma.ui.onmessage = async (message) => {
     if (!message || typeof message.type !== 'string') return;
     switch (message.type) {
-      case 'ready':
+      case 'ready': {
         postSelection();
+        const mode = await figma.clientStorage.getAsync(MODE_STORAGE_KEY);
+        if (IMPORT_MODES.has(mode)) figma.ui.postMessage({ type: 'mode', mode });
         break;
+      }
+      case 'set-mode':
+        if (IMPORT_MODES.has(message.mode)) await figma.clientStorage.setAsync(MODE_STORAGE_KEY, message.mode);
+        break;
+      case 'convert':
+        await convertForPanel(message.purpose === 'copy' ? 'copy' : 'send', message.mode);
+        break;
+      case 'shrunk': {
+        const done = shrinkRequests.get(message.id);
+        if (done) {
+          shrinkRequests.delete(message.id);
+          done(message.bytes ? { bytes: message.bytes, mime: message.mime } : null);
+        }
+        break;
+      }
       case 'notify':
         figma.notify(String(message.text || ''));
         break;
@@ -2318,5 +2497,7 @@ if (typeof module !== 'undefined' && module.exports) {
     encodeBase64,
     imageMime,
     keptSize,
+    buildEnvelope,
+    exportSelection,
   };
 }
