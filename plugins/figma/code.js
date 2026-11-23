@@ -588,12 +588,469 @@ async function convertChildren(node, container, run) {
 
 function convertRectangle(node, container, m, run) {
   const placement = place(m, ownBox(node));
+  if (placement.skewed) {
+    return convertOutline(node, container, m, run, fillOutline(node) || rectangleOutline(node));
+  }
   const rect = newLayer('rect', node, run, container, placement);
   styleLayer(rect, node, run);
   const radius = cornerRadiusValue(cornerRadii(node), placement);
   if (radius !== undefined) rect.corner_radius = radius;
   noteCorners(node, run);
   run.emit(rect);
+}
+
+/**
+ * The same transform followed by a mirror about the vertical line
+ * x = `axis` of the node. For a shape that is symmetric about that line, the
+ * result draws exactly the same thing without mirroring, so a mirrored
+ * star can stay a star.
+ */
+function withoutMirror(m, axis) {
+  if (decompose(m).sy >= 0) return { m, mirror: (x, y) => [x, y] };
+  return {
+    m: multiply(m, { a: -1, b: 0, c: 0, d: 1, e: 2 * axis, f: 0 }),
+    mirror: (x, y) => [2 * axis - x, y],
+  };
+}
+
+/** `place` for a shape symmetric about x = `axis`: never mirrored. */
+function placeSymmetric(m, box, axis) {
+  const unmirrored = withoutMirror(m, axis);
+  const placement = place(unmirrored.m, box);
+  const toLocal = placement.toLocal;
+  placement.toLocal = (x, y) => toLocal(...unmirrored.mirror(x, y));
+  return placement;
+}
+
+function convertEllipse(node, container, m, run) {
+  const placement = place(m, ownBox(node));
+  if (placement.skewed) {
+    return convertOutline(node, container, m, run, fillOutline(node) || ellipseOutline(node));
+  }
+  const ellipse = newLayer('ellipse', node, run, container, placement);
+  styleLayer(ellipse, node, run);
+  // Figma and Moshionly both measure arcs clockwise from 3 o'clock; Figma
+  // in radians, Moshionly in degrees.
+  const arc = node.arcData || {};
+  const start = (numberOr(arc.startingAngle, 0) * 180) / Math.PI;
+  let sweep = ((numberOr(arc.endingAngle, 2 * Math.PI) - numberOr(arc.startingAngle, 0)) * 180) / Math.PI;
+  sweep = clamp(sweep, -360, 360);
+  const whole = Math.abs(sweep) >= 360 - 1e-6;
+  if (!whole) {
+    // A mirror runs the arc the other way round.
+    const first = placement.mirrored ? -start : start;
+    const startAngle = round(((first % 360) + 360) % 360, 3);
+    if (startAngle !== 0 && startAngle !== 360) ellipse.start_angle = startAngle;
+    ellipse.sweep = round(placement.mirrored ? -sweep : sweep, 3);
+  }
+  const inner = clamp(numberOr(arc.innerRadius, 0), 0, 1);
+  if (inner > 0) ellipse.inner_radius = round(inner, 5);
+  run.emit(ellipse);
+}
+
+/** The corners of a star with `points` points, first point up, outer radius 1. */
+function starCorners(points, inner) {
+  const corners = [];
+  for (let corner = 0; corner < points * 2; corner += 1) {
+    const turn = -Math.PI / 2 + (corner * Math.PI) / points;
+    const reach = corner % 2 === 0 ? 1 : inner;
+    corners.push([reach * Math.cos(turn), reach * Math.sin(turn)]);
+  }
+  return corners;
+}
+
+/**
+ * The box of the Moshionly star that draws the same shape as a Figma star.
+ *
+ * Figma stretches a star so its corners touch all four sides of its box
+ * (`bounds`, the box itself unless the star's geometry says otherwise).
+ * Moshionly puts the points of a star on the ellipse inscribed in its box,
+ * so its box is the box of that ellipse: wider than the star, and lower,
+ * because a star's lower points do not reach as far down as its top point.
+ */
+function starBox(points, inner, bounds) {
+  const corners = starCorners(points, inner);
+  const xs = corners.map((corner) => corner[0]);
+  const ys = corners.map((corner) => corner[1]);
+  const spanX = Math.max(...xs) - Math.min(...xs);
+  const spanY = Math.max(...ys) - Math.min(...ys);
+  const radiusX = spanX > EPSILON ? bounds.width / spanX : 0;
+  const radiusY = spanY > EPSILON ? bounds.height / spanY : 0;
+  const centerX = bounds.x - Math.min(...xs) * radiusX;
+  const centerY = bounds.y - Math.min(...ys) * radiusY;
+  return { x: centerX - radiusX, y: centerY - radiusY, width: 2 * radiusX, height: 2 * radiusY };
+}
+
+function convertStar(node, container, m, run) {
+  const points = Math.round(clamp(numberOr(node.pointCount, 5), 3, 64));
+  const inner = clamp(numberOr(node.innerRadius, 0.382), 0, 1);
+  const rounded = !isMixed(node.cornerRadius) && numberOr(node.cornerRadius, 0) > 0;
+  if (rounded || place(m, ownBox(node)).skewed) {
+    // Round points or a skew: only the outline itself is exact.
+    return convertOutline(node, container, m, run, fillOutline(node) || starOutline(node, points, inner));
+  }
+  const corners = outlineBounds(fillOutline(node)) || ownBox(node);
+  const box = starBox(points, inner, corners);
+  const placement = placeSymmetric(m, box, box.x + box.width / 2);
+  const star = newLayer('star', node, run, container, placement);
+  styleLayer(star, node, run);
+  if (points !== 5) star.points = points;
+  if (Math.abs(inner - 0.4) > 1e-9) star.inner_radius = round(inner, 5);
+  run.emit(star);
+}
+
+function convertPolygon(node, container, m, run) {
+  const points = Math.round(clamp(numberOr(node.pointCount, 3), 3, 64));
+  convertOutline(node, container, m, run, fillOutline(node) || polygonOutline(node, points));
+}
+
+function convertLine(node, container, m, run) {
+  const outline = {
+    subpaths: [{ anchors: [{ point: [0, 0] }, { point: [numberOr(node.width, 0), 0] }], closed: false }],
+    fillRule: 'non_zero',
+    open: 1,
+  };
+  convertOutline(node, container, m, run, outline);
+}
+
+function convertVector(node, container, m, run) {
+  const paths = Array.from(node.vectorPaths || []);
+  const rounded = !isMixed(node.cornerRadius) && numberOr(node.cornerRadius, 0) > 0;
+  const closed = paths.length > 0 && paths.every((path) => path.windingRule !== 'NONE');
+  let outline = readOutline(paths, node, run);
+  if (rounded) {
+    // The vector paths are the points before rounding; the fill geometry
+    // has the rounding in it, but only closed shapes have one.
+    const filled = closed ? fillOutline(node) : null;
+    if (filled) outline = filled;
+    else run.note(node, 'The rounding of this vector’s corners was left out; its points are sharp.');
+  }
+  convertOutline(node, container, m, run, outline);
+}
+
+function convertBoolean(node, container, m, run) {
+  const outline = fillOutline(node);
+  if (!outline) {
+    // TODO: flatten a boolean result Figma gives no geometry for into an image.
+    run.note(node, 'Figma gave no outline for this boolean shape, so it was left out.');
+    return;
+  }
+  convertOutline(node, container, m, run, outline);
+}
+
+/**
+ * A `path` layer for `node` from an outline in the node's coordinates
+ * (from `readOutline` and friends). The path is normalised to the layer's
+ * box, which is the node's box after any mirror or stretch, so a mirrored
+ * or skewed shape is drawn exactly.
+ */
+function convertOutline(node, container, m, run, outline) {
+  const placement = place(m, ownBox(node));
+  const layer = newLayer('path', node, run, container, placement);
+  styleLayer(layer, node, run);
+  layer.path = normalisedPath(outline || { subpaths: [], fillRule: 'non_zero' }, placement);
+  run.emit(layer);
+  return layer;
+}
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads SVG path data into subpaths of anchors in the node's coordinates.
+ *
+ * Figma writes absolute `M`, `L`, `C`, `Q` and `Z` commands separated by
+ * spaces; `H`, `V`, relative commands and commas are read as well.
+ * Returns `null` for anything else (arcs, smooth shorthands, bad numbers).
+ *
+ * Each anchor is `{point, in, out}` with absolute handle positions, the way
+ * Moshionly stores them. A segment's control points are the `out` handle of
+ * the anchor it leaves and the `in` handle of the anchor it reaches.
+ */
+function parsePathData(data) {
+  const tokens = String(data || '').match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || [];
+  const subpaths = [];
+  let current = null;
+  let x = 0;
+  let y = 0;
+  let startX = 0;
+  let startY = 0;
+  let command = null;
+  let index = 0;
+  const isCommand = (token) => /^[a-zA-Z]$/.test(token);
+  const numbers = (count) => {
+    const values = [];
+    for (let n = 0; n < count; n += 1) {
+      const token = tokens[index];
+      if (token === undefined || isCommand(token)) return null;
+      values.push(parseFloat(token));
+      index += 1;
+    }
+    return values.every(Number.isFinite) ? values : null;
+  };
+  const begin = (px0, py0) => {
+    current = { anchors: [{ point: [px0, py0] }], closed: false };
+    subpaths.push(current);
+    startX = px0;
+    startY = py0;
+  };
+  const ensure = () => {
+    if (!current) begin(x, y);
+  };
+
+  while (index < tokens.length) {
+    if (isCommand(tokens[index])) {
+      command = tokens[index];
+      index += 1;
+    } else if (!command) {
+      return null;
+    }
+    const relative = command !== command.toUpperCase();
+    const dx = relative ? x : 0;
+    const dy = relative ? y : 0;
+    switch (command.toUpperCase()) {
+      case 'M': {
+        const values = numbers(2);
+        if (!values) return null;
+        x = values[0] + dx;
+        y = values[1] + dy;
+        begin(x, y);
+        // More pairs after a move are lines.
+        command = relative ? 'l' : 'L';
+        break;
+      }
+      case 'L':
+      case 'H':
+      case 'V': {
+        const upper = command.toUpperCase();
+        const values = numbers(upper === 'L' ? 2 : 1);
+        if (!values) return null;
+        ensure();
+        if (upper === 'L') {
+          x = values[0] + dx;
+          y = values[1] + dy;
+        } else if (upper === 'H') {
+          x = values[0] + dx;
+        } else {
+          y = values[0] + dy;
+        }
+        current.anchors.push({ point: [x, y] });
+        break;
+      }
+      case 'C': {
+        const values = numbers(6);
+        if (!values) return null;
+        ensure();
+        const previous = current.anchors[current.anchors.length - 1];
+        previous.out = [values[0] + dx, values[1] + dy];
+        x = values[4] + dx;
+        y = values[5] + dy;
+        current.anchors.push({ point: [x, y], in: [values[2] + dx, values[3] + dy] });
+        break;
+      }
+      case 'Q': {
+        const values = numbers(4);
+        if (!values) return null;
+        ensure();
+        // A quadratic curve is the cubic with handles two thirds of the way
+        // from each end to the quadratic's control point.
+        const previous = current.anchors[current.anchors.length - 1];
+        const [qx, qy] = [values[0] + dx, values[1] + dy];
+        const [ex, ey] = [values[2] + dx, values[3] + dy];
+        previous.out = [x + (2 / 3) * (qx - x), y + (2 / 3) * (qy - y)];
+        current.anchors.push({ point: [ex, ey], in: [ex + (2 / 3) * (qx - ex), ey + (2 / 3) * (qy - ey)] });
+        x = ex;
+        y = ey;
+        break;
+      }
+      case 'Z': {
+        if (current) closeSubpath(current);
+        current = null;
+        x = startX;
+        y = startY;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return subpaths.filter((subpath) => subpath.anchors.length > 0);
+}
+
+/**
+ * Marks a subpath closed. Figma usually draws the last segment back to the
+ * first point before `Z`; that repeated point is folded into the first
+ * anchor, keeping the handle that arrives at it.
+ */
+function closeSubpath(subpath) {
+  const anchors = subpath.anchors;
+  if (anchors.length > 1) {
+    const first = anchors[0];
+    const last = anchors[anchors.length - 1];
+    if (Math.abs(first.point[0] - last.point[0]) < 1e-9 && Math.abs(first.point[1] - last.point[1]) < 1e-9) {
+      if (last.in) first.in = last.in;
+      else delete first.in;
+      anchors.pop();
+    }
+  }
+  subpath.closed = true;
+}
+
+/**
+ * An outline from a list of Figma vector paths: its subpaths, the fill rule
+ * and how many of the paths are open (have no inside).
+ */
+function readOutline(paths, node, run) {
+  const outline = { subpaths: [], fillRule: 'non_zero', open: 0 };
+  const rules = new Set();
+  for (const path of paths) {
+    const subpaths = parsePathData(path.data);
+    if (!subpaths) {
+      run.note(node, 'Part of this shape’s outline could not be read and was left out.');
+      continue;
+    }
+    outline.subpaths.push(...subpaths);
+    if (path.windingRule === 'NONE') outline.open += 1;
+    else rules.add(path.windingRule);
+  }
+  if (rules.has('EVENODD')) outline.fillRule = 'even_odd';
+  if (rules.size > 1) {
+    run.note(node, 'This shape mixes fill rules; Moshionly uses one per layer, so all of it uses even-odd.');
+  }
+  return outline;
+}
+
+/** The outline Figma fills for `node` (`fillGeometry`), or `null`. */
+function fillOutline(node) {
+  const geometry = Array.from(node.fillGeometry || []);
+  if (geometry.length === 0) return null;
+  const outline = { subpaths: [], fillRule: 'non_zero', open: 0 };
+  for (const path of geometry) {
+    const subpaths = parsePathData(path.data);
+    if (!subpaths) return null;
+    outline.subpaths.push(...subpaths);
+    if (path.windingRule === 'EVENODD') outline.fillRule = 'even_odd';
+  }
+  return outline.subpaths.length > 0 ? outline : null;
+}
+
+/** The box around every anchor of an outline, or `null`. */
+function outlineBounds(outline) {
+  if (!outline) return null;
+  const points = [];
+  for (const subpath of outline.subpaths) {
+    for (const anchor of subpath.anchors) points.push(anchor.point);
+  }
+  if (points.length === 0) return null;
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+/** A closed outline through `corners` given as fractions of the node's box. */
+function cornerOutline(node, corners) {
+  const width = numberOr(node.width, 0);
+  const height = numberOr(node.height, 0);
+  return {
+    subpaths: [{ anchors: corners.map(([u, v]) => ({ point: [u * width, v * height] })), closed: true }],
+    fillRule: 'non_zero',
+    open: 0,
+  };
+}
+
+/** A unit-radius shape stretched until it touches all sides of the box. */
+function stretchedToBox(corners) {
+  const xs = corners.map((corner) => corner[0]);
+  const ys = corners.map((corner) => corner[1]);
+  const [left, top] = [Math.min(...xs), Math.min(...ys)];
+  const [spanX, spanY] = [Math.max(...xs) - left || 1, Math.max(...ys) - top || 1];
+  return corners.map(([x, y]) => [(x - left) / spanX, (y - top) / spanY]);
+}
+
+function starOutline(node, points, inner) {
+  return cornerOutline(node, stretchedToBox(starCorners(points, inner)));
+}
+
+function polygonOutline(node, points) {
+  const corners = [];
+  for (let corner = 0; corner < points; corner += 1) {
+    const turn = -Math.PI / 2 + (corner * 2 * Math.PI) / points;
+    corners.push([Math.cos(turn), Math.sin(turn)]);
+  }
+  return cornerOutline(node, stretchedToBox(corners));
+}
+
+/** A whole ellipse filling the node's box, as four cubic curves. */
+function ellipseOutline(node) {
+  const width = numberOr(node.width, 0);
+  const height = numberOr(node.height, 0);
+  const [rx, ry] = [width / 2, height / 2];
+  // Handles at this fraction of the radius make a cubic curve stay within
+  // 0.03% of a quarter circle.
+  const k = 0.5522847498;
+  const anchor = (x, y, inX, inY, outX, outY) => ({ point: [x, y], in: [inX, inY], out: [outX, outY] });
+  return {
+    subpaths: [
+      {
+        anchors: [
+          anchor(width, ry, width, ry - k * ry, width, ry + k * ry),
+          anchor(rx, height, rx + k * rx, height, rx - k * rx, height),
+          anchor(0, ry, 0, ry + k * ry, 0, ry - k * ry),
+          anchor(rx, 0, rx - k * rx, 0, rx + k * rx, 0),
+        ],
+        closed: true,
+      },
+    ],
+    fillRule: 'non_zero',
+    open: 0,
+  };
+}
+
+function rectangleOutline(node) {
+  return cornerOutline(node, [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ]);
+}
+
+/**
+ * An outline as Moshionly's `path` value: every point and handle as a
+ * fraction of the layer's box. A side of zero length (a horizontal line has
+ * no height) maps every coordinate on that axis to 0.
+ */
+function normalisedPath(outline, placement) {
+  const width = placement.width;
+  const height = placement.height;
+  const map = (point) => {
+    const [x, y] = placement.toLocal(point[0], point[1]);
+    return [width > EPSILON ? fraction(x / width) : 0, height > EPSILON ? fraction(y / height) : 0];
+  };
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+  const subpaths = outline.subpaths.map((subpath) => {
+    const anchors = subpath.anchors.map((anchor) => {
+      const point = map(anchor.point);
+      const result = { point };
+      // A handle on its anchor is the same as no handle.
+      if (anchor.in) {
+        const handle = map(anchor.in);
+        if (!same(handle, point)) result.in = handle;
+      }
+      if (anchor.out) {
+        const handle = map(anchor.out);
+        if (!same(handle, point)) result.out = handle;
+      }
+      return result;
+    });
+    return subpath.closed ? { anchors, closed: true } : { anchors };
+  });
+  const path = { subpaths };
+  if (outline.fillRule === 'even_odd') path.fill_rule = 'even_odd';
+  return path;
 }
 
 // ---------------------------------------------------------------------------
@@ -610,6 +1067,12 @@ const CONVERTERS = {
   SECTION: convertFrame,
   GROUP: convertGroup,
   RECTANGLE: convertRectangle,
+  ELLIPSE: convertEllipse,
+  STAR: convertStar,
+  POLYGON: convertPolygon,
+  LINE: convertLine,
+  VECTOR: convertVector,
+  BOOLEAN_OPERATION: convertBoolean,
 };
 
 async function convertLayer(node, container, run) {
@@ -713,5 +1176,7 @@ if (typeof module !== 'undefined' && module.exports) {
     invert,
     matrixFromFigma,
     angle,
+    parsePathData,
+    starBox,
   };
 }

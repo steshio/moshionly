@@ -100,6 +100,12 @@ module.exports = {
   instance: (spec, children) => node('INSTANCE', Object.assign({ clipsContent: false, fills: [] }, spec), children || []),
   section: (spec, children) => node('SECTION', Object.assign({ fills: [] }, spec), children || []),
   rect: (spec) => node('RECTANGLE', Object.assign({ fills: [], strokes: [], cornerRadius: 0 }, spec)),
+  ellipse: (spec) => node('ELLIPSE', Object.assign({ fills: [], strokes: [] }, spec)),
+  star: (spec) => node('STAR', Object.assign({ fills: [], strokes: [], pointCount: 5, innerRadius: 0.382, cornerRadius: 0 }, spec)),
+  polygon: (spec) => node('POLYGON', Object.assign({ fills: [], strokes: [], pointCount: 3, cornerRadius: 0 }, spec)),
+  vector: (spec) => node('VECTOR', Object.assign({ fills: [], strokes: [], cornerRadius: 0 }, spec)),
+  line: (spec) => node('LINE', Object.assign({ fills: [], strokes: [], height: 0 }, spec)),
+  boolean: (spec, children) => node('BOOLEAN_OPERATION', Object.assign({ fills: [], strokes: [], booleanOperation: 'UNION' }, spec), children || []),
   solid,
   toFigma,
 };
