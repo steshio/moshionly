@@ -18,10 +18,12 @@
 
 mod clock;
 mod fit;
+mod groups;
 mod json;
 mod layers;
 mod paint;
 mod props;
+mod scenes;
 mod shapes;
 mod timeline;
 mod warnings;
@@ -42,6 +44,7 @@ use fit::Animated;
 use json::{num, object, places};
 use layers::{Comp, Converter};
 use props::Transform;
+use scenes::Scenes;
 use timeline::Timeline;
 
 /// The Lottie format version the files follow.
@@ -85,7 +88,12 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
             frame: 0,
             message: "the planned artboard is missing".into(),
         })?;
-    let timeline = Timeline { document, clock };
+    let scenes = Scenes::new(document, &artboard.id, cx.source.renderer.fonts(), clock);
+    let timeline = Timeline {
+        document,
+        clock,
+        scenes: &scenes,
+    };
     cx.reporter.report(Phase::Rendering, 0);
 
     let total = document
@@ -143,7 +151,10 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
             ("h", Value::from(cx.plan.height)),
             ("nm", Value::from(cx.plan.artboard_name.as_str())),
             ("ddd", Value::from(0)),
-            ("assets", Value::Array(Vec::new())),
+            (
+                "assets",
+                Value::Array(std::mem::take(&mut converter.assets)),
+            ),
             ("layers", Value::Array(comp.layers)),
             ("meta", object([("g", Value::from("Moshionly"))])),
         ]);

@@ -348,3 +348,83 @@ fn every_shape_and_paint_converts() {
     );
     assert_eq!(layer(layers, "Background")["shapes"][1]["ty"], "fl");
 }
+
+/// The precomposition with id `id` among the file's assets.
+fn asset<'a>(lottie: &'a Value, id: &Value) -> &'a Value {
+    lottie["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| &asset["id"] == id)
+        .unwrap_or_else(|| panic!("an asset {id}"))
+}
+
+#[test]
+fn groups_clips_and_masks_keep_their_structure() {
+    let nodes = r##",{"id":"plain","parent":"board","index":"a0","type":"group","name":"Plain",
+            "x":10,"y":10,"width":200,"height":100}
+        ,{"id":"p1","parent":"plain","index":"a0","type":"rect","name":"In plain","fill":"#111111"}
+        ,{"id":"faded","parent":"board","index":"a1","type":"group","name":"Faded",
+            "x":300,"y":10,"width":200,"height":100,"opacity":50}
+        ,{"id":"f1","parent":"faded","index":"a0","type":"rect","name":"In faded","fill":"#111111"}
+        ,{"id":"clip","parent":"board","index":"a2","type":"group","name":"Clip",
+            "x":10,"y":200,"width":200,"height":100,"clip":true,"corner_radius":20}
+        ,{"id":"c1","parent":"clip","index":"a0","type":"ellipse","name":"In clip",
+            "x":-50,"y":-50,"width":300,"height":300,"fill":"#0D99FF"}
+        ,{"id":"mask","parent":"board","index":"a3","type":"mask_group","name":"Mask",
+            "x":300,"y":200,"width":200,"height":200}
+        ,{"id":"m1","parent":"mask","index":"a0","type":"ellipse","name":"Shape","fill":"#000000"}
+        ,{"id":"m2","parent":"mask","index":"a1","type":"rect","name":"Masked","fill":"#FF0000"}
+        ,{"id":"shown","parent":"board","index":"a4","type":"rect","name":"Shown","x":600,"y":10}
+        ,{"id":"wipe","parent":"board","index":"a0","type":"reveal_in","target":"shown",
+            "start":0,"end":500,"direction":"down"}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    let layers = &lottie["layers"];
+
+    // A group that only moves its children is a null layer they follow.
+    let plain = layer(layers, "Plain");
+    assert_eq!(plain["ty"], 3);
+    assert_eq!(layer(layers, "In plain")["parent"], plain["ind"]);
+
+    // A faded group draws its children together, in a composition.
+    let faded = layer(layers, "Faded");
+    assert_eq!(faded["ty"], 0);
+    assert_eq!(faded["ks"]["o"]["k"], 50);
+    let inside = &asset(&lottie, &faded["refId"])["layers"];
+    assert_eq!(layer(inside, "In faded")["ty"], 4);
+
+    // A clipping group is masked by its rounded box.
+    let clip = layer(layers, "Clip");
+    assert_eq!(clip["hasMask"], true);
+    assert_eq!(clip["masksProperties"][0]["mode"], "a");
+    assert_eq!(
+        clip["masksProperties"][0]["pt"]["k"]["v"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+
+    // A mask group is a track matte: the mask just above what it masks.
+    let mask = layer(layers, "Mask");
+    let pair = asset(&lottie, &mask["refId"])["layers"].as_array().unwrap();
+    assert_eq!(pair.len(), 2);
+    assert_eq!(
+        (pair[0]["nm"].as_str(), pair[0]["td"].as_i64()),
+        (Some("Shape"), Some(1))
+    );
+    assert_eq!(pair[1]["tt"], 1);
+    let masked = &asset(&lottie, &pair[1]["refId"])["layers"];
+    assert_eq!(layer(masked, "Masked")["ty"], 4);
+
+    // A reveal is a mask that grows.
+    let shown = layer(layers, "Shown");
+    assert_eq!(shown["masksProperties"][0]["pt"]["a"], 1);
+
+    // Every precomposition is large enough for what is seen of it.
+    for name in ["Faded", "Clip", "Mask"] {
+        let layer = layer(layers, name);
+        assert!(layer["w"].as_f64().unwrap() >= 200.0 && layer["h"].as_f64().unwrap() >= 100.0);
+    }
+}

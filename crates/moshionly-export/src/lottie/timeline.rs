@@ -7,6 +7,7 @@ use moshionly_core::{Document, Node, NodeData, NodeId};
 
 use super::clock::Clock;
 use super::fit::{self, Animated, Hints, Track};
+use super::scenes::Scenes;
 
 /// Reads layer properties over the exported time.
 #[derive(Clone, Copy)]
@@ -15,6 +16,8 @@ pub(crate) struct Timeline<'a> {
     pub document: &'a Document,
     /// Frames and milliseconds.
     pub clock: Clock,
+    /// Evaluated scenes, for what only a scene knows.
+    pub scenes: &'a Scenes<'a>,
 }
 
 /// How close keyframes keep to the true value, per kind of value.

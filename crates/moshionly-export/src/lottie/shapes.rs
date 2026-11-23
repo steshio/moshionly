@@ -146,14 +146,14 @@ impl Outline {
             .map(|index| {
                 object([
                     ("ty", Value::from("sh")),
-                    ("ks", self.contour_property(index, places)),
+                    ("ks", self.path_property(index, places)),
                 ])
             })
             .collect()
     }
 
     /// The path property of contour `index`.
-    fn contour_property(&self, index: usize, places: i32) -> Value {
+    pub fn path_property(&self, index: usize, places: i32) -> Value {
         let contour = |numbers: &[f64]| {
             let mut rest = numbers;
             let mut found = Contour::default();
@@ -197,35 +197,40 @@ pub(crate) fn flatten(contours: &[Contour]) -> Vec<f64> {
 /// `[top-left, top-right, bottom-right, bottom-left]`, each limited to half
 /// the shorter side as the renderer limits them. Clockwise from the top
 /// left corner.
+///
+/// Every corner has two points, where its curve starts and ends, also when
+/// its radius is 0, so the outline has the same points at every size and
+/// radius and can be keyframed.
 pub(crate) fn rounded_rect(width: f64, height: f64, radii: [f64; 4]) -> Contour {
     let limit = (width.min(height) / 2.0).max(0.0);
     let [tl, tr, br, bl] = radii.map(|radius| radius.clamp(0.0, limit));
     let (w, h) = (width.max(0.0), height.max(0.0));
-    let mut contour = Contour::starting_at([tl, 0.0]);
-    let corner =
-        |contour: &mut Contour, radius: f64, from: [f64; 2], to: [f64; 2], center: [f64; 2]| {
-            if radius <= 0.0 {
-                contour.line_to(to);
-                return;
-            }
-            if contour.last() != from {
-                contour.line_to(from);
-            }
-            // Handles point along the tangents, toward the corner.
-            let toward = |point: [f64; 2]| {
-                let corner = [from[0] + to[0] - center[0], from[1] + to[1] - center[1]];
-                [
-                    point[0] + (corner[0] - point[0]) * KAPPA,
-                    point[1] + (corner[1] - point[1]) * KAPPA,
-                ]
-            };
-            contour.cubic_to(toward(from), toward(to), to);
-        };
-    corner(&mut contour, tr, [w - tr, 0.0], [w, tr], [w - tr, tr]);
-    corner(&mut contour, br, [w, h - br], [w - br, h], [w - br, h - br]);
-    corner(&mut contour, bl, [bl, h], [0.0, h - bl], [bl, h - bl]);
-    corner(&mut contour, tl, [0.0, tl], [tl, 0.0], [tl, tl]);
-    contour.close();
+    // Each corner: where its curve starts, where it ends, and the corner.
+    let corners = [
+        ([w - tr, 0.0], [w, tr], [w, 0.0]),
+        ([w, h - br], [w - br, h], [w, h]),
+        ([bl, h], [0.0, h - bl], [0.0, h]),
+        ([0.0, tl], [tl, 0.0], [0.0, 0.0]),
+    ];
+    // Handles reach from the curve's ends along the edges toward the corner.
+    let toward = |point: [f64; 2], corner: [f64; 2]| {
+        [
+            (corner[0] - point[0]) * KAPPA,
+            (corner[1] - point[1]) * KAPPA,
+        ]
+    };
+    let mut contour = Contour {
+        closed: true,
+        ..Contour::default()
+    };
+    for (start, end, corner) in corners {
+        contour.vertices.push(start);
+        contour.ins.push([0.0, 0.0]);
+        contour.outs.push(toward(start, corner));
+        contour.vertices.push(end);
+        contour.ins.push(toward(end, corner));
+        contour.outs.push([0.0, 0.0]);
+    }
     contour
 }
 
@@ -421,6 +426,11 @@ mod tests {
     fn round_corners_stay_on_their_circles() {
         let contour = rounded_rect(200.0, 100.0, [10.0, 20.0, 30.0, 80.0]);
         assert!(contour.closed);
+        assert_eq!(
+            rounded_rect(10.0, 10.0, [0.0; 4]).vertices.len(),
+            8,
+            "the same points"
+        );
         // The bottom-left radius is limited to half the height.
         let centers = [[10.0, 10.0], [180.0, 20.0], [170.0, 70.0], [50.0, 50.0]];
         let radii = [10.0, 20.0, 30.0, 50.0];

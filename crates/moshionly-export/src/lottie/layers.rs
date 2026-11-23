@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use crate::error::ExportError;
 
 use super::fit::{Animated, Hints};
+use super::groups::Masks;
 use super::json::{num, object, places};
 use super::paint::{self, Notes, Role, Source};
 use super::props::{Position, Transform, array, property};
@@ -53,6 +54,8 @@ pub(crate) struct Converter<'a> {
     /// The frames a value is looked at to decide how to write it: every
     /// frame of the export, and the end.
     pub survey: Vec<f64>,
+    /// Precompositions and images, for the file's `assets`.
+    pub assets: Vec<Value>,
     /// Reports each converted layer.
     progress: Progress<'a>,
 }
@@ -65,6 +68,7 @@ impl<'a> Converter<'a> {
             timeline,
             warnings: Warnings::default(),
             survey: (0..=frames).map(|frame| frame as f64).collect(),
+            assets: Vec::new(),
             progress,
         }
     }
@@ -94,7 +98,7 @@ impl<'a> Converter<'a> {
     }
 
     /// Adds the Lottie layers of one Moshionly layer to `comp`.
-    fn add_layer(
+    pub fn add_layer(
         &mut self,
         node: &Node,
         comp: &mut Comp,
@@ -112,10 +116,15 @@ impl<'a> Converter<'a> {
                 let index = comp.index();
                 let mut layer = self.layer(node, 4, index, parent_index, &transform);
                 layer.insert("shapes".into(), Value::Array(shapes));
+                self.add_masks(node, &mut layer, [0.0, 0.0], Masks::REVEAL);
                 comp.layers.push(Value::Object(layer));
             }
-            // TODO: groups, masks, text and images are converted in the
-            // steps that follow; until then they are left out.
+            NodeData::Group(group) => {
+                self.add_group(node, group.clip, comp, parent_index, offset)?;
+            }
+            NodeData::MaskGroup(_) => self.add_mask_group(node, comp, parent_index, offset)?,
+            // TODO: text and images are converted in the steps that follow;
+            // until then they are left out.
             _ => self.warnings.layer(
                 node,
                 "is left out: this kind of layer is not exported to Lottie yet.",
@@ -126,7 +135,7 @@ impl<'a> Converter<'a> {
 
     /// Whether `layer` is shown at any moment of the export. Layers hidden
     /// throughout are left out.
-    fn is_ever_visible(&self, layer: &NodeId) -> bool {
+    pub fn is_ever_visible(&self, layer: &NodeId) -> bool {
         self.survey
             .iter()
             .any(|frame| self.timeline.visible(layer, *frame))
@@ -238,12 +247,34 @@ impl<'a> Converter<'a> {
     /// The shape items of a rectangle, ellipse, star or path layer: its
     /// outline, filled and stroked.
     fn shape_items(&mut self, node: &Node, hints: &Hints) -> Vec<Value> {
-        let id = &node.id;
+        self.paint_items(node, hints, Parts::BOTH)
+    }
+
+    /// The outline of a layer, painted with the `parts` of its paint that
+    /// are asked for. Notes what cannot be painted exactly.
+    pub fn paint_items(&mut self, node: &Node, hints: &Hints, parts: Parts) -> Vec<Value> {
         let this = &*self;
-        let timeline = this.timeline;
-        let geometry = match &node.data {
-            NodeData::Rect(_) => {
-                let uniform = this.survey.iter().all(|frame| {
+        let Some(geometry) = this.geometry(node) else {
+            return Vec::new();
+        };
+        let rule = match &node.data {
+            NodeData::Path(path) => path.path.fill_rule,
+            _ => FillRule::NonZero,
+        };
+        let (items, notes) = this.painted(node, hints, &geometry, rule, parts);
+        drop(geometry);
+        self.note(node, &notes);
+        items
+    }
+
+    /// What the outline of a layer is drawn as: a group's box is a
+    /// rectangle like a rectangle layer's.
+    fn geometry<'g>(&'g self, node: &'g Node) -> Option<Geometry<'g>> {
+        let id = &node.id;
+        let timeline = self.timeline;
+        Some(match &node.data {
+            NodeData::Rect(_) | NodeData::Group(_) => {
+                let uniform = self.survey.iter().all(|frame| {
                     let radii = timeline.radii(id, *frame);
                     radii.iter().all(|radius| *radius == radii[0])
                 });
@@ -251,7 +282,7 @@ impl<'a> Converter<'a> {
                     Geometry::Rect
                 } else {
                     Geometry::Contours(Box::new(move |frame| {
-                        let (width, height) = this.size(id, frame);
+                        let (width, height) = self.size(id, frame);
                         vec![shapes::rounded_rect(
                             width,
                             height,
@@ -267,7 +298,7 @@ impl<'a> Converter<'a> {
                     Geometry::Ellipse
                 } else {
                     Geometry::Contours(Box::new(move |frame| {
-                        let (width, height) = this.size(id, frame);
+                        let (width, height) = self.size(id, frame);
                         shapes::ellipse(width, height, start, sweep, inner).unwrap_or_default()
                     }))
                 }
@@ -275,24 +306,16 @@ impl<'a> Converter<'a> {
             NodeData::Star(star) => {
                 let (points, inner) = (star.points, star.inner_radius);
                 Geometry::Contours(Box::new(move |frame| {
-                    let (width, height) = this.size(id, frame);
+                    let (width, height) = self.size(id, frame);
                     shapes::star(width, height, points, inner)
                 }))
             }
             NodeData::Path(path) => Geometry::Contours(Box::new(move |frame| {
-                let (width, height) = this.size(id, frame);
+                let (width, height) = self.size(id, frame);
                 shapes::pen(&path.path.scaled(width, height))
             })),
-            _ => return Vec::new(),
-        };
-        let rule = match &node.data {
-            NodeData::Path(path) => path.path.fill_rule,
-            _ => FillRule::NonZero,
-        };
-        let (items, notes) = this.painted(node, hints, &geometry, rule);
-        drop(geometry);
-        self.note(node, &notes);
-        items
+            _ => return None,
+        })
     }
 
     /// Geometry painted with the layer's fill and stroke.
@@ -302,11 +325,12 @@ impl<'a> Converter<'a> {
         hints: &Hints,
         geometry: &Geometry<'_>,
         rule: FillRule,
+        parts: Parts,
     ) -> (Vec<Value>, Vec<Notes>) {
         let id = &node.id;
         let timeline = self.timeline;
         let size = |frame: f64| self.size(id, frame);
-        let fill_paint = |frame: f64| timeline.fill(id, frame);
+        let fill_paint = |frame: f64| timeline.fill(id, frame).filter(|_| parts.fill);
         let fill = paint::item(
             &Source {
                 timeline,
@@ -322,6 +346,7 @@ impl<'a> Converter<'a> {
         let first_stroke = self
             .survey
             .iter()
+            .filter(|_| parts.stroke)
             .find_map(|frame| timeline.stroke(id, *frame));
         let mut stroke_item = None;
         let mut inset: Box<dyn Fn(f64) -> f64> = Box::new(|_| 0.0);
@@ -372,6 +397,10 @@ impl<'a> Converter<'a> {
             }
         }
 
+        if fill.0.is_none() && stroke_item.is_none() {
+            // Nothing is ever painted.
+            return (Vec::new(), notes);
+        }
         let join = first_stroke.as_ref().map_or(StrokeJoin::Miter, |s| s.join);
         let offset = position != StrokePosition::Center
             && matches!(geometry, Geometry::Rect | Geometry::Ellipse)
@@ -569,6 +598,33 @@ impl<'a> Converter<'a> {
             add("Background colour", fill, comp);
         }
     }
+}
+
+/// Which parts of a layer's paint to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Parts {
+    /// The fill.
+    pub fill: bool,
+    /// The stroke.
+    pub stroke: bool,
+}
+
+impl Parts {
+    /// Fill and stroke.
+    pub const BOTH: Parts = Parts {
+        fill: true,
+        stroke: true,
+    };
+    /// The fill only.
+    pub const FILL: Parts = Parts {
+        fill: true,
+        stroke: false,
+    };
+    /// The stroke only.
+    pub const STROKE: Parts = Parts {
+        fill: false,
+        stroke: true,
+    };
 }
 
 /// What a shape is drawn as.
