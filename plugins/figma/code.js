@@ -279,6 +279,9 @@ function over(top, bottom) {
 // Paints
 // ---------------------------------------------------------------------------
 
+/** Paint types that cannot be a Moshionly paint or image. */
+const SPECIAL_PAINTS = new Set(['VIDEO', 'PATTERN', 'SHADER']);
+
 /** Paint types Moshionly can hold as they are, or close to. */
 const GRADIENT_TYPES = new Set(['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR', 'GRADIENT_DIAMOND']);
 
@@ -466,6 +469,19 @@ function convertPaint(paint, node, run, placement, what, part) {
 }
 
 /**
+ * The paints of a list that can be seen, bottom first: the visible ones,
+ * from the top-most opaque one up.
+ */
+function seenPaints(paints) {
+  if (isMixed(paints)) return [];
+  const visible = Array.from(paints || []).filter(isVisiblePaint);
+  for (let index = visible.length - 1; index >= 0; index -= 1) {
+    if (isOpaquePaint(visible[index])) return visible.slice(index);
+  }
+  return visible;
+}
+
+/**
  * What a Figma paint list (fills or strokes) becomes. Moshionly layers have
  * one fill and one stroke.
  *
@@ -473,22 +489,23 @@ function convertPaint(paint, node, run, placement, what, part) {
  * seen and are dropped. Stacked plain colours are mixed into one, which is
  * exact. Otherwise the top paint is kept and the rest noted.
  *
- * @returns {{paint?: (string|object), image?: object, special?: string}}
- *   `paint` is ready for Moshionly; `image` is an image paint the caller
- *   handles; `special` names a paint type that cannot be a Moshionly paint.
+ * @returns {{paint?: (string|object), image?: object, below?: object[],
+ *   above?: object[], special?: string}} `paint` is ready for Moshionly.
+ *   `image` is the top image paint, which the caller handles, with the
+ *   paints `below` and `above` it. `special` names a paint type that cannot
+ *   be a Moshionly paint.
  */
 function readPaints(paints, node, run, placement, what, part) {
-  if (isMixed(paints)) return {};
-  const visible = Array.from(paints || []).filter(isVisiblePaint);
-  let first = 0;
-  for (let index = visible.length - 1; index >= 0; index -= 1) {
-    if (isOpaquePaint(visible[index])) {
-      first = index;
-      break;
+  const seen = seenPaints(paints);
+  if (seen.length === 0) return {};
+  const special = seen.find((paint) => SPECIAL_PAINTS.has(paint.type));
+  if (special) return { special: special.type };
+  // The top image, with what is painted under it and over it.
+  for (let index = seen.length - 1; index >= 0; index -= 1) {
+    if (seen[index].type === 'IMAGE') {
+      return { image: seen[index], below: seen.slice(0, index), above: seen.slice(index + 1) };
     }
   }
-  const seen = visible.slice(first);
-  if (seen.length === 0) return {};
   const top = seen[seen.length - 1];
   if (seen.every((paint) => paint.type === 'SOLID' && blendsNormally(paint))) {
     const mixed = seen.reduce(
@@ -508,7 +525,6 @@ function readPaints(paints, node, run, placement, what, part) {
   if (top.type === 'SOLID' || GRADIENT_TYPES.has(top.type)) {
     return { paint: convertPaint(top, node, run, placement, what, part) };
   }
-  if (top.type === 'IMAGE') return { image: top };
   return { special: top.type };
 }
 
@@ -692,6 +708,9 @@ function effectLayer(layer, node, run, placement, part) {
 /** Figma node types that become a group with a box of its own. */
 const FRAME_TYPES = new Set(['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT']);
 
+/** The `source` of an image layer whose picture has not been fetched yet. */
+const PENDING_SOURCE = 'pending:';
+
 /** Layers are counted for progress in steps of this many. */
 const PROGRESS_STEP = 100;
 
@@ -738,6 +757,17 @@ class Conversion {
   emit(layer) {
     this.nodes.push(layer);
     return layer;
+  }
+
+  /**
+   * Asks for a picture to be fetched from Figma for `layer` once the
+   * conversion is done (see `resolveAssets`). Returns the placeholder that
+   * stands in the layer's `source` until then.
+   */
+  asset(layer, request) {
+    const index = this.assets.length;
+    this.assets.push(Object.assign({ layerId: layer.id }, request));
+    return PENDING_SOURCE + index;
   }
 
   /** Records that something about `node` could not be brought over exactly. */
@@ -980,10 +1010,11 @@ async function convertArtboard(node, run) {
   // The frame's children are laid out in the frame's own coordinates.
   let inside = { id: board.id, frame: transform };
   const placement = place(IDENTITY, ownBox(node));
+  let background;
   if (frameStyleReasons(node).length > 0) {
     const body = newLayer('group', node, run, inside, placement, 'frame');
     styleLayer(body, node, run, placement, 'frame');
-    fillLayer(body, node, run, placement, 'frame');
+    background = fillContainer(body, node, run, placement, 'frame');
     strokeLayer(body, node, run, placement, 'frame');
     styleFrame(body, node, run, placement, 'frame');
     if (body.shadow) {
@@ -992,8 +1023,9 @@ async function convertArtboard(node, run) {
     run.emit(body);
     inside = { id: body.id, frame: transform };
   } else {
-    fillLayer(board, node, run, placement);
+    background = fillContainer(board, node, run, placement);
   }
+  if (background) emitBackground(background, node, run, inside, placement);
   await convertChildren(node, inside, run);
 }
 
@@ -1008,18 +1040,22 @@ function styleFrame(group, node, run, placement, part) {
 /** A frame, component or instance inside something else: a group. */
 async function convertFrame(node, container, m, run) {
   const placement = place(m, ownBox(node));
+  if (placement.skewed) return flatten(node, container, run, 'it is skewed');
   const group = newLayer('group', node, run, container, placement);
   styleLayer(group, node, run, placement);
-  fillLayer(group, node, run, placement);
+  const background = fillContainer(group, node, run, placement);
   strokeLayer(group, node, run, placement);
   styleFrame(group, node, run, placement);
   run.emit(group);
-  await convertChildren(node, containerFor(group, container, placement), run);
+  const inside = containerFor(group, container, placement);
+  if (background) emitBackground(background, node, run, inside, placement);
+  await convertChildren(node, inside, run);
 }
 
 /** A Figma group: a group whose box is the bounds of its children. */
 async function convertGroup(node, container, m, run) {
   const placement = place(m, ownBox(node));
+  if (placement.skewed) return flatten(node, container, run, 'it is skewed');
   const group = newLayer('group', node, run, container, placement);
   styleLayer(group, node, run, placement);
   run.emit(group);
@@ -1038,6 +1074,7 @@ async function convertChildren(node, container, run) {
 
 function convertRectangle(node, container, m, run) {
   const placement = place(m, ownBox(node));
+  if (hasImageFill(node)) return convertImageRectangle(node, container, placement, run);
   if (placement.skewed) {
     return convertOutline(node, container, m, run, fillOutline(node) || rectangleOutline(node));
   }
@@ -1187,11 +1224,7 @@ function convertVector(node, container, m, run) {
 
 function convertBoolean(node, container, m, run) {
   const outline = fillOutline(node);
-  if (!outline) {
-    // TODO: flatten a boolean result Figma gives no geometry for into an image.
-    run.note(node, 'Figma gave no outline for this boolean shape, so it was left out.');
-    return;
-  }
+  if (!outline) return flatten(node, container, run, 'Figma gave no outline for this boolean shape');
   convertOutline(node, container, m, run, outline);
 }
 
@@ -1681,10 +1714,6 @@ const TEXT_CASE = { ORIGINAL: 'original', UPPER: 'upper', LOWER: 'lower', TITLE:
 
 function convertText(node, container, m, run) {
   const placement = place(m, ownBox(node));
-  if (placement.mirrored || placement.skewed || placement.stretched) {
-    // TODO: send mirrored, skewed or stretched text as an image (next step).
-    run.note(node, 'This text is mirrored, skewed or stretched in Figma; Moshionly draws it straight.');
-  }
   const text = newLayer('text', node, run, container, placement);
   styleLayer(text, node, run, placement);
   const runs = textRuns(node);
@@ -1748,6 +1777,346 @@ function noteTextExtras(node, style, runs, run) {
 }
 
 // ---------------------------------------------------------------------------
+// Pictures: image fills, and layers sent as images of themselves
+// ---------------------------------------------------------------------------
+
+/** Node types without children of their own in Moshionly. */
+const LEAF_TYPES = new Set(['RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'VECTOR', 'LINE', 'BOOLEAN_OPERATION', 'TEXT']);
+
+/** Readable names of Figma node types, for notes. */
+function typeName(node) {
+  return String(node.type || 'layer').toLowerCase().replace(/_/g, ' ');
+}
+
+function hasImageFill(node) {
+  return seenPaints(node.fills).some((paint) => paint.type === 'IMAGE');
+}
+
+/** How an image paint fills its layer in Moshionly. */
+function imageFit(paint) {
+  return paint.scaleMode === 'FIT' ? 'contain' : 'cover';
+}
+
+/**
+ * What makes an image paint more than "cover" or "contain" in its box, as
+ * the end of a sentence, or `null` when Moshionly can draw it exactly.
+ */
+function imageProblem(paint) {
+  if (paint.scaleMode === 'CROP') return 'is cropped';
+  if (paint.scaleMode === 'TILE') return 'is tiled';
+  if (Math.abs(numberOr(paint.rotation, 0)) % 360 > 1e-6) return 'is turned inside the layer';
+  const filters = paint.filters || {};
+  if (Object.keys(filters).some((key) => Math.abs(numberOr(filters[key], 0)) > 1e-6)) {
+    return 'has colour adjustments';
+  }
+  if (!blendsNormally(paint)) return 'blends with what is behind it';
+  return null;
+}
+
+/**
+ * Why a layer without children has to be sent as a picture of itself, or
+ * `null` when Moshionly can rebuild it.
+ */
+function pictureReason(node, placement) {
+  const fills = seenPaints(node.fills);
+  const special = fills.find((paint) => SPECIAL_PAINTS.has(paint.type));
+  if (special) return 'Moshionly has no ' + PAINT_NAMES[special.type] + ' fills';
+  const images = fills.filter((paint) => paint.type === 'IMAGE');
+  if (images.length > 0) {
+    if (node.type !== 'RECTANGLE') return 'Moshionly draws images in rectangles only';
+    if (images.length > 1) return 'it has several images';
+    const top = fills.lastIndexOf(images[0]);
+    if (top < fills.length - 1) return 'something is painted over its image';
+    const problem = imageProblem(images[0]);
+    if (problem) return 'its image ' + problem;
+    if (placement.mirrored || placement.skewed) return 'its image is mirrored or skewed';
+  }
+  const strokes = seenPaints(node.strokes);
+  const odd = strokes.find((paint) => paint.type === 'IMAGE' || SPECIAL_PAINTS.has(paint.type));
+  if (odd && numberOr(node.strokeWeight, 1) !== 0) return 'Moshionly has no ' + PAINT_NAMES[odd.type] + ' strokes';
+  const complex = node.complexStrokeProperties;
+  if (strokes.length > 0 && complex && complex.type && complex.type !== 'BASIC') {
+    return 'its ' + String(complex.type).toLowerCase() + ' stroke has no Moshionly equivalent';
+  }
+  if (node.type === 'TEXT' && (placement.mirrored || placement.skewed || placement.stretched)) {
+    return 'Moshionly cannot mirror, skew or stretch text';
+  }
+  return null;
+}
+
+/** The box on the page of what Figma draws for `node`, shadows included. */
+function renderBounds(node) {
+  const known = node.absoluteRenderBounds || node.absoluteBoundingBox;
+  if (known && [known.x, known.y, known.width, known.height].every(Number.isFinite)) return known;
+  const m = absoluteOf(node);
+  const box = ownBox(node);
+  const corners = [
+    [0, 0],
+    [box.width, 0],
+    [0, box.height],
+    [box.width, box.height],
+  ].map(([x, y]) => applyMatrix(m, x, y));
+  const xs = corners.map((point) => point[0]);
+  const ys = corners.map((point) => point[1]);
+  return {
+    x: Math.min(...xs),
+    y: Math.min(...ys),
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+  };
+}
+
+/**
+ * Sends `node` as a picture of itself: an image layer upright on the page
+ * over everything Figma draws for it. The picture already holds the node's
+ * opacity, shadows and blur; its blend mode, visibility and lock stay on
+ * the layer.
+ */
+function flatten(node, container, run, reason) {
+  const bounds = renderBounds(node);
+  const m = multiply(invert(container.frame), translation(bounds.x, bounds.y));
+  const placement = place(m, { x: 0, y: 0, width: bounds.width, height: bounds.height });
+  const image = newLayer('image', node, run, container, placement);
+  if (node.visible === false) image.hidden = true;
+  if (node.locked === true) image.locked = true;
+  const mode = blendMode(node, run);
+  if (mode !== 'normal') image.blend_mode = mode;
+  image.source_id = run.sourceId(node);
+  image.source = run.asset(image, { kind: 'render', node, width: bounds.width, height: bounds.height });
+  image.fit = 'stretch';
+  run.note(node, 'Sent as a picture because ' + reason + '. It looks the same, but is one image in Moshionly.');
+  run.emit(image);
+}
+
+/** A request for the original pixels of an image paint, for a box of `placement`'s size. */
+function imageRequest(paint, placement) {
+  return {
+    kind: 'image',
+    hash: paint.imageHash || null,
+    fit: imageFit(paint),
+    width: placement.width,
+    height: placement.height,
+  };
+}
+
+/** A rectangle filled with an image: an image layer. */
+function convertImageRectangle(node, container, placement, run) {
+  const image = newLayer('image', node, run, container, placement);
+  styleLayer(image, node, run, placement);
+  const fill = readPaints(node.fills, node, run, placement, 'fill');
+  const paint = fill.image;
+  const opacity = round(numberOr(image.opacity, 100) * paintOpacity(paint), 2);
+  if (opacity !== 100) image.opacity = opacity;
+  else delete image.opacity;
+  if ((fill.below || []).length > 0) {
+    run.note(node, 'The fill under its image was left out; Moshionly image layers have no fill.');
+  }
+  image.source = run.asset(image, imageRequest(paint, placement));
+  const fit = imageFit(paint);
+  if (fit !== 'cover') image.fit = fit;
+  strokeLayer(image, node, run, placement);
+  const radius = cornerRadiusValue(cornerRadii(node), placement);
+  if (radius !== undefined) image.corner_radius = radius;
+  noteCorners(node, run);
+  run.emit(image);
+}
+
+/**
+ * The fill of a frame on the group or artboard that stands for it.
+ *
+ * A group's fill cannot be an image, so an image fill comes back as a
+ * background for `emitBackground`; the paints under the image become the
+ * group's fill.
+ */
+function fillContainer(layer, node, run, placement, part) {
+  const fill = readPaints(node.fills, node, run, placement, 'fill', part);
+  if (fill.paint !== undefined) layer.fill = fill.paint;
+  if (fill.special) {
+    run.note(node, 'Its ' + PAINT_NAMES[fill.special] + ' fill has no Moshionly equivalent and was left out.', part);
+  }
+  if (!fill.image) return null;
+  if (fill.below.length > 0) {
+    const under = readPaints(fill.below, node, run, placement, 'fill under the image', part);
+    if (under.paint !== undefined) layer.fill = under.paint;
+  }
+  return { paint: fill.image, above: fill.above, radius: cornerRadiusValue(cornerRadii(node), placement) };
+}
+
+/**
+ * The layers that draw a frame's image fill, at the back of the group or
+ * artboard `inside`: the image, and a rectangle with the paints that lie
+ * over it in Figma.
+ */
+function emitBackground(background, node, run, inside, size, part) {
+  const placement = place(IDENTITY, { x: 0, y: 0, width: size.width, height: size.height });
+  const name = (node.name || 'Frame') + ' image';
+  const image = newLayer('image', node, run, inside, placement, 'fill');
+  image.name = name;
+  const opacity = round(paintOpacity(background.paint) * 100, 2);
+  if (opacity !== 100) image.opacity = opacity;
+  image.source_id = run.sourceId(node, 'fill');
+  image.source = run.asset(image, imageRequest(background.paint, placement));
+  const fit = imageFit(background.paint);
+  if (fit !== 'cover') image.fit = fit;
+  if (background.radius !== undefined) image.corner_radius = background.radius;
+  const problem = imageProblem(background.paint);
+  if (problem) {
+    run.note(node, 'Its background image ' + problem + ' in Figma; in Moshionly it covers the frame.', part);
+  }
+  run.emit(image);
+
+  if (background.above.length === 0) return;
+  const tint = readPaints(background.above, node, run, placement, 'fill over the image', part);
+  if (tint.paint === undefined) return;
+  const rect = newLayer('rect', node, run, inside, placement, 'overlay');
+  rect.name = (node.name || 'Frame') + ' tint';
+  rect.source_id = run.sourceId(node, 'overlay');
+  rect.fill = tint.paint;
+  if (background.radius !== undefined) rect.corner_radius = background.radius;
+  run.emit(rect);
+}
+
+// ---------------------------------------------------------------------------
+// Fetching pictures
+// ---------------------------------------------------------------------------
+
+/** Pictures are kept no larger than this many pixels on their longer side. */
+const MAX_IMAGE_SIDE = 4096;
+
+/** Shrunk pictures keep at least this many pixels on their longer side. */
+const MIN_KEPT_SIDE = 1024;
+
+/** An empty, transparent PNG of one pixel, for a picture that could not be fetched. */
+const EMPTY_PICTURE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Base64 of `bytes`, for where Figma's encoder is not available. */
+function encodeBase64(bytes) {
+  let text = '';
+  let index = 0;
+  for (; index + 2 < bytes.length; index += 3) {
+    const value = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
+    text += BASE64[value >> 18] + BASE64[(value >> 12) & 63] + BASE64[(value >> 6) & 63] + BASE64[value & 63];
+  }
+  const rest = bytes.length - index;
+  if (rest === 1) {
+    const value = bytes[index] << 16;
+    text += BASE64[value >> 18] + BASE64[(value >> 12) & 63] + '==';
+  } else if (rest === 2) {
+    const value = (bytes[index] << 16) | (bytes[index + 1] << 8);
+    text += BASE64[value >> 18] + BASE64[(value >> 12) & 63] + BASE64[(value >> 6) & 63] + '=';
+  }
+  return text;
+}
+
+/** The type of an image from its first bytes. */
+function imageMime(bytes) {
+  const starts = (...values) => values.every((value, index) => bytes[index] === value);
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return 'image/png';
+  if (starts(0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (starts(0x47, 0x49, 0x46)) return 'image/gif';
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return 'image/webp';
+  }
+  return 'image/png';
+}
+
+/**
+ * The size to shrink an image paint's picture to, or `null` to keep it.
+ *
+ * A picture is kept at twice the size it is shown at (sharp on
+ * high-resolution screens), but at least MIN_KEPT_SIDE on its longer side
+ * so it can still be scaled up a little, and at most MAX_IMAGE_SIDE.
+ * Pictures within three quarters of that are left alone.
+ */
+function keptSize(width, height, asset) {
+  if (!(width > 0 && height > 0)) return null;
+  const across = numberOr(asset.width, width) / width;
+  const down = numberOr(asset.height, height) / height;
+  const shown = asset.fit === 'contain' ? Math.min(across, down) : Math.max(across, down);
+  const longest = Math.max(width, height);
+  const keep = Math.min(Math.max(2 * shown, Math.min(1, MIN_KEPT_SIDE / longest)), MAX_IMAGE_SIDE / longest, 1);
+  if (keep > 0.75) return null;
+  return { width: Math.max(1, Math.round(width * keep)), height: Math.max(1, Math.round(height * keep)) };
+}
+
+/** The scale to render a picture of a `width` by `height` layer at. */
+function renderScale(width, height) {
+  const longest = Math.max(1, numberOr(width, 1), numberOr(height, 1));
+  return clamp(Math.min(2, MAX_IMAGE_SIDE / longest), 0.01, 4);
+}
+
+/**
+ * Fetches the pictures a conversion asked for and writes them into the
+ * layers as `data:` URIs, which is the only kind of image Moshionly takes
+ * from a plugin. A picture that cannot be fetched becomes an empty one, with
+ * a note.
+ *
+ * `loader` fetches pictures: in Figma from the document, in the tests made
+ * up. `image(hash)` gives `{bytes, width, height}` of an image paint's
+ * original; `render(node, scale)` gives a PNG of what Figma draws for a
+ * node; the optional `shrink(bytes, mime, width, height)` gives a smaller
+ * `{bytes, mime}`, or `null`; the optional `base64(bytes)` encodes.
+ *
+ * @param {{nodes: object[], notes: object[], assets: object[]}} result
+ * @param {object} loader
+ * @param {{onProgress?: function(object): void}} [options]
+ */
+async function resolveAssets(result, loader, options) {
+  const onProgress = (options && options.onProgress) || null;
+  const base64 = loader.base64 || encodeBase64;
+  const layers = new Map(result.nodes.map((layer) => [layer.id, layer]));
+  const originals = new Map();
+  const finished = new Map();
+  const original = (hash) => {
+    if (!originals.has(hash)) originals.set(hash, loader.image(hash));
+    return originals.get(hash);
+  };
+  const total = result.assets.length;
+  for (let index = 0; index < total; index += 1) {
+    const asset = result.assets[index];
+    const layer = layers.get(asset.layerId);
+    if (onProgress) onProgress({ phase: 'images', done: index, total });
+    if (!layer) continue;
+    try {
+      if (asset.kind === 'image') {
+        if (!asset.hash) throw new Error('Figma has not loaded this image yet');
+        const picture = await original(asset.hash);
+        const target = keptSize(picture.width, picture.height, asset);
+        const key = asset.hash + (target ? '@' + target.width + 'x' + target.height : '');
+        if (!finished.has(key)) {
+          let bytes = picture.bytes;
+          let mime = imageMime(bytes);
+          if (target && loader.shrink) {
+            const smaller = await loader.shrink(bytes, mime, target.width, target.height);
+            if (smaller && smaller.bytes && smaller.bytes.length < bytes.length) {
+              bytes = smaller.bytes;
+              mime = smaller.mime || imageMime(bytes);
+            }
+          }
+          finished.set(key, 'data:' + mime + ';base64,' + base64(bytes));
+        }
+        layer.source = finished.get(key);
+      } else {
+        const bytes = await loader.render(asset.node, renderScale(asset.width, asset.height));
+        layer.source = 'data:image/png;base64,' + base64(bytes);
+      }
+    } catch (error) {
+      layer.source = EMPTY_PICTURE;
+      result.notes.push({
+        source_id: layer.source_id,
+        layer_name: layer.name || '',
+        message: 'Figma could not export this picture (' + ((error && error.message) || error) + '), so it arrives empty.',
+      });
+    }
+  }
+  if (onProgress) onProgress({ phase: 'images', done: total, total });
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // The walk
 // ---------------------------------------------------------------------------
 
@@ -1772,15 +2141,15 @@ const CONVERTERS = {
 
 async function convertLayer(node, container, run) {
   if (node.type === 'SLICE') return;
-  const converter = CONVERTERS[node.type];
-  if (!converter) {
-    await run.step();
-    // TODO: flatten what has no Moshionly layer into an image (next step).
-    run.note(node, 'Moshionly has no layer like this ' + node.type.toLowerCase() + ', so it was left out.');
-    return;
-  }
   await run.step();
-  await converter(node, container, relativeMatrix(container, node), run);
+  const converter = CONVERTERS[node.type];
+  if (!converter) return flatten(node, container, run, 'Moshionly has no layer like a ' + typeName(node));
+  const m = relativeMatrix(container, node);
+  if (LEAF_TYPES.has(node.type)) {
+    const reason = pictureReason(node, place(m, ownBox(node)));
+    if (reason) return flatten(node, container, run, reason);
+  }
+  await converter(node, container, m, run);
 }
 
 /**
@@ -1873,5 +2242,9 @@ if (typeof module !== 'undefined' && module.exports) {
     angle,
     parsePathData,
     starBox,
+    resolveAssets,
+    encodeBase64,
+    imageMime,
+    keptSize,
   };
 }
