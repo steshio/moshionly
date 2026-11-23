@@ -649,8 +649,19 @@ function visibleEffects(node) {
  * Figma's shadow blur and layer blur radius are the values a designer
  * types, which are twice the standard deviation of the Gaussian, as in
  * CSS's box-shadow; Moshionly's `blur` means the same, so they carry over
- * unchanged. Both programs draw a shadow in the layer's own coordinates, so
- * it turns with the layer; a mirror flips its offset.
+ * unchanged.
+ *
+ * Moshionly draws a shadow in the layer's own coordinates, so its offset
+ * turns with the layer and with every group around it. Figma keeps a
+ * shadow's direction fixed on the page however the layer or its parents
+ * are turned or mirrored. Figma's documentation only says the offset is
+ * "relative to its object"; the fixed direction comes from user reports,
+ * so it is an assumption (listed in the README). The offset is therefore
+ * taken back from the page into the layer's own coordinates: through the
+ * inverse of the node's whole transform to the page, then through
+ * `toLocal`, which holds any mirror or stretch of the layer. Together that
+ * is the inverse of the layer's own transform up to the page, so the
+ * shadow lands where Figma draws it.
  */
 function effectLayer(layer, node, run, placement, part) {
   const effects = visibleEffects(node);
@@ -663,11 +674,11 @@ function effectLayer(layer, node, run, placement, part) {
     }
     const offset = shadow.offset || { x: 0, y: 0 };
     const [ox, oy] = [numberOr(offset.x, 0), numberOr(offset.y, 0)];
-    const { sx, sy, skew } = placement.shape;
+    const fromPage = multiply(affineOf(placement.toLocal), invert(absoluteOf(node)));
     layer.shadow = {
       color: colorHex(shadow.color || {}, numberOr(shadow.color && shadow.color.a, 1)),
-      x: px(sx * ox + skew * oy),
-      y: px(sy * oy),
+      x: px(fromPage.a * ox + fromPage.c * oy),
+      y: px(fromPage.b * ox + fromPage.d * oy),
       blur: px(Math.max(0, numberOr(shadow.radius, 0))),
     };
     if (numberOr(shadow.spread, 0) !== 0) {

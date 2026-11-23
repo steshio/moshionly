@@ -118,15 +118,44 @@ test('a drop shadow keeps its colour, offset and blur', async () => {
   assert.deepEqual(notes, []);
 });
 
-test('a mirrored layer’s shadow is mirrored too', async () => {
+/** Where a layer's shadow falls on the page: its offset turned with the layer and its parents. */
+function onPage(shadowOf, ...rotations) {
+  const radians = (rotations.reduce((sum, degrees) => sum + (degrees || 0), 0) * Math.PI) / 180;
+  const [x, y] = [shadowOf.x, shadowOf.y];
+  const turned = [x * Math.cos(radians) - y * Math.sin(radians), x * Math.sin(radians) + y * Math.cos(radians)];
+  return turned.map((value) => Math.round(value * 100) / 100 + 0);
+}
+
+// Figma keeps a shadow's direction fixed on the page (from user reports;
+// see the README), while Moshionly turns it with the layer.
+
+test('a turned layer’s shadow still falls the same way on the page', async () => {
+  const { layers } = await convert(
+    F.rect({ name: 'Turned', x: 100, y: 100, width: 50, height: 50, rotation: 90, effects: [shadow({ offset: { x: 0, y: 10 } })] }),
+  );
+  assert.equal(layers[0].rotation, 90);
+  assert.deepEqual([layers[0].shadow.x, layers[0].shadow.y], [10, 0]);
+  assert.deepEqual(onPage(layers[0].shadow, layers[0].rotation), [0, 10], 'below the layer, as in Figma');
+});
+
+test('a mirrored layer’s shadow still falls the same way on the page', async () => {
   const { layers } = await convert(
     F.rect({ name: 'Flipped', width: 10, height: 10, mirror: 'x', effects: [shadow({ offset: { x: 4, y: 6 } })] }),
   );
-  // In the layer's own terms the offset flips vertically; turned by 180
-  // degrees with the layer, it points left and down on the page, as the
-  // mirrored shadow does in Figma.
+  // The mirror is a vertical flip turned by 180 degrees: the flip is in the
+  // layer's own coordinates, the turn takes the offset round to (4, 6).
   assert.equal(Math.abs(layers[0].rotation), 180);
-  assert.deepEqual([layers[0].shadow.x, layers[0].shadow.y], [4, -6]);
+  assert.deepEqual([layers[0].shadow.x, layers[0].shadow.y], [-4, -6]);
+  assert.deepEqual(onPage(layers[0].shadow, layers[0].rotation), [4, 6]);
+});
+
+test('the shadow of a layer in a turned group still falls the same way on the page', async () => {
+  const child = F.rect({ name: 'Child', x: 20, y: 0, width: 20, height: 10, rotation: 30, effects: [shadow({ offset: { x: 3, y: 8 } })] });
+  const holder = F.group({ name: 'Holder', x: 100, y: 100, width: 100, height: 100, rotation: 45 }, [child]);
+  const { layers } = await convert(holder);
+  const [group, placed] = layers;
+  assert.deepEqual([group.rotation, placed.rotation], [45, 30]);
+  assert.deepEqual(onPage(placed.shadow, group.rotation, placed.rotation), [3, 8]);
 });
 
 test('extra shadows, spread, inner shadows and background blur are noted', async () => {

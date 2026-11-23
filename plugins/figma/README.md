@@ -76,6 +76,12 @@ Each of these is listed in the panel's notes when it happens.
 - **Blend modes** linear burn and linear dodge become multiply and screen.
 - **Luminance masks** mask by transparency.
 
+## What the plugin assumes about Figma
+
+Figma's documentation does not settle these, so the plugin follows what Figma users report. If Figma turns out to behave differently, these are the places to fix.
+
+- **A drop shadow keeps its direction on the page** when its layer, or a group around it, is turned or mirrored. Moshionly turns a shadow with its layer, so the plugin turns the offset back to match.
+
 ## What is sent as a picture
 
 When Moshionly has no way to rebuild a layer, Figma renders it and the layer arrives as an image that looks the same but cannot be edited as shapes:
