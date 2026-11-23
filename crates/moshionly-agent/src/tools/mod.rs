@@ -14,7 +14,10 @@ mod apply;
 mod args;
 mod common;
 mod evaluate;
+mod export;
+mod files;
 mod fonts;
+mod image;
 mod node;
 mod overview;
 mod query;
@@ -92,6 +95,8 @@ const TOOLS: &[&ToolDef] = &[
     &screenshot::SCREENSHOT,
     &evaluate::EVALUATE,
     &fonts::LIST_FONTS,
+    &image::IMPORT_IMAGE,
+    &export::EXPORT,
     &undo::UNDO_LAST_AGENT_CHANGE,
 ];
 

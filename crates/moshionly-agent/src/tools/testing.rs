@@ -142,3 +142,33 @@ impl crate::host::FrameSource for StubFrames {
         })
     }
 }
+
+/// A folder of its own for one test, removed when the test ends.
+#[derive(Debug)]
+pub(crate) struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// A new, empty folder whose name starts with `label`.
+    pub fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "moshionly-agent-{label}-{}-{}",
+            std::process::id(),
+            moshionly_core::NodeId::generate()
+        ));
+        std::fs::create_dir_all(&path).expect("the temporary folder can be made");
+        // On macOS the temporary folder is reached through a link; tools
+        // compare real paths.
+        Self(path.canonicalize().unwrap_or(path))
+    }
+
+    /// Where the folder is.
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
