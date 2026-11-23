@@ -11,4 +11,8 @@ authors.workspace = true
 [dependencies]
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
+tempfile = "3"
 thiserror = "2"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
