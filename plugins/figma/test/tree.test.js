@@ -209,3 +209,32 @@ test('an auto layout frame with its first layer on top keeps that stacking', asy
   assert.deepEqual(order(firstOnTop), ['Third', 'Second', 'First'], 'drawn back to front');
   assert.deepEqual(order(plain), ['First', 'Second', 'Third'], 'Figma ignores the setting without auto layout');
 });
+
+test('a top-level frame that does not clip gets a note when something sticks out of it', async () => {
+  const notesFor = async (clipsContent, children) => {
+    const board = frame({ name: 'Open', x: 100, y: 100, width: 400, height: 400, clipsContent }, children);
+    page(board);
+    return (await convert([board])).notes.map((note) => note.message);
+  };
+  const out = () => rect({ name: 'Out', x: 380, y: 20, width: 50, height: 50 });
+  const sticking = await notesFor(false, [out()]);
+  assert.equal(sticking.length, 1);
+  assert.match(sticking[0], /Clip content is off/);
+  assert.deepEqual(await notesFor(true, [out()]), [], 'a frame that clips cuts it off in Figma too');
+  assert.deepEqual(await notesFor(false, [rect({ name: 'In', x: 10, y: 10, width: 380, height: 380 })]), []);
+  assert.deepEqual(await notesFor(false, [rect({ name: 'Edge', x: 0, y: 0, width: 400.3, height: 400 })]), [], 'a fraction of a pixel does not count');
+  assert.deepEqual(await notesFor(false, [Object.assign(out(), { visible: false })]), [], 'hidden layers show nowhere');
+  assert.deepEqual(
+    await notesFor(false, [frame({ name: 'Window', x: 300, y: 0, width: 100, height: 100 }, [out()])]),
+    [],
+    'a frame inside that clips cuts it off first',
+  );
+  assert.equal(
+    (await notesFor(false, [group({ name: 'Cluster', x: 300, y: 0, width: 100, height: 100 }, [rect({ name: 'Far', x: 90, y: 0, width: 50, height: 50 })])])).length,
+    1,
+    'layers inside a group count',
+  );
+  // A shadow reaching past the edge, as Figma reports it in the render bounds.
+  const shadowed = rect({ name: 'Shadowed', x: 350, y: 10, width: 40, height: 40, absoluteRenderBounds: { x: 440, y: 105, width: 70, height: 60 } });
+  assert.equal((await notesFor(false, [shadowed])).length, 1);
+});

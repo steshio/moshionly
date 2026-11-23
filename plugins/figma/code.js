@@ -997,6 +997,39 @@ function frameStyleReasons(node) {
   return reasons;
 }
 
+/** How far past a frame's edge, in pixels, something must reach to count as sticking out. */
+const OVERFLOW_TOLERANCE = 0.5;
+
+/**
+ * Whether Figma draws anything inside `frame` past its edges: a visible
+ * layer, with its stroke and shadow when Figma reports them, reaching out
+ * of the frame's box. Layers inside a frame that clips are only looked at
+ * as far as that frame reaches.
+ */
+function sticksOut(frame) {
+  const toFrame = invert(absoluteOf(frame));
+  const width = numberOr(frame.width, 0);
+  const height = numberOr(frame.height, 0);
+  const outside = (node) => {
+    const bounds = renderBounds(node);
+    return [
+      [bounds.x, bounds.y],
+      [bounds.x + bounds.width, bounds.y],
+      [bounds.x, bounds.y + bounds.height],
+      [bounds.x + bounds.width, bounds.y + bounds.height],
+    ].some((corner) => {
+      const [x, y] = applyMatrix(toFrame, corner[0], corner[1]);
+      const reach = Math.max(-x, -y, x - width, y - height);
+      return reach > OVERFLOW_TOLERANCE;
+    });
+  };
+  const anyOut = (parent) =>
+    Array.from(parent.children || []).some(
+      (child) => child.visible !== false && (outside(child) || (!child.clipsContent && anyOut(child))),
+    );
+  return anyOut(frame);
+}
+
 /**
  * A frame on the canvas becomes an artboard at the same place on the
  * canvas. Its children keep their positions inside it.
@@ -1007,6 +1040,12 @@ async function convertArtboard(node, run) {
   const parts = decompose(transform);
   if (Math.abs(angle((parts.radians * 180) / Math.PI)) > 0.001 || parts.sy < 0) {
     run.note(node, 'Artboards cannot be turned or mirrored, so this frame arrives upright.');
+  }
+  if (node.clipsContent === false && sticksOut(node)) {
+    run.note(
+      node,
+      'Clip content is off in Figma, so what sticks out of this frame shows there; a Moshionly artboard cuts it off at the edge.',
+    );
   }
   const board = { id: run.designId(node), type: 'artboard', name: node.name || '' };
   board.x = px(transform.e);

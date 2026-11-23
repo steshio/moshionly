@@ -71,7 +71,7 @@ Each of these is listed in the panel's notes when it happens.
 - **Mixed text styles**: Moshionly text has one style, so the whole text takes the style of most of its characters. The note lists the other styles. **Justified** text is aligned left; **underline**, **strikethrough**, **small caps**, **list bullets**, **paragraph spacing** and **truncation** with "…" are left out.
 - **Auto line height** becomes 120% of the font size, which is close for most fonts.
 - **Smoothed corners** become plain round corners.
-- **A frame on the canvas** cannot turn, fade or have a shadow as an artboard; when it has round corners, a stroke, effects, opacity or a blend mode, those go on a group just inside the artboard, and a shadow is cut off at the artboard's edge. A turned frame arrives upright.
+- **A frame on the canvas** cannot turn, fade or have a shadow as an artboard; when it has round corners, a stroke, effects, opacity or a blend mode, those go on a group just inside the artboard, and a shadow is cut off at the artboard's edge. An artboard always cuts off what sticks out of it, even when **Clip content** is off for the frame in Figma. A turned frame arrives upright.
 - **A background image** of a frame that is cropped, tiled or adjusted covers the frame instead.
 - **Blend modes** linear burn and linear dodge become multiply and screen.
 - **Luminance masks** mask by transparency.
