@@ -78,8 +78,8 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moshionly_core::model::{BlendMode, GradientStop};
-    use moshionly_core::scene::{Content, SceneNode, ScenePaint};
+    use moshionly_core::model::{BlendMode, GradientStop, Shadow};
+    use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
     fn scene(background: Option<ScenePaint>) -> Scene {
@@ -287,6 +287,131 @@ mod tests {
         scene.nodes = vec![hidden, flattened, broken];
         let frame = renderer.render(&scene, &RenderOptions::new()).unwrap();
         assert!(frame.premultiplied().iter().all(|byte| *byte == 0));
+    }
+
+    /// Renders `nodes` on a transparent 40 by 20 artboard.
+    fn draw(nodes: Vec<SceneNode>) -> Frame {
+        let mut scene = scene(None);
+        scene.nodes = nodes;
+        Renderer::new()
+            .render(&scene, &RenderOptions::new())
+            .unwrap()
+    }
+
+    fn group(children: Vec<SceneNode>) -> SceneNode {
+        node(
+            "group",
+            Affine::IDENTITY,
+            40.0,
+            20.0,
+            Content::Group { children },
+        )
+    }
+
+    #[test]
+    fn clips_cut_with_rounded_corners() {
+        let mut clipped = group(vec![square("s", 0.0, 0.0, 20.0, Color::BLACK)]);
+        clipped.clip = Some(Clip {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            radii: [5.0; 4],
+        });
+        let frame = draw(vec![clipped]);
+        let alpha = |x, y| frame.premultiplied_pixel(x, y).unwrap()[3];
+        assert_eq!(alpha(0, 0), 0, "the rounded corner");
+        assert_eq!(alpha(5, 5), 255);
+        assert_eq!(alpha(8, 5), 255);
+        assert!((1..255).contains(&alpha(9, 5)), "the smoothed edge");
+        assert_eq!(alpha(10, 5), 0, "past the clip");
+        assert_eq!(alpha(15, 15), 0);
+    }
+
+    #[test]
+    fn blend_modes_mix_with_what_is_behind() {
+        let mix = |mode| {
+            let mut red = square("red", 0.0, 0.0, 10.0, Color::rgb(255, 0, 0));
+            red.blend_mode = mode;
+            let frame = draw(vec![
+                square("blue", 0.0, 0.0, 10.0, Color::rgb(0, 0, 255)),
+                red,
+            ]);
+            frame.premultiplied_pixel(5, 5).unwrap()
+        };
+        assert_eq!(mix(BlendMode::Normal), [255, 0, 0, 255]);
+        assert_eq!(mix(BlendMode::Multiply), [0, 0, 0, 255]);
+        assert_eq!(mix(BlendMode::Screen), [255, 0, 255, 255]);
+        assert_eq!(mix(BlendMode::Lighten), [255, 0, 255, 255]);
+        assert_eq!(mix(BlendMode::Difference), [255, 0, 255, 255]);
+        // Over nothing, a blend mode draws the layer as it is.
+        let mut alone = square("alone", 0.0, 0.0, 10.0, Color::rgb(255, 0, 0));
+        alone.blend_mode = BlendMode::Multiply;
+        assert_eq!(
+            draw(vec![alone]).premultiplied_pixel(5, 5),
+            Some([255, 0, 0, 255])
+        );
+    }
+
+    #[test]
+    fn shadows_sit_behind_and_blur_softens() {
+        let mut shadowed = square("s", 2.0, 2.0, 8.0, Color::WHITE);
+        shadowed.shadow = Some(Shadow {
+            color: Color::rgba(0, 0, 0, 128),
+            x: 20.0,
+            y: 0.0,
+            blur: 0.0,
+        });
+        let frame = draw(vec![shadowed.clone()]);
+        assert_eq!(frame.premultiplied_pixel(5, 5), Some([255, 255, 255, 255]));
+        assert_eq!(frame.premultiplied_pixel(25, 5), Some([0, 0, 0, 128]));
+        assert_eq!(frame.premultiplied_pixel(35, 5), Some([0, 0, 0, 0]));
+
+        // Blur spreads the edge and lowers the middle of a small shape.
+        let mut blurred = square("b", 10.0, 2.0, 16.0, Color::BLACK);
+        blurred.blur = 8.0;
+        let frame = draw(vec![blurred]);
+        let alpha = |x, y| frame.premultiplied_pixel(x, y).unwrap()[3];
+        assert!(alpha(8, 10) > 20, "outside the edge: {}", alpha(8, 10));
+        assert!((100..250).contains(&alpha(10, 10)), "{}", alpha(10, 10));
+        assert!(alpha(18, 10) > alpha(11, 10));
+
+        // The blur covers the shadow too; the clip cuts both.
+        let mut both = shadowed;
+        both.blur = 4.0;
+        let frame = draw(vec![both.clone()]);
+        let alpha = |frame: &Frame, x| frame.premultiplied_pixel(x, 5).unwrap()[3];
+        assert!(
+            (1..128).contains(&alpha(&frame, 21)),
+            "{}",
+            alpha(&frame, 21)
+        );
+        both.clip = Some(Clip {
+            rect: Rect::new(0.0, 0.0, 12.0, 12.0),
+            radii: [0.0; 4],
+        });
+        let frame = draw(vec![both]);
+        assert_eq!(alpha(&frame, 21), 0);
+        assert!(alpha(&frame, 11) > 0, "the blurred edge inside the clip");
+    }
+
+    #[test]
+    fn masks_keep_what_their_alpha_covers() {
+        let content = square("content", 0.0, 0.0, 20.0, Color::rgb(0, 255, 0));
+        let mut masked = group(vec![content]);
+        let mut mask = square("mask", 0.0, 0.0, 10.0, Color::BLACK);
+        (mask.width, mask.height) = (10.0, 20.0);
+        mask.opacity = 0.5;
+        masked.mask = Some(Box::new(mask));
+        let frame = draw(vec![
+            square("behind", 30.0, 0.0, 10.0, Color::rgb(0, 0, 255)),
+            masked,
+        ]);
+        let pixel = |x, y| frame.premultiplied_pixel(x, y).unwrap();
+        let half = pixel(5, 5);
+        assert!(
+            half[1].abs_diff(128) <= 1 && half[3].abs_diff(128) <= 1,
+            "{half:?}"
+        );
+        assert_eq!(pixel(15, 5), [0, 0, 0, 0], "outside the mask");
+        assert_eq!(pixel(35, 5), [0, 0, 255, 255], "the mask cuts nothing else");
     }
 
     #[test]

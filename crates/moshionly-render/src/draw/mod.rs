@@ -4,6 +4,7 @@
 //! coordinate space: the painter saves the canvas, applies the node's
 //! transform, draws, and restores.
 
+mod effects;
 mod geometry;
 mod paint;
 mod stroke;
@@ -82,17 +83,67 @@ impl<'a> Painter<'a> {
         let canvas = self.canvas;
         canvas.save();
         canvas.concat(&convert::matrix(&node.transform));
-        if opacity >= 1.0 || is_flat(node) {
+        self.effects(node, opacity);
+        canvas.restore();
+    }
+
+    /// Draws a node's content with its effects, in the order of
+    /// `docs/architecture.md`, innermost first: content, shadow, blur, mask
+    /// and clip, blend mode, opacity. Each effect that needs one gets an
+    /// offscreen layer, and the layers nest the other way round.
+    fn effects(&mut self, node: &SceneNode, opacity: f32) {
+        let canvas = self.canvas;
+        let filter = effects::filter(node);
+        let blend = effects::blend_mode(node.blend_mode);
+        let plain = filter.is_none() && node.mask.is_none() && blend == sk::BlendMode::SrcOver;
+        if plain && (opacity >= 1.0 || is_flat(node)) {
+            // Nothing needs a layer: fading the one thing drawn is fading
+            // the node.
+            if let Some(clip) = &node.clip {
+                canvas.clip_rrect(convert::rounded_rect(&clip.rect, &clip.radii), None, true);
+            }
             self.content(node, opacity);
-        } else {
-            // What the node draws overlaps itself. Fading the pieces one by
-            // one would show them through each other, so the node is drawn
-            // whole into a layer and the layer is faded.
-            canvas.save_layer_alpha_f(None, opacity);
+            return;
+        }
+
+        // Opacity and blend mode apply to everything below as a whole, so
+        // that what the node draws does not show through itself.
+        let composite = opacity < 1.0 || blend != sk::BlendMode::SrcOver;
+        if composite {
+            let mut paint = sk::Paint::default();
+            paint.set_alpha_f(opacity);
+            paint.set_blend_mode(blend);
+            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
+        }
+        if let Some(clip) = &node.clip {
+            canvas.clip_rrect(convert::rounded_rect(&clip.rect, &clip.radii), None, true);
+        }
+        if node.mask.is_some() {
+            // The mask cuts into this layer only, not into what is behind.
+            canvas.save_layer(&sk::canvas::SaveLayerRec::default());
+        }
+        if let Some(filter) = filter {
+            let mut paint = sk::Paint::default();
+            paint.set_image_filter(filter);
+            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
             self.content(node, 1.0);
             canvas.restore();
+        } else {
+            self.content(node, 1.0);
         }
-        canvas.restore();
+        if let Some(mask) = &node.mask {
+            // What the mask draws keeps what is under it in proportion to
+            // its alpha; the rest goes.
+            let mut paint = sk::Paint::default();
+            paint.set_blend_mode(sk::BlendMode::DstIn);
+            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
+            self.node(mask);
+            canvas.restore();
+            canvas.restore();
+        }
+        if composite {
+            canvas.restore();
+        }
     }
 
     /// Draws what a node holds, in the node's own coordinates, faded by
