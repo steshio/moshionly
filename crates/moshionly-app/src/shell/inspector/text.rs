@@ -267,10 +267,10 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
                 bind.apply("Change case", &set_all(&ids, "case", value_of(&case)));
             }
             TextChange::Sizing(sizing) => {
-                bind.apply(
-                    "Change resizing",
-                    &set_all(&ids, "auto_size", value_of(&sizing)),
-                );
+                // Text that hugged its words keeps the box it was drawn in.
+                let mut edits = bind.editor.settle_edits(&ids, false);
+                edits.extend(set_all(&ids, "auto_size", value_of(&sizing)));
+                bind.apply("Change resizing", &edits);
             }
         }
     }

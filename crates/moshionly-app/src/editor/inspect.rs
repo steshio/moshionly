@@ -8,6 +8,8 @@ use moshionly_core::model::{AutoSize, NodeData};
 use moshionly_core::{Document, Edit, Node, NodeId, NodeType};
 use serde_json::Value;
 
+use super::settle::Frame;
+
 /// A property's value across the selection: the same everywhere, or not.
 /// Either way it carries the value of the first layer, for a starting
 /// point.
@@ -118,16 +120,23 @@ pub fn patch_all(ids: &[NodeId], field: &str, patch: Value) -> Vec<Edit> {
 
 /// Edits that set the width (or height, with `height`) of every layer in
 /// `nodes` to `value`, changing the other side in proportion when
-/// `keep_proportions` is on.
-pub fn resize_all(nodes: &[&Node], value: f64, height: bool, keep_proportions: bool) -> Vec<Edit> {
+/// `keep_proportions` is on. Each layer comes with its box as drawn at rest
+/// (see [`settle`](super::settle)), which the proportions are taken from;
+/// for text that hugs its words, settle it in the same step first.
+pub fn resize_all(
+    nodes: &[(&Node, Frame)],
+    value: f64,
+    height: bool,
+    keep_proportions: bool,
+) -> Vec<Edit> {
     nodes
         .iter()
-        .filter_map(|node| {
-            let layer = node.layer()?;
+        .filter_map(|(node, frame)| {
+            node.layer()?;
             let (field, other_field, old, other) = if height {
-                ("height", "width", layer.height, layer.width)
+                ("height", "width", frame.height, frame.width)
             } else {
-                ("width", "height", layer.width, layer.height)
+                ("width", "height", frame.width, frame.height)
             };
             let mut patch = serde_json::Map::new();
             patch.insert(field.to_owned(), tidy(value).into());
@@ -202,6 +211,32 @@ mod tests {
         texts.iter().map(|text| NodeId::from(*text)).collect()
     }
 
+    /// Nodes with the boxes their properties describe.
+    fn framed(nodes: &[Node]) -> Vec<(&Node, Frame)> {
+        nodes
+            .iter()
+            .map(|node| (node, Frame::of(node.layer().unwrap())))
+            .collect()
+    }
+
+    #[test]
+    fn proportions_come_from_the_box_that_is_drawn() {
+        let doc = document();
+        let text = doc.get(&NodeId::from("t")).unwrap();
+        let drawn = Frame {
+            x: 10.0,
+            y: 0.0,
+            width: 300.0,
+            height: 50.0,
+        };
+        let mut moved = doc.clone();
+        moved
+            .apply(&resize_all(&[(text, drawn)], 100.0, true, true))
+            .unwrap();
+        let sized = text_of(moved.get(&NodeId::from("t")).unwrap()).unwrap();
+        assert_eq!((sized.layer.width, sized.layer.height), (600.0, 100.0));
+    }
+
     #[test]
     fn equal_values_are_shown_and_different_ones_are_mixed() {
         let doc = document();
@@ -257,7 +292,7 @@ mod tests {
             .iter()
             .map(|id| doc.get(&NodeId::from(*id)).unwrap().clone())
             .collect();
-        let refs: Vec<&Node> = nodes.iter().collect();
+        let refs = framed(&nodes);
         doc.apply(&resize_all(&refs, 400.0, false, true)).unwrap();
         let size = |doc: &Document, id: &str| {
             let layer = doc.get(&NodeId::from(id)).unwrap().layer().unwrap().clone();
@@ -269,7 +304,7 @@ mod tests {
             .iter()
             .map(|id| doc.get(&NodeId::from(*id)).unwrap().clone())
             .collect();
-        let refs: Vec<&Node> = nodes.iter().collect();
+        let refs = framed(&nodes);
         doc.apply(&resize_all(&refs, 50.0, true, false)).unwrap();
         assert_eq!(size(&doc, "a"), (400.0, 50.0));
     }
@@ -278,8 +313,13 @@ mod tests {
     fn sizing_text_stops_it_hugging_its_words() {
         let mut doc = document();
         let text = doc.get(&NodeId::from("t")).unwrap().clone();
-        doc.apply(&resize_all(&[&text], 300.0, false, false))
-            .unwrap();
+        doc.apply(&resize_all(
+            &framed(std::slice::from_ref(&text)),
+            300.0,
+            false,
+            false,
+        ))
+        .unwrap();
         let sized = text_of(doc.get(&NodeId::from("t")).unwrap())
             .unwrap()
             .clone();
@@ -288,7 +328,13 @@ mod tests {
             (300.0, AutoSize::Height)
         );
         let text = doc.get(&NodeId::from("t")).unwrap().clone();
-        doc.apply(&resize_all(&[&text], 80.0, true, false)).unwrap();
+        doc.apply(&resize_all(
+            &framed(std::slice::from_ref(&text)),
+            80.0,
+            true,
+            false,
+        ))
+        .unwrap();
         let sized = text_of(doc.get(&NodeId::from("t")).unwrap()).unwrap();
         assert_eq!(sized.auto_size, AutoSize::Fixed);
     }

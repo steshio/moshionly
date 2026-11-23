@@ -13,7 +13,10 @@ use serde_json::{Value, json};
 
 use super::{Bind, numeric, text};
 use crate::{
-    editor::inspect::{Inspected, artboard_of, resize_all, set_all, shared, tidy},
+    editor::{
+        inspect::{Inspected, artboard_of, resize_all, set_all, shared, text_of, tidy},
+        settle::{Frame, is_auto_sized, settle_edit},
+    },
     theme::icons,
     widgets::{
         ColorField, ColorResponse, Dropdown, IconButton, NumericResponse, Rgba, control_row, pair,
@@ -263,29 +266,29 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     let artboards = inspected.all_of(NodeType::Artboard);
     let rotatable = inspected.ids_where(|node| node.node_type() != NodeType::Artboard);
     let rounded = inspected.ids_where(|node| has_field(node, "corner_radius"));
-    let number = |read: fn(&LayerProps) -> f64| inspected.number(|node| Some(read(node.layer()?)));
-    // Text that hugs its words shows the size it is drawn at.
-    let mut drawn = Vec::new();
-    for node in inspected.nodes() {
-        let layer = node.layer();
-        let measured = crate::editor::inspect::text_of(node)
-            .filter(|text| text.auto_size != moshionly_core::model::AutoSize::Fixed)
-            .and_then(|_| {
-                let item = crate::editor::transform::Item::of(bind.editor.document(), &node.id)?;
-                let b = bind.editor.box_of(&node.id)?;
-                let scale = item.world_scale().max(1e-9);
-                Some((
-                    tidy(f64::from(b.size.x) / scale),
-                    tidy(f64::from(b.size.y) / scale),
-                ))
-            });
-        drawn.push(measured.or_else(|| layer.map(|l| (l.width, l.height))));
-    }
-    let w = shared(drawn.iter().flatten().map(|size| size.0));
-    let h = shared(drawn.iter().flatten().map(|size| size.1));
-    let (Some(x), Some(y), Some(w), Some(h)) = (number(|l| l.x), number(|l| l.y), w, h) else {
+    // Every layer's box as drawn at rest: text that hugs its words shows,
+    // and is sized from, the box its words take, not the hint in the file.
+    let framed: Vec<(&Node, Frame)> = inspected
+        .nodes()
+        .iter()
+        .filter_map(|node| Some((*node, bind.editor.frame_at_rest(&node.id)?)))
+        .collect();
+    // Editing such text first makes that box its own, in the same step.
+    let settle: Vec<Edit> = framed
+        .iter()
+        .filter(|(node, _)| text_of(node).is_some_and(is_auto_sized))
+        .filter_map(|(node, frame)| settle_edit(node, *frame))
+        .collect();
+    let part = |read: fn(&Frame) -> f64| shared(framed.iter().map(|(_, frame)| tidy(read(frame))));
+    let (Some(x), Some(y), Some(w), Some(h)) = (
+        part(|f| f.x),
+        part(|f| f.y),
+        part(|f| f.width),
+        part(|f| f.height),
+    ) else {
         return;
     };
+    let settled = |more: Vec<Edit>| [settle.clone(), more].concat();
     let rotation = inspected.number(|node| {
         (node.node_type() != NodeType::Artboard).then(|| node.layer().map(|l| l.rotation))?
     });
@@ -388,16 +391,20 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     }
     for (response, value, field) in fields {
         match field {
-            Field::X => bind.field(&response, "Move", || set_all(&ids, "x", tidy(value))),
-            Field::Y => bind.field(&response, "Move", || set_all(&ids, "y", tidy(value))),
+            Field::X => bind.field(&response, "Move", || {
+                settled(set_all(&ids, "x", tidy(value)))
+            }),
+            Field::Y => bind.field(&response, "Move", || {
+                settled(set_all(&ids, "y", tidy(value)))
+            }),
             Field::Width => bind.field(&response, "Resize", || {
-                resize_all(inspected.nodes(), value, false, keep)
+                settled(resize_all(&framed, value, false, keep))
             }),
             Field::Height => bind.field(&response, "Resize", || {
-                resize_all(inspected.nodes(), value, true, keep)
+                settled(resize_all(&framed, value, true, keep))
             }),
             Field::Rotation => bind.field(&response, "Rotate", || {
-                set_all(&rotatable, "rotation", tidy(normal_angle(value)))
+                settled(set_all(&rotatable, "rotation", tidy(normal_angle(value))))
             }),
             Field::Radius => bind.field(&response, "Change corner radius", || {
                 set_all(&rounded, "corner_radius", tidy(value.max(0.0)))

@@ -1232,3 +1232,72 @@ fn colours_menus_and_sliders_show_mixed_values_too() {
     assert_eq!(stroke("title").map(|s| s.width), Some(4.0));
     assert_eq!(stroke("raised"), None);
 }
+
+/// The box a layer is drawn in on the canvas, as an upright rectangle.
+fn drawn(harness: &mut Harness<'_, Shell>, id: &str) -> egui::Rect {
+    harness
+        .state_mut()
+        .editor_mut()
+        .box_of(&NodeId::from(id))
+        .unwrap()
+        .bounds()
+}
+
+#[test]
+fn the_inspector_sizes_text_by_the_box_it_is_drawn_in() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let before = drawn(&mut harness, "title");
+    assert!(before.width() > 300.0, "the title is wide: {before:?}");
+    // The field shows the width it is drawn at, not the hint in the file.
+    let width = field(&harness, "Width").accesskit_node().numeric_value();
+    assert!(
+        width.is_some_and(|w| (w - f64::from(before.width())).abs() < 0.5),
+        "{width:?}"
+    );
+    // Setting the height keeps the width that is drawn: no re-wrapping.
+    type_into(&mut harness, "Height", "80");
+    let after = drawn(&mut harness, "title");
+    assert!((after.width() - before.width()).abs() < 0.5, "{after:?}");
+    assert!((after.height() - 80.0).abs() < 0.5);
+    assert!((after.left() - before.left()).abs() < 0.5);
+    let document = harness.state().editor().document().clone();
+    let title =
+        moshionly_app::editor::inspect::text_of(document.get(&NodeId::from("title")).unwrap())
+            .unwrap()
+            .clone();
+    assert_eq!(title.auto_size, moshionly_core::model::AutoSize::Fixed);
+}
+
+#[test]
+fn a_fixed_size_chosen_for_text_is_the_size_it_had() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("raised"));
+    harness.run();
+    let before = drawn(&mut harness, "raised");
+    harness
+        .get_by_label("Text resizing: Auto width")
+        .click_accesskit();
+    harness.run();
+    harness.get_by_label("Fixed size").click();
+    harness.run();
+    let after = drawn(&mut harness, "raised");
+    assert!(
+        (after.size() - before.size()).length() < 0.5,
+        "{before:?} {after:?}"
+    );
+    assert!((after.min - before.min).length() < 0.5);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Change resizing")
+    );
+}
