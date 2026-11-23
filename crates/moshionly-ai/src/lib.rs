@@ -27,6 +27,7 @@ mod keys;
 mod paths;
 mod provider;
 pub mod redact;
+mod registry;
 mod settings;
 mod tool;
 
@@ -49,6 +50,10 @@ pub use provider::{
     ToolTransport,
 };
 pub use redact::ApiKey;
+pub use registry::{
+    ProviderDescriptor, ProviderRegistry, ProviderStatus, RegistryError, choose_provider,
+    known_providers,
+};
 pub use settings::{AiSettings, ProviderSettings, SETTINGS_FILE, SettingsError};
 pub use tool::{ToolContent, ToolExecutor, ToolOutput, ToolSpec};
 

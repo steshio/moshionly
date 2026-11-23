@@ -164,7 +164,7 @@ impl ProviderSettings {
 #[serde(default)]
 pub struct AiSettings {
     /// The id of the provider the chat opens with. `None` leaves the choice
-    /// to the app.
+    /// to [`choose_provider`](crate::choose_provider).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<String>,
     /// Choices per provider, by provider id. A provider without an entry
