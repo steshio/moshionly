@@ -250,6 +250,18 @@ impl FontState {
         Ok(added)
     }
 
+    /// The name of the registered family that `family` names, ignoring
+    /// case, as its font spells it; `family` itself when no registered font
+    /// has it. Skia finds registered fonts only by their exact name.
+    pub(crate) fn registered_name<'a>(&'a self, family: &'a str) -> &'a str {
+        let key = family.to_lowercase();
+        self.faces
+            .iter()
+            .map(|face| face.family.as_str())
+            .find(|name| name.to_lowercase() == key)
+            .unwrap_or(family)
+    }
+
     pub(crate) fn has_family(&mut self, family: &str) -> bool {
         let key = family.to_lowercase();
         if let Some(known) = self.known_families.get(&key) {
