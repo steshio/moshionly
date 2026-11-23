@@ -237,6 +237,18 @@ impl Settings {
                 f64::from(height) / scale,
             ));
         let moments = self.moments(format, board.duration)?;
+        if let Some(times) = moments.frames() {
+            let (fps, max_fps) = (times.rate().fps(), format.max_fps_at(width, height));
+            if fps > max_fps {
+                return Err(SettingsError::FrameRateTooHighForSize {
+                    format,
+                    fps,
+                    max_fps,
+                    width,
+                    height,
+                });
+            }
+        }
         if self.gif_loop == Loop::Times(0) {
             return Err(SettingsError::NoPlays);
         }
@@ -563,6 +575,24 @@ pub enum SettingsError {
         fps: f64,
         /// The highest rate the format plays.
         max_fps: f64,
+    },
+    /// The frame rate is higher than the format plays at this frame size:
+    /// see [`Format::max_fps_at`].
+    #[error(
+        "{format} video of {width} by {height} pixels can play at most {max_fps} frames per \
+         second, and {fps} was asked for; choose {max_fps} or fewer, or a smaller size"
+    )]
+    FrameRateTooHighForSize {
+        /// The format.
+        format: Format,
+        /// The rate asked for.
+        fps: f64,
+        /// The highest rate the format plays at this size.
+        max_fps: f64,
+        /// Width of the frames, in pixels.
+        width: u32,
+        /// Height of the frames, in pixels.
+        height: u32,
     },
     /// A moment or range end is before the start or after the end of the
     /// artboard.
@@ -901,6 +931,36 @@ mod tests {
             plan_for(never, Format::Gif).unwrap_err(),
             SettingsError::NoPlays
         );
+    }
+
+    #[test]
+    fn mp4_frame_rates_stop_where_h264_does() {
+        let rate = |fps| Settings::default().with_frame_rate(FrameRate::new(fps, 1).unwrap());
+        assert!(plan_for(rate(120), Format::Mp4).is_ok());
+        let error = plan_for(rate(240), Format::Mp4).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SettingsError::FrameRateTooHigh { max_fps: 172.0, .. }
+            ),
+            "{error}"
+        );
+        assert!(plan_for(rate(240), Format::WebM).is_ok());
+        // Large frames allow fewer: 3840 by 2130 stops at 64.47.
+        let large = rate(120).with_size(Size::Width(3840));
+        let error = plan_for(large, Format::Mp4).unwrap_err();
+        assert_eq!(
+            error,
+            SettingsError::FrameRateTooHighForSize {
+                format: Format::Mp4,
+                fps: 120.0,
+                max_fps: 64.47,
+                width: 3840,
+                height: 2130,
+            }
+        );
+        assert!(error.to_string().contains("or a smaller size"), "{error}");
+        assert!(plan_for(rate(60).with_size(Size::Width(3840)), Format::Mp4).is_ok());
     }
 
     #[test]

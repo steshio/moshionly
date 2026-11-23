@@ -15,6 +15,7 @@ use openh264::encoder::{
 
 use openh264_sys2::{ENCODER_OPTION_TRACE_LEVEL, WELS_LOG_QUIET};
 
+use super::level::level_for;
 use super::yuv::Yuv420;
 use crate::error::ExportError;
 use crate::settings::Quality;
@@ -58,6 +59,13 @@ impl H264Encoder {
         let bitrate = (pixels_per_second * settings.bits_per_pixel).clamp(100_000.0, 200e6) as u32;
         // A key frame every two seconds, so players can seek quickly.
         let key_interval = (2.0 * fps).round().max(1.0) as u32;
+        // OpenH264 would pick a level for at most 60 fps; see `level`.
+        let level = level_for(width, height, fps).ok_or_else(|| {
+            ExportError::H264(format!(
+                "{width} by {height} pixels at {rate} is more than H.264 can describe; choose a \
+                 lower frame rate or a smaller size"
+            ))
+        })?;
         let config = EncoderConfig::new()
             // The only general-purpose mode this OpenH264 accepts; "real
             // time" only means it never waits for frames that come later.
@@ -67,6 +75,7 @@ impl H264Encoder {
             .max_frame_rate(EncoderRate::from_hz(fps as f32))
             .skip_frames(false)
             .profile(Profile::High)
+            .level(level.encoder)
             .complexity(settings.complexity)
             .qp(QpRange::new(settings.qp.0, settings.qp.1))
             .intra_frame_period(IntraFramePeriod::from_num_frames(key_interval))
@@ -225,5 +234,25 @@ mod tests {
         let (sps, pps) = encoder.parameter_sets().unwrap();
         assert_eq!(sps[0] & 0x1f, NAL_SPS);
         assert_eq!(pps[0] & 0x1f, NAL_PPS);
+    }
+
+    #[test]
+    fn the_declared_level_follows_the_true_frame_rate() {
+        // 1920 by 1080 needs level 4 at 30 fps, 4.2 at 60 and 5.1 at 120.
+        let (width, height) = (1920, 1080);
+        let pixels = vec![128; width * height * 4];
+        let picture = Yuv420::from_rgba(&pixels, width, height);
+        for (rate, level_idc) in [
+            (FrameRate::FPS_30, 40),
+            (FrameRate::FPS_60, 42),
+            (FrameRate::FPS_120, 51),
+        ] {
+            let mut encoder =
+                H264Encoder::new(width as u32, height as u32, rate, Quality::Draft).unwrap();
+            encoder.encode(&picture, 0.0).unwrap();
+            let (sps, _) = encoder.parameter_sets().unwrap();
+            // After the unit header: profile, constraint flags, level.
+            assert_eq!(sps[3], level_idc, "{rate}");
+        }
     }
 }

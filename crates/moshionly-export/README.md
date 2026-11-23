@@ -63,7 +63,11 @@ its own size, 30 frames per second, on its own background.
   (24000/1001) keep their timing over long videos. `FrameRate::PRESETS` has
   the common rates; `FrameRate::from_fps(29.97)` understands the television
   rates written as decimals. GIF stops at 50 frames per second: its delays are
-  whole hundredths of a second, and viewers slow down anything faster.
+  whole hundredths of a second, and viewers slow down anything faster. MP4
+  stops at 172, the most H.264 allows at the levels its encoder writes, and
+  at fewer for large frames (64 at 3840 by 2160). The H.264 level written
+  into the file is worked out from the true size and rate, so a player
+  knows what the video needs before it tries to play it.
 - **Background**: the artboard's own fill, transparent, or the artboard over
   a colour. Where the artboard's fill is missing or see-through, formats that
   can be transparent stay transparent and MP4 shows white. MP4 refuses a

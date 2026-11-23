@@ -153,12 +153,27 @@ impl Format {
     }
 
     /// The highest frame rate the format is written at, in frames per
-    /// second. GIF frame delays are whole hundredths of a second and most
-    /// viewers slow down delays below two hundredths, so GIFs stop at 50.
+    /// second, at any size. GIF frame delays are whole hundredths of a
+    /// second and most viewers slow down delays below two hundredths, so
+    /// GIFs stop at 50. H.264 allows no more than 172 at the levels the MP4
+    /// encoder writes. Large MP4 frames allow fewer; see
+    /// [`max_fps_at`](Self::max_fps_at).
     pub fn max_fps(self) -> f64 {
         match self {
             Format::Gif => 50.0,
+            Format::Mp4 => crate::mp4::MAX_FPS,
             _ => 240.0,
+        }
+    }
+
+    /// The highest frame rate the format is written at for frames of
+    /// `width` by `height` pixels. The same as [`max_fps`](Self::max_fps),
+    /// except for MP4: H.264 limits how many pixels may be decoded each
+    /// second, so 3840 by 2160 stops at 64 frames per second.
+    pub fn max_fps_at(self, width: u32, height: u32) -> f64 {
+        match self {
+            Format::Mp4 => crate::mp4::max_fps(width, height),
+            _ => self.max_fps(),
         }
     }
 }
@@ -222,6 +237,10 @@ mod tests {
         assert_eq!(Format::ProRes.extension(), Some("mov"));
         assert!(!Format::Png.is_animated());
         assert_eq!(Format::Gif.max_fps(), 50.0);
+        assert_eq!(Format::Mp4.max_fps(), 172.0);
+        assert_eq!(Format::Mp4.max_fps_at(1920, 1080), 172.0);
+        assert_eq!(Format::Mp4.max_fps_at(3840, 2160), 64.0);
+        assert_eq!(Format::WebM.max_fps_at(3840, 2160), 240.0);
     }
 
     #[test]

@@ -1,13 +1,17 @@
 //! MP4 video with H.264, encoded in-process.
 //!
 //! Frames are converted to BT.709 Y'CbCr on the worker threads (see
-//! [`yuv`]), encoded in order with OpenH264 (see [`h264`]) and written into
+//! [`yuv`]), encoded in order with OpenH264 (see [`h264`]), which declares
+//! the H.264 level the size and rate need (see [`level`]), and written into
 //! an MP4 file whose header comes first (see [`mux`]). MP4 cannot be
 //! transparent: the plan always puts a colour behind the frames.
 
 mod h264;
+mod level;
 mod mux;
 mod yuv;
+
+pub(crate) use level::{MAX_FPS, max_fps};
 
 use std::fs::File;
 use std::io::BufWriter;
