@@ -16,3 +16,4 @@ moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 # adding a feature without checking can make every build compile Skia itself.
 skia-safe = { version = "0.157", features = ["textlayout"] }
 thiserror = "2"
+unicode-segmentation = "1.13"

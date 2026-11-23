@@ -22,8 +22,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use skia_safe as sk;
-use skia_safe::textlayout::TypefaceFontProvider;
+use skia_safe::textlayout::{FontCollection, TypefaceFontProvider};
 use thiserror::Error;
+
+use crate::text::{self, LayoutCache};
 
 /// The family text falls back to: Inter, which is bundled.
 pub const DEFAULT_FAMILY: &str = "Inter";
@@ -132,6 +134,8 @@ impl FontLibrary {
             faces: Vec::new(),
             known_families: HashMap::new(),
             generation: 0,
+            collection: FontCollection::new(),
+            layouts: LayoutCache::default(),
         };
         for bytes in BUNDLED {
             let added = state.add(sk::Data::new_copy(bytes));
@@ -140,6 +144,7 @@ impl FontLibrary {
                 "the bundled fonts load"
             );
         }
+        state.collection = text::collection(&state);
         Self {
             shared: Arc::new(Mutex::new(state)),
         }
@@ -206,10 +211,15 @@ pub(crate) struct FontState {
     /// Goes up whenever fonts are added, so that anything laid out with
     /// the old fonts can tell it is stale.
     pub(crate) generation: u64,
+    /// Finds fonts for text, falling back letter by letter.
+    pub(crate) collection: FontCollection,
+    /// Texts laid out recently.
+    pub(crate) layouts: LayoutCache,
 }
 
 // SAFETY: `FontState` holds Skia objects that skia-safe does not mark
-// `Send` (font managers and the typeface provider) because they are
+// `Send` (font managers, the typeface provider and the font collection,
+// which paragraphs built from it point back to) because they are
 // reference counted and could be shared with code on another thread.
 // Here they cannot be: every one of them is created by `FontLibrary::build`
 // and is reachable only through `FontState`, which is reachable only
@@ -235,6 +245,7 @@ impl FontState {
             return Err(FontError::NotAFont);
         }
         self.known_families.clear();
+        self.collection.clear_caches();
         self.generation += 1;
         Ok(added)
     }

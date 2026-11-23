@@ -16,6 +16,7 @@ pub mod fonts;
 pub mod frame;
 pub mod options;
 pub mod renderer;
+mod text;
 
 pub use error::{RenderError, RenderWarning};
 pub use fonts::{FontError, FontFace, FontFamily, FontLibrary};
