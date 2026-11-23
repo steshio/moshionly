@@ -11,7 +11,7 @@
 //! platform. Photos are turned upright by their orientation tag.
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
@@ -26,6 +26,9 @@ pub const DEFAULT_BUDGET: usize = 256 << 20;
 
 /// The longest side of an image that is decoded.
 const MAX_SIDE: u32 = 16_384;
+
+/// The largest image file that is read, in bytes: 256 MB.
+const MAX_FILE_BYTES: u64 = 256 << 20;
 
 /// Finds, decodes and keeps the images of image layers.
 ///
@@ -148,8 +151,7 @@ impl AssetLoader {
                 if let Some(image) = self.store().kept(source, Some(modified)) {
                     return Ok(image);
                 }
-                let bytes = std::fs::read(&path).map_err(|error| describe_io(&path, &error))?;
-                (bytes, Some(modified))
+                (read_file(&path, MAX_FILE_BYTES)?, Some(modified))
             }
             Asset::Data { bytes, .. } => (bytes, None),
         };
@@ -216,11 +218,46 @@ impl Store {
     }
 }
 
-/// When a file was last changed.
+/// When a file was last changed. Anything but a plain file, such as a
+/// folder, a device or a pipe, is refused here, before it is opened:
+/// reading `/dev/zero` never ends, and opening a pipe can wait forever.
 fn modified(path: &Path) -> Result<SystemTime, String> {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
+    let metadata = std::fs::metadata(path).map_err(|error| describe_io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not an image file", path.display()));
+    }
+    metadata
+        .modified()
         .map_err(|error| describe_io(path, &error))
+}
+
+/// The bytes of the file at `path`, refused when it is not a plain file or
+/// holds more than `limit` bytes. The limit holds while reading too, in
+/// case the file changes after it was looked at.
+fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let too_large = || {
+        format!(
+            "{} is larger than an image file may be ({} MB)",
+            path.display(),
+            limit >> 20
+        )
+    };
+    let file = std::fs::File::open(path).map_err(|error| describe_io(path, &error))?;
+    let metadata = file.metadata().map_err(|error| describe_io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not an image file", path.display()));
+    }
+    if metadata.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| describe_io(path, &error))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 fn describe_io(path: &Path, error: &std::io::Error) -> String {
@@ -352,6 +389,30 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(junk.contains("not an image"), "{junk}");
         assert!(loader.natural_size("").is_err());
+    }
+
+    #[test]
+    fn only_plain_files_of_a_sensible_size_are_read() {
+        let folder = folder("plain");
+        let loader = AssetLoader::default();
+        let error = loader.natural_size(folder.to_str().unwrap()).unwrap_err();
+        assert!(error.ends_with("is not an image file"), "{error}");
+        // A device that never ends is refused before it is opened.
+        #[cfg(unix)]
+        {
+            let error = loader.natural_size("/dev/zero").unwrap_err();
+            assert!(error.ends_with("is not an image file"), "{error}");
+        }
+
+        let path = folder.join("big.png");
+        std::fs::write(&path, [0u8; 20]).unwrap();
+        assert_eq!(read_file(&path, 20).unwrap().len(), 20);
+        let error = read_file(&path, 19).unwrap_err();
+        assert!(
+            error.contains("larger than an image file may be"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
