@@ -9,6 +9,7 @@
 mod action;
 mod animate;
 mod design;
+mod easing;
 mod text;
 
 use egui::{RichText, ScrollArea, Ui};
@@ -82,6 +83,7 @@ struct Sections {
     image: bool,
     shape: bool,
     actions: bool,
+    easing: bool,
     settings: bool,
 }
 
@@ -98,6 +100,7 @@ impl Default for Sections {
             image: true,
             shape: true,
             actions: true,
+            easing: true,
             settings: true,
         }
     }
