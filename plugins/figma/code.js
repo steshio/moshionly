@@ -249,6 +249,284 @@ function absoluteOf(node) {
 }
 
 // ---------------------------------------------------------------------------
+// Colours
+// ---------------------------------------------------------------------------
+
+function channel(value) {
+  const byte = Math.round(clamp(numberOr(value, 0), 0, 1) * 255);
+  return byte.toString(16).toUpperCase().padStart(2, '0');
+}
+
+/** `#RRGGBB`, or `#RRGGBBAA` when not opaque, from channels between 0 and 1. */
+function colorHex(color, alpha) {
+  const a = clamp(numberOr(alpha, 1), 0, 1);
+  const hex = '#' + channel(color.r) + channel(color.g) + channel(color.b);
+  return Math.round(a * 255) === 255 ? hex : hex + channel(a);
+}
+
+/**
+ * One colour drawn over another (both {r, g, b, a} between 0 and 1), the
+ * way Figma stacks two normal fills.
+ */
+function over(top, bottom) {
+  const a = top.a + bottom.a * (1 - top.a);
+  if (a < EPSILON) return { r: 0, g: 0, b: 0, a: 0 };
+  const mix = (t, b) => (t * top.a + b * bottom.a * (1 - top.a)) / a;
+  return { r: mix(top.r, bottom.r), g: mix(top.g, bottom.g), b: mix(top.b, bottom.b), a };
+}
+
+// ---------------------------------------------------------------------------
+// Paints
+// ---------------------------------------------------------------------------
+
+/** Paint types Moshionly can hold as they are, or close to. */
+const GRADIENT_TYPES = new Set(['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR', 'GRADIENT_DIAMOND']);
+
+/** Readable names for paint types in notes. */
+const PAINT_NAMES = {
+  SOLID: 'colour',
+  GRADIENT_LINEAR: 'linear gradient',
+  GRADIENT_RADIAL: 'radial gradient',
+  GRADIENT_ANGULAR: 'angular gradient',
+  GRADIENT_DIAMOND: 'diamond gradient',
+  IMAGE: 'image',
+  VIDEO: 'video',
+  PATTERN: 'pattern',
+  SHADER: 'shader',
+};
+
+function paintOpacity(paint) {
+  return clamp(numberOr(paint.opacity, 1), 0, 1);
+}
+
+function isVisiblePaint(paint) {
+  if (!paint || paint.visible === false || paintOpacity(paint) <= 0) return false;
+  if (paint.type === 'SOLID') return true;
+  if (GRADIENT_TYPES.has(paint.type)) {
+    return Array.from(paint.gradientStops || []).some((stop) => numberOr(stop.color && stop.color.a, 1) > 0);
+  }
+  return true;
+}
+
+function blendsNormally(paint) {
+  return !paint.blendMode || paint.blendMode === 'NORMAL' || paint.blendMode === 'PASS_THROUGH';
+}
+
+/** Whether nothing below `paint` can show through it. */
+function isOpaquePaint(paint) {
+  if (paintOpacity(paint) < 1 || !blendsNormally(paint)) return false;
+  if (paint.type === 'SOLID') return true;
+  if (GRADIENT_TYPES.has(paint.type)) {
+    return Array.from(paint.gradientStops || []).every((stop) => numberOr(stop.color && stop.color.a, 1) >= 1);
+  }
+  return false;
+}
+
+/**
+ * An affine matrix equal to `map`, a function of (x, y) that is affine:
+ * it is read off where `map` sends the origin and the two unit vectors.
+ */
+function affineOf(map) {
+  const [ox, oy] = map(0, 0);
+  const [xx, xy] = map(1, 0);
+  const [yx, yy] = map(0, 1);
+  return { a: xx - ox, b: xy - oy, c: yx - ox, d: yy - oy, e: ox, f: oy };
+}
+
+/**
+ * Converts a Figma gradient to a Moshionly one.
+ *
+ * Figma's `gradientTransform` maps the node's box, as fractions ((0, 0) at
+ * the top-left corner, (1, 1) at the bottom-right), to "gradient space".
+ * There a linear gradient runs along x, from (0, 0.5) at offset 0 to
+ * (1, 0.5) at offset 1, and the colour only depends on x. A radial gradient
+ * sits on the circle around (0.5, 0.5) with radius 0.5.
+ *
+ * Moshionly writes a gradient in fractions of the layer's box too, but that
+ * box can differ from Figma's (a star's box is larger, a mirror flips it),
+ * so everything goes through K, the affine map from gradient space to the
+ * Moshionly layer's own pixels:
+ *
+ *   K = toLocal * scale(width, height) * inverse(gradientTransform)
+ *
+ * Linear: in the layer's pixels the offset at p is t(p) = n . p + t0,
+ * where n is the first row of K's inverse. Moshionly's offset is the
+ * projection on the line from `start` to `end`, so the two agree when
+ * start = K(0, 0.5) (where t = 0) and end = start + n / |n|^2. This is
+ * exact even when the box is stretched, where simply mapping (1, 0.5)
+ * would tilt the colour bands.
+ *
+ * Radial: the circle maps to the ellipse K(0.5, 0.5) + J (0.5 cos a,
+ * 0.5 sin a), J being K's linear part. Its semi-axes are the singular
+ * values of J / 2 and the larger one points along the main eigenvector of
+ * (J / 2)(J / 2)^T; that is Moshionly's radius and rotation, in pixels.
+ * Offsets are distances on that ellipse in both programs, so the result is
+ * exact.
+ *
+ * Finally positions are divided by the layer's width and height. On a side
+ * of zero length (a line) every position on that axis is 0.
+ */
+function convertGradient(paint, node, placement) {
+  const width = numberOr(node.width, 0);
+  const height = numberOr(node.height, 0);
+  const toNode = multiply(
+    { a: width, b: 0, c: 0, d: height, e: 0, f: 0 },
+    invert(matrixFromFigma(paint.gradientTransform)),
+  );
+  const K = affineOf((x, y) => placement.toLocal(...applyMatrix(toNode, x, y)));
+  const boxWidth = placement.width;
+  const boxHeight = placement.height;
+  const unitPoint = ([x, y]) => [
+    boxWidth > EPSILON ? fraction(x / boxWidth) : 0,
+    boxHeight > EPSILON ? fraction(y / boxHeight) : 0,
+  ];
+
+  const opacity = paintOpacity(paint);
+  const stops = Array.from(paint.gradientStops || [])
+    .map((stop) => ({
+      offset: clamp(numberOr(stop.position, 0), 0, 1),
+      color: colorHex(stop.color || {}, numberOr(stop.color && stop.color.a, 1) * opacity),
+    }))
+    .sort((a, b) => a.offset - b.offset)
+    .map((stop) => ({ offset: fraction(stop.offset), color: stop.color }));
+  if (stops.length === 0) return undefined;
+  if (stops.length === 1) return stops[0].color;
+
+  if (paint.type === 'GRADIENT_LINEAR') {
+    let start;
+    let end;
+    if (width > EPSILON && height > EPSILON) {
+      start = applyMatrix(K, 0, 0.5);
+      const inverse = invert(K);
+      const normal = [inverse.a, inverse.c];
+      const length = normal[0] * normal[0] + normal[1] * normal[1];
+      end =
+        length > EPSILON * EPSILON
+          ? [start[0] + normal[0] / length, start[1] + normal[1] / length]
+          : applyMatrix(K, 1, 0.5);
+    } else {
+      // A box without height (a line) or width: K cannot be inverted, and
+      // only positions along the box matter. There the offset is
+      // t = T.a u + T.c v + T.e for the fractions (u, v) of the box, with
+      // the missing side's fraction at its middle.
+      const T = matrixFromFigma(paint.gradientTransform);
+      const alongWidth = width > EPSILON;
+      const slope = alongWidth ? T.a : T.c;
+      const base = (alongWidth ? T.c : T.a) * 0.5 + T.e;
+      const from = Math.abs(slope) > EPSILON ? -base / slope : 0;
+      const to = Math.abs(slope) > EPSILON ? from + 1 / slope : 1;
+      const at = (s) => placement.toLocal(alongWidth ? s * width : width / 2, alongWidth ? height / 2 : s * height);
+      start = at(from);
+      end = at(to);
+    }
+    return { type: 'linear_gradient', start: unitPoint(start), end: unitPoint(end), stops };
+  }
+
+  // Radial, and the shapes Moshionly approximates with a radial gradient.
+  const center = applyMatrix(K, 0.5, 0.5);
+  const [a, b, c, d] = [K.a / 2, K.b / 2, K.c / 2, K.d / 2];
+  const p = a * a + c * c;
+  const q = a * b + c * d;
+  const r = b * b + d * d;
+  const mean = (p + r) / 2;
+  const spread = Math.hypot((p - r) / 2, q);
+  const major = Math.sqrt(Math.max(0, mean + spread));
+  const minor = Math.sqrt(Math.max(0, mean - spread));
+  const rotation = (0.5 * Math.atan2(2 * q, p - r) * 180) / Math.PI;
+  const gradient = { type: 'radial_gradient', center: unitPoint(center) };
+  gradient.radius = [
+    boxWidth > EPSILON ? fraction(major / boxWidth) : 0,
+    boxHeight > EPSILON ? fraction(minor / boxHeight) : 0,
+  ];
+  const turn = angle(rotation);
+  if (turn !== 0) gradient.rotation = turn;
+  gradient.stops = stops;
+  return gradient;
+}
+
+/** A Moshionly paint for one Figma solid or gradient paint. */
+function convertPaint(paint, node, run, placement, what, part) {
+  if (!blendsNormally(paint)) {
+    run.note(
+      node,
+      'The ' + what + ' blends as ' + String(paint.blendMode).toLowerCase().replace('_', ' ') +
+        ' in Figma; Moshionly paints it normally.',
+      part,
+    );
+  }
+  if (paint.type === 'SOLID') return colorHex(paint.color || {}, paintOpacity(paint));
+  if (paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
+    run.note(
+      node,
+      'Moshionly has no ' + PAINT_NAMES[paint.type] + ', so the ' + what + ' became a radial gradient with the same colours.',
+      part,
+    );
+  }
+  return convertGradient(paint, node, placement);
+}
+
+/**
+ * What a Figma paint list (fills or strokes) becomes. Moshionly layers have
+ * one fill and one stroke.
+ *
+ * Paints that are hidden or covered by an opaque paint above them cannot be
+ * seen and are dropped. Stacked plain colours are mixed into one, which is
+ * exact. Otherwise the top paint is kept and the rest noted.
+ *
+ * @returns {{paint?: (string|object), image?: object, special?: string}}
+ *   `paint` is ready for Moshionly; `image` is an image paint the caller
+ *   handles; `special` names a paint type that cannot be a Moshionly paint.
+ */
+function readPaints(paints, node, run, placement, what, part) {
+  if (isMixed(paints)) return {};
+  const visible = Array.from(paints || []).filter(isVisiblePaint);
+  let first = 0;
+  for (let index = visible.length - 1; index >= 0; index -= 1) {
+    if (isOpaquePaint(visible[index])) {
+      first = index;
+      break;
+    }
+  }
+  const seen = visible.slice(first);
+  if (seen.length === 0) return {};
+  const top = seen[seen.length - 1];
+  if (seen.every((paint) => paint.type === 'SOLID' && blendsNormally(paint))) {
+    const mixed = seen.reduce(
+      (below, paint) => over(Object.assign({}, paint.color, { a: paintOpacity(paint) }), below),
+      { r: 0, g: 0, b: 0, a: 0 },
+    );
+    return { paint: colorHex(mixed, mixed.a) };
+  }
+  if (seen.length > 1) {
+    run.note(
+      node,
+      'Has ' + seen.length + ' ' + what + 's; Moshionly layers have one, so only the top one (' +
+        (PAINT_NAMES[top.type] || 'paint') + ') was kept.',
+      part,
+    );
+  }
+  if (top.type === 'SOLID' || GRADIENT_TYPES.has(top.type)) {
+    return { paint: convertPaint(top, node, run, placement, what, part) };
+  }
+  if (top.type === 'IMAGE') return { image: top };
+  return { special: top.type };
+}
+
+/**
+ * The fill of `node` written onto `layer`. Image and other special fills
+ * are the caller's business; here they are noted and left out.
+ */
+function fillLayer(layer, node, run, placement, part) {
+  const fill = readPaints(node.fills, node, run, placement, 'fill', part);
+  if (fill.paint !== undefined) layer.fill = fill.paint;
+  const other = fill.image ? 'IMAGE' : fill.special;
+  if (other) {
+    run.note(node, 'Its ' + (PAINT_NAMES[other] || 'special') + ' fill has no Moshionly equivalent and was left out.', part);
+  }
+  return fill;
+}
+
+// ---------------------------------------------------------------------------
 // The conversion run
 // ---------------------------------------------------------------------------
 
@@ -538,13 +816,16 @@ async function convertArtboard(node, run) {
 
   // The frame's children are laid out in the frame's own coordinates.
   let inside = { id: board.id, frame: transform };
+  const placement = place(IDENTITY, ownBox(node));
   if (frameStyleReasons(node).length > 0) {
-    const placement = place(IDENTITY, ownBox(node));
     const body = newLayer('group', node, run, inside, placement, 'frame');
     styleLayer(body, node, run, 'frame');
+    fillLayer(body, node, run, placement, 'frame');
     styleFrame(body, node, run, placement, 'frame');
     run.emit(body);
     inside = { id: body.id, frame: transform };
+  } else {
+    fillLayer(board, node, run, placement);
   }
   await convertChildren(node, inside, run);
 }
@@ -562,6 +843,7 @@ async function convertFrame(node, container, m, run) {
   const placement = place(m, ownBox(node));
   const group = newLayer('group', node, run, container, placement);
   styleLayer(group, node, run);
+  fillLayer(group, node, run, placement);
   styleFrame(group, node, run, placement);
   run.emit(group);
   await convertChildren(node, containerFor(group, container, placement), run);
@@ -593,6 +875,7 @@ function convertRectangle(node, container, m, run) {
   }
   const rect = newLayer('rect', node, run, container, placement);
   styleLayer(rect, node, run);
+  fillLayer(rect, node, run, placement);
   const radius = cornerRadiusValue(cornerRadii(node), placement);
   if (radius !== undefined) rect.corner_radius = radius;
   noteCorners(node, run);
@@ -629,6 +912,7 @@ function convertEllipse(node, container, m, run) {
   }
   const ellipse = newLayer('ellipse', node, run, container, placement);
   styleLayer(ellipse, node, run);
+  fillLayer(ellipse, node, run, placement);
   // Figma and Moshionly both measure arcs clockwise from 3 o'clock; Figma
   // in radians, Moshionly in degrees.
   const arc = node.arcData || {};
@@ -694,6 +978,7 @@ function convertStar(node, container, m, run) {
   const placement = placeSymmetric(m, box, box.x + box.width / 2);
   const star = newLayer('star', node, run, container, placement);
   styleLayer(star, node, run);
+  fillLayer(star, node, run, placement);
   if (points !== 5) star.points = points;
   if (Math.abs(inner - 0.4) > 1e-9) star.inner_radius = round(inner, 5);
   run.emit(star);
@@ -709,6 +994,7 @@ function convertLine(node, container, m, run) {
     subpaths: [{ anchors: [{ point: [0, 0] }, { point: [numberOr(node.width, 0), 0] }], closed: false }],
     fillRule: 'non_zero',
     open: 1,
+    filled: 0,
   };
   convertOutline(node, container, m, run, outline);
 }
@@ -748,7 +1034,16 @@ function convertOutline(node, container, m, run, outline) {
   const placement = place(m, ownBox(node));
   const layer = newLayer('path', node, run, container, placement);
   styleLayer(layer, node, run);
-  layer.path = normalisedPath(outline || { subpaths: [], fillRule: 'non_zero' }, placement);
+  const shape = outline || { subpaths: [], fillRule: 'non_zero', open: 0, filled: 0 };
+  // Figma does not fill paths that are all open; Moshionly would.
+  const filled = shape.filled === undefined ? shape.subpaths.length > 0 : shape.filled > 0;
+  if (filled) {
+    const fill = fillLayer(layer, node, run, placement);
+    if (shape.open > 0 && fill.paint !== undefined) {
+      run.note(node, 'Open lines in this shape are filled in Moshionly; Figma leaves them unfilled.');
+    }
+  }
+  layer.path = normalisedPath(shape, placement);
   run.emit(layer);
   return layer;
 }
@@ -902,7 +1197,7 @@ function closeSubpath(subpath) {
  * and how many of the paths are open (have no inside).
  */
 function readOutline(paths, node, run) {
-  const outline = { subpaths: [], fillRule: 'non_zero', open: 0 };
+  const outline = { subpaths: [], fillRule: 'non_zero', open: 0, filled: 0 };
   const rules = new Set();
   for (const path of paths) {
     const subpaths = parsePathData(path.data);
@@ -911,8 +1206,12 @@ function readOutline(paths, node, run) {
       continue;
     }
     outline.subpaths.push(...subpaths);
-    if (path.windingRule === 'NONE') outline.open += 1;
-    else rules.add(path.windingRule);
+    if (path.windingRule === 'NONE') {
+      outline.open += 1;
+    } else {
+      outline.filled += 1;
+      rules.add(path.windingRule);
+    }
   }
   if (rules.has('EVENODD')) outline.fillRule = 'even_odd';
   if (rules.size > 1) {
