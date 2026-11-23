@@ -128,10 +128,22 @@ pub enum Drop {
 /// Where a drop over `row` lands, from how far down the row the pointer is
 /// (0 at its top, 1 at its bottom). The top and bottom quarters drop beside
 /// it; the middle drops into it when it can hold layers.
-pub fn drop_at(row: &LayerRow, fraction: f32) -> Drop {
-    let holds = row.node_type.holds_layers();
+///
+/// Artboards being dragged (`moving_artboards`) only go between artboards:
+/// the top half of an artboard's row drops above it and the bottom half
+/// below it, open or not, and the rows of layers take no drop (`None`).
+pub fn drop_at(row: &LayerRow, fraction: f32, moving_artboards: bool) -> Option<Drop> {
     let id = row.id.clone();
-    if holds && (0.25..=0.75).contains(&fraction) {
+    if moving_artboards {
+        let side = if fraction < 0.5 {
+            Drop::Above(id)
+        } else {
+            Drop::Below(id)
+        };
+        return (row.node_type == NodeType::Artboard).then_some(side);
+    }
+    let holds = row.node_type.holds_layers();
+    Some(if holds && (0.25..=0.75).contains(&fraction) {
         Drop::Inside(id)
     } else if fraction < 0.5 {
         Drop::Above(id)
@@ -140,7 +152,7 @@ pub fn drop_at(row: &LayerRow, fraction: f32) -> Drop {
         Drop::Inside(id)
     } else {
         Drop::Below(id)
-    }
+    })
 }
 
 /// The parent and place a drop puts layers at. Layers dropped beside an
@@ -338,15 +350,41 @@ mod tests {
         let doc = document();
         let state = TreeState::default();
         let ellipse = row(&doc, "top", &state);
-        assert_eq!(drop_at(&ellipse, 0.1), Drop::Above(NodeId::from("top")));
-        assert_eq!(drop_at(&ellipse, 0.5), Drop::Below(NodeId::from("top")));
+        let at = |row: &LayerRow, fraction: f32| drop_at(row, fraction, false);
+        assert_eq!(at(&ellipse, 0.1), Some(Drop::Above(NodeId::from("top"))));
+        assert_eq!(at(&ellipse, 0.5), Some(Drop::Below(NodeId::from("top"))));
         let card = row(&doc, "card", &state);
-        assert_eq!(drop_at(&card, 0.5), Drop::Inside(NodeId::from("card")));
-        assert_eq!(drop_at(&card, 0.9), Drop::Below(NodeId::from("card")));
+        assert_eq!(at(&card, 0.5), Some(Drop::Inside(NodeId::from("card"))));
+        assert_eq!(at(&card, 0.9), Some(Drop::Below(NodeId::from("card"))));
         let mut open = TreeState::default();
         open.set_expanded(&doc, &NodeId::from("card"), true);
         let card = row(&doc, "card", &open);
-        assert_eq!(drop_at(&card, 0.9), Drop::Inside(NodeId::from("card")));
+        assert_eq!(at(&card, 0.9), Some(Drop::Inside(NodeId::from("card"))));
+    }
+
+    #[test]
+    fn artboards_drop_above_or_below_open_artboards() {
+        let doc = document();
+        let state = TreeState::default();
+        let scene = row(&doc, "ab", &state);
+        assert_eq!(scene.expanded, Some(true));
+        let id = |text: &str| NodeId::from(text);
+        assert_eq!(drop_at(&scene, 0.3, true), Some(Drop::Above(id("ab"))));
+        assert_eq!(drop_at(&scene, 0.6, true), Some(Drop::Below(id("ab"))));
+        assert_eq!(drop_at(&scene, 0.9, true), Some(Drop::Below(id("ab"))));
+        // The rows of its layers take no artboard.
+        assert_eq!(drop_at(&row(&doc, "card", &state), 0.5, true), None);
+        // Below the open first artboard: after it, among the artboards.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("ab2")], &Drop::Below(id("ab"))))
+            .unwrap();
+        assert_eq!(moved.artboards(), [id("ab"), id("ab2")]);
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("ab")], &Drop::Below(id("ab2"))))
+            .unwrap();
+        assert_eq!(moved.artboards(), [id("ab2"), id("ab")]);
     }
 
     #[test]

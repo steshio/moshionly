@@ -164,10 +164,16 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
                     && rect.y_range().contains(pointer.y)
                     && !moving.contains(&row.id)
                 {
+                    let moving_artboards = moving.iter().any(|id| {
+                        document
+                            .get(id)
+                            .is_some_and(|node| node.node_type() == NodeType::Artboard)
+                    });
                     let fraction = (pointer.y - rect.top()) / rect.height().max(1.0);
-                    let at = drop_at(row, fraction);
-                    paint_drop(ui, rect, &at);
-                    drop = Some(at);
+                    drop = drop_at(row, fraction, moving_artboards);
+                    if let Some(at) = &drop {
+                        paint_drop(ui, rect, at);
+                    }
                 }
                 if shown.response.drag_stopped() {
                     dropped = true;
