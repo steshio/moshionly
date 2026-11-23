@@ -8,9 +8,12 @@
 //! | Module | What it is for |
 //! |---|---|
 //! | [`format`] | [`Format`]: the kinds of file, and what each can hold |
+//! | [`timing`] | [`FrameRate`] and [`FrameTimes`]: which moments an export captures |
 
 #![warn(missing_docs)]
 
 pub mod format;
+pub mod timing;
 
 pub use format::{Format, SizeLimits};
+pub use timing::{FrameRate, FrameTimes, TimingError};
