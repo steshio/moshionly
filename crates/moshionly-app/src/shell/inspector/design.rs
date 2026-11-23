@@ -641,8 +641,13 @@ fn paint_rows(ui: &mut Ui, name: &str, paint: &Paint, changes: &mut Vec<FillChan
             for (at, stop) in gradient.stops().iter().enumerate() {
                 let mut picked = rgba(stop.color);
                 let label = format!("Stop {} · {}%", at + 1, (stop.offset * 100.0).round());
+                // Each stop has widgets of its own: one name for all of them
+                // would make them share a picker and a hex field.
+                let stop_name = format!("Gradient stop {}", at + 1);
                 let response = property_row(ui, &label, |ui| {
-                    ColorField::new(&mut picked, "Gradient stop").show(ui)
+                    ColorField::new(&mut picked, &stop_name)
+                        .id_salt((name, "gradient-stop", at))
+                        .show(ui)
                 });
                 changes.push(FillChange::Stop(response, at, picked));
             }

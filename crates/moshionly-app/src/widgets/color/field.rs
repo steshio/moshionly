@@ -75,6 +75,7 @@ pub struct ColorField<'a> {
     color: &'a mut Rgba,
     name: &'a str,
     width: Option<f32>,
+    id_salt: Option<egui::IdSalt>,
 }
 
 impl<'a> ColorField<'a> {
@@ -85,6 +86,7 @@ impl<'a> ColorField<'a> {
             color,
             name,
             width: None,
+            id_salt: None,
         }
     }
 
@@ -94,13 +96,25 @@ impl<'a> ColorField<'a> {
         self
     }
 
+    /// Tells this field apart from others with the same name in one panel,
+    /// such as the stops of a gradient. Without it the field's widgets are
+    /// named after `name`, and two fields with one name would share their
+    /// state.
+    pub fn id_salt(mut self, salt: impl egui::AsIdSalt) -> Self {
+        self.id_salt = Some(egui::IdSalt::new(salt));
+        self
+    }
+
     /// Draws the field and its picker popup.
     pub fn show(self, ui: &mut Ui) -> ColorResponse {
         let theme = Theme::of(ui);
         let c = &theme.color;
         let mut out = ColorResponse::default();
         let width = self.width.unwrap_or_else(|| ui.available_width());
-        let id = ui.make_persistent_id(("color-field", self.name));
+        let id = match self.id_salt {
+            Some(salt) => ui.make_persistent_id(("color-field", salt)),
+            None => ui.make_persistent_id(("color-field", self.name)),
+        };
         let (_, rect) = ui.allocate_space(Vec2::new(width, theme.size.control));
         ui.painter().rect_filled(rect, theme.radius.sm, c.well);
 

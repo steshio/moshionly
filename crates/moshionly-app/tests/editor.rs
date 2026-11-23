@@ -706,3 +706,19 @@ fn mixed_values_show_as_mixed_and_set_every_layer() {
         assert_eq!(text.font_size, 30.0, "{id}");
     }
 }
+
+#[test]
+fn a_gradient_filled_layer_can_be_selected() {
+    let mut harness = harness();
+    // The demo's accent bar has a two-stop gradient. Each stop has a colour
+    // field of its own; one shared name used to clash and panic.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("accent"));
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("Gradient stop 1 colour").is_some());
+    assert!(harness.query_by_label("Gradient stop 2 colour").is_some());
+}
