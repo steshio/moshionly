@@ -482,6 +482,31 @@ fn a_design_too_large_is_refused_in_a_way_the_plugin_can_read() {
 }
 
 #[test]
+fn designs_beyond_the_few_waiting_are_refused_until_the_app_takes_one() {
+    let (server, inbox, _) = start_with_imports();
+    let post_design = || {
+        send(
+            &server,
+            "POST",
+            "/import",
+            &[("Origin", "null"), JSON],
+            &envelope().to_string(),
+        )
+    };
+    for _ in 0..crate::import::MAX_WAITING {
+        assert_eq!(post_design().status, 202);
+    }
+    let reply = post_design();
+    assert_eq!(reply.status, 429);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    let error = reply.json()["error"].as_str().unwrap().to_owned();
+    assert!(error.contains("designs waiting to be accepted"), "{error}");
+
+    inbox.try_recv().unwrap();
+    assert_eq!(post_design().status, 202);
+}
+
+#[test]
 fn other_pages_and_methods_are_refused_at_import() {
     let (server, inbox, _) = start_with_imports();
     let reply = send(

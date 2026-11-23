@@ -194,9 +194,23 @@ fn the_sink_hands_designs_on_and_wakes_the_app() {
         }
     });
     let pending = read(&envelope(design("#000000"))).unwrap();
-    assert!(sink.deliver(pending.clone()));
+    assert_eq!(sink.deliver(pending.clone()), Delivery::Delivered);
     assert_eq!(inbox.try_recv().unwrap(), pending);
     assert_eq!(woken.load(Ordering::SeqCst), 1);
     drop(inbox);
-    assert!(!sink.deliver(pending));
+    assert_eq!(sink.deliver(pending), Delivery::Closed);
+}
+
+#[test]
+fn only_a_few_designs_wait_for_the_app_at_once() {
+    let (sink, inbox) = ImportSink::new();
+    let pending = read(&envelope(design("#000000"))).unwrap();
+    for _ in 0..MAX_WAITING {
+        assert_eq!(sink.deliver(pending.clone()), Delivery::Delivered);
+    }
+    assert_eq!(sink.deliver(pending.clone()), Delivery::Full);
+    // Taking one makes room for one more.
+    inbox.try_recv().unwrap();
+    assert_eq!(sink.deliver(pending.clone()), Delivery::Delivered);
+    assert_eq!(sink.deliver(pending), Delivery::Full);
 }

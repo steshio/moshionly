@@ -38,6 +38,10 @@ const MAX_NOTES: usize = 2000;
 const MAX_NOTE_CHARS: usize = 2000;
 /// The longest a name in `source` may be, in characters.
 const MAX_NAME_CHARS: usize = 300;
+/// The most designs that wait for the app to take them. More are refused
+/// until the app takes one, so a page that sends designs in a loop cannot
+/// fill memory or bury the person in questions.
+pub const MAX_WAITING: usize = 4;
 
 /// Where a design came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,10 +405,21 @@ fn layer_from(document: &Document, source: &str) -> Option<NodeId> {
         .map(|node| node.id.clone())
 }
 
+/// What became of a design handed to the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// The app has it.
+    Delivered,
+    /// [`MAX_WAITING`] designs are already waiting for the app.
+    Full,
+    /// The app no longer listens.
+    Closed,
+}
+
 /// Where the HTTP server hands designs on to the app.
 #[derive(Clone)]
 pub struct ImportSink {
-    sender: mpsc::Sender<PendingImport>,
+    sender: mpsc::SyncSender<PendingImport>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -418,8 +433,12 @@ impl fmt::Debug for ImportSink {
 
 impl ImportSink {
     /// A sink, and the receiver the app takes pending imports from.
+    ///
+    /// At most [`MAX_WAITING`] designs wait in the receiver; later ones are
+    /// refused until the app takes one. Take a design when it can be shown
+    /// to the person, so the limit also bounds the questions they face.
     pub fn new() -> (ImportSink, mpsc::Receiver<PendingImport>) {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(MAX_WAITING);
         (ImportSink { sender, wake: None }, receiver)
     }
 
@@ -430,15 +449,18 @@ impl ImportSink {
         self
     }
 
-    /// Hands a design on. Returns false when the app no longer listens.
-    pub(crate) fn deliver(&self, import: PendingImport) -> bool {
-        if self.sender.send(import).is_err() {
-            return false;
+    /// Hands a design on, unless too many are waiting or the app no longer
+    /// listens.
+    pub(crate) fn deliver(&self, import: PendingImport) -> Delivery {
+        match self.sender.try_send(import) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => return Delivery::Full,
+            Err(mpsc::TrySendError::Disconnected(_)) => return Delivery::Closed,
         }
         if let Some(wake) = &self.wake {
             wake();
         }
-        true
+        Delivery::Delivered
     }
 }
 

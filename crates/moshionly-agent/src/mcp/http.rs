@@ -41,7 +41,7 @@ use tokio::sync::oneshot;
 
 use super::McpServer;
 use super::protocol::{Headers, Outcome, Status, code, server_info};
-use crate::import::{ImportSink, read_envelope};
+use crate::import::{Delivery, ImportSink, MAX_WAITING, read_envelope};
 
 /// The port the app listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 47821;
@@ -487,12 +487,25 @@ fn receive(state: &Shared, body: &Bytes) -> Response {
         Err(error) => return refuse(StatusCode::BAD_REQUEST, capitalised(&error.to_string())),
     };
     let (layers, notes) = (pending.nodes.len(), pending.notes.len());
-    if !sink.deliver(pending) {
-        return refuse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Moshionly is closing and cannot take the design. Send it again once it is open."
-                .to_owned(),
-        );
+    match sink.deliver(pending) {
+        Delivery::Delivered => {}
+        Delivery::Full => {
+            return refuse(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Moshionly already has {MAX_WAITING} designs waiting to be accepted. Answer \
+                     those in the app, then send again."
+                ),
+            );
+        }
+        Delivery::Closed => {
+            return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Moshionly is closing and cannot take the design. Send it again once it is \
+                 open."
+                    .to_owned(),
+            );
+        }
     }
     json_response(
         StatusCode::ACCEPTED,
