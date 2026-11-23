@@ -136,6 +136,24 @@ pub fn is_locked(document: &Document, id: &NodeId) -> bool {
         .any(locked)
 }
 
+/// Whether `id` or anything above it below the artboard is hidden: it is
+/// not drawn, so nothing on the canvas picks it.
+pub fn is_hidden(document: &Document, id: &NodeId) -> bool {
+    let hidden = |id: &NodeId| {
+        document
+            .get(id)
+            .and_then(|node| node.layer())
+            .is_some_and(|layer| layer.hidden)
+    };
+    path_to(document, id).iter().skip(1).any(hidden)
+}
+
+/// Whether the canvas may pick `id` (by a marquee, or with select all):
+/// it is neither locked nor hidden.
+pub fn is_pickable(document: &Document, id: &NodeId) -> bool {
+    !is_locked(document, id) && !is_hidden(document, id)
+}
+
 /// What a click on the layer `leaf` selects, given what is selected now.
 ///
 /// `leaf` is the frontmost layer drawn under the pointer, as hit testing
@@ -192,13 +210,13 @@ pub fn pick(
 }
 
 /// The layers a marquee picks among: the children of the artboard, front
-/// to back. Locked layers are left out.
+/// to back. Locked and hidden layers are left out.
 pub fn marquee_candidates(document: &Document, artboard: &NodeId) -> Vec<NodeId> {
     document
         .children(artboard, Family::Layer)
         .iter()
         .rev()
-        .filter(|id| !is_locked(document, id))
+        .filter(|id| is_pickable(document, id))
         .cloned()
         .collect()
 }
@@ -208,7 +226,7 @@ pub fn top_level(document: &Document, artboard: &NodeId) -> Vec<NodeId> {
     document
         .children(artboard, Family::Layer)
         .iter()
-        .filter(|id| !is_locked(document, id))
+        .filter(|id| is_pickable(document, id))
         .cloned()
         .collect()
 }
@@ -228,7 +246,7 @@ pub fn select_all(
         Some(parent) => document
             .children(&parent, Family::Layer)
             .iter()
-            .filter(|id| !is_locked(document, id))
+            .filter(|id| is_pickable(document, id))
             .cloned()
             .collect(),
         None => match (selection.is_empty(), artboard) {
@@ -364,6 +382,23 @@ mod tests {
             pick(&doc, &id("other"), &[], Pick::Normal),
             Some(id("other"))
         );
+    }
+
+    #[test]
+    fn hidden_layers_are_not_picked_by_select_all_or_a_marquee() {
+        let mut doc = document();
+        doc.apply(&[moshionly_core::Edit::set("loose", "hidden", true)])
+            .unwrap();
+        assert!(is_hidden(&doc, &id("loose")));
+        assert!(!is_pickable(&doc, &id("loose")));
+        assert_eq!(select_all(&doc, &[], Some(&id("ab"))), ids(&["card"]));
+        assert_eq!(select_all(&doc, &ids(&["card"]), None), ids(&["card"]));
+        assert_eq!(marquee_candidates(&doc, &id("ab")), ids(&["card"]));
+        // Inside a hidden group, too.
+        doc.apply(&[moshionly_core::Edit::set("badge", "hidden", true)])
+            .unwrap();
+        assert!(is_hidden(&doc, &id("dot")));
+        assert_eq!(select_all(&doc, &ids(&["bg"]), None), ids(&["bg"]));
     }
 
     #[test]

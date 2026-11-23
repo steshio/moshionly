@@ -227,7 +227,7 @@ impl Editor {
                     .filter(|other| *other != id)
                     .collect();
                 for layer in layers {
-                    if let Some(b) = self.box_of(&layer) {
+                    if let Some(b) = self.drawn_box_of(&layer) {
                         rects.push(b.bounds());
                     }
                 }

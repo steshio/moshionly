@@ -111,8 +111,9 @@ impl Editor {
                 .map(|(_, node)| node.id.clone())
                 .filter(|id| !carried(id))
                 .collect();
+            // Only what is drawn: no guides at hidden layers.
             for id in layers {
-                if let Some(b) = self.box_of(&id) {
+                if let Some(b) = self.drawn_box_of(&id) {
                     rects.push(b.bounds());
                 }
             }
@@ -354,6 +355,24 @@ mod tests {
             .unwrap();
         assert_eq!(frame(&editor, "loose").1, 100.0);
         editor.end_drag();
+    }
+
+    #[test]
+    fn hidden_layers_are_not_snapped_to() {
+        let mut editor = editor();
+        editor
+            .apply(
+                "Hide",
+                &[moshionly_core::Edit::set("loose", "hidden", true)],
+            )
+            .unwrap();
+        let turned = Item::of(editor.document(), &id("turned")).unwrap();
+        let targets = editor.snap_targets(&[turned]);
+        let mut rects = vec![editor.artboard_rect(&id("ab")).unwrap()];
+        for layer in ["card", "bg", "dot"] {
+            rects.push(editor.box_of(&id(layer)).unwrap().bounds());
+        }
+        assert_eq!(targets, SnapTargets::from_rects(rects));
     }
 
     #[test]

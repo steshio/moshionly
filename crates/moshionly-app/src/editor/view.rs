@@ -75,16 +75,11 @@ impl Editor {
     /// layer's box as drawn now. A layer that is not drawn at this moment
     /// (hidden, or not yet faded in) gets its box at rest.
     pub fn box_of(&mut self, id: &NodeId) -> Option<OrientedBox> {
-        if let Some(rect) = self.artboard_rect(id) {
-            return Some(OrientedBox::from_rect(rect));
+        if let Some(drawn) = self.drawn_box_of(id) {
+            return Some(drawn);
         }
         let artboard = self.document.artboard_of(id)?.id.clone();
         let origin = self.artboard_rect(&artboard)?.min;
-        if let Some(scene) = self.scene(&artboard)
-            && let Some(bounds) = self.renderer.bounds_of(&scene, id)
-        {
-            return Some(box_from_corners(bounds.corners, origin));
-        }
         let node = self.document.get(id)?;
         let layer = node.layer()?;
         let transform = self.document.world_transform(id)?;
@@ -97,6 +92,21 @@ impl Editor {
         ]
         .map(|p| transform.apply(p));
         Some(box_from_corners(corners, origin))
+    }
+
+    /// The box of a node as the canvas shows it now: an artboard's
+    /// rectangle, or the box a layer is drawn in. `None` for a layer that
+    /// is not drawn at this moment, so that what cannot be seen is neither
+    /// caught by a marquee nor snapped to.
+    pub fn drawn_box_of(&mut self, id: &NodeId) -> Option<OrientedBox> {
+        if let Some(rect) = self.artboard_rect(id) {
+            return Some(OrientedBox::from_rect(rect));
+        }
+        let artboard = self.document.artboard_of(id)?.id.clone();
+        let origin = self.artboard_rect(&artboard)?.min;
+        let scene = self.scene(&artboard)?;
+        let bounds = self.renderer.bounds_of(&scene, id)?;
+        Some(box_from_corners(bounds.corners, origin))
     }
 
     /// The box the selection handles go on: the selected node's own box,
@@ -198,7 +208,7 @@ impl Editor {
                 continue;
             }
             for id in selection::marquee_candidates(&self.document, &artboard) {
-                if self.box_of(&id).is_some_and(|b| touches(&b, rect)) {
+                if self.drawn_box_of(&id).is_some_and(|b| touches(&b, rect)) {
                     hits.push(id);
                 }
             }
@@ -311,6 +321,21 @@ pub(crate) mod tests {
             loose.bounds(),
             Rect::from_min_size(pos2(700.0, 100.0), vec2(50.0, 50.0))
         );
+    }
+
+    #[test]
+    fn a_marquee_does_not_catch_what_is_not_drawn() {
+        let mut editor = editor();
+        editor
+            .apply(
+                "Hide",
+                &[moshionly_core::Edit::set("loose", "hidden", true)],
+            )
+            .unwrap();
+        let over = Rect::from_min_max(pos2(690.0, 90.0), pos2(760.0, 160.0));
+        assert!(editor.marquee_hits(over).is_empty());
+        assert_eq!(editor.drawn_box_of(&id("loose")), None);
+        assert!(editor.drawn_box_of(&id("card")).is_some());
     }
 
     #[test]
