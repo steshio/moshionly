@@ -643,21 +643,29 @@ fn refocus_key(composer: egui::Id) -> egui::Id {
 ///
 /// The box is disabled while the answer arrives, which takes its focus.
 /// The focus comes back only if the person stayed: a click outside the
-/// composer meanwhile, an open dialog or another field with the focus
-/// means they moved on, and the focus is left where it is.
+/// composer meanwhile, a key pressed meanwhile (an arrow nudging a layer,
+/// ⌘Z), an open dialog or another field with the focus means they moved
+/// on, and the keyboard is left where it is.
 fn keep_typing(ui: &Ui, composer: egui::Id, area: Rect, busy: bool, dialog_open: bool) {
     let key = refocus_key(composer);
     if !ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
         return;
     }
     if busy {
-        let clicked_elsewhere = ui.input(|i| {
-            i.pointer.any_pressed()
+        let moved_on = ui.input(|i| {
+            let clicked_elsewhere = i.pointer.any_pressed()
                 && i.pointer
                     .interact_pos()
-                    .is_none_or(|pos| !area.contains(pos))
+                    .is_none_or(|pos| !area.contains(pos));
+            // The composer is disabled, so a key now went to the canvas or
+            // the menus.
+            let pressed_a_key = i
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Key { pressed: true, .. }));
+            clicked_elsewhere || pressed_a_key
         });
-        if clicked_elsewhere {
+        if moved_on {
             ui.data_mut(|d| d.remove::<bool>(key));
         }
         return;

@@ -208,6 +208,32 @@ fn the_composer_leaves_the_keyboard_alone_after_a_click_elsewhere() {
 }
 
 #[test]
+fn the_composer_leaves_the_keyboard_alone_after_a_key_press_elsewhere() {
+    let provider = ScriptedProvider::new(
+        "anthropic",
+        vec![Step::text("Working on it"), Step::WaitForStop],
+    );
+    let mut harness = harness(
+        ready(&["anthropic"]).with_provider(provider.clone()),
+        Arc::default(),
+    );
+    type_message(&mut harness, "Make it bounce");
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        let messages = state.chat.controller().conversation().messages();
+        messages.len() == 2 && messages[1].text() == "Working on it"
+    });
+
+    // The person nudges a layer on the canvas while the answer arrives,
+    // then the answer ends: arrows and undo must keep working there.
+    harness.key_press(Key::ArrowLeft);
+    harness.run_steps(1);
+    harness.get_by_label("Stop").click();
+    settle(&mut harness, idle);
+    assert!(!harness.get_by_label("Message").is_focused());
+}
+
+#[test]
 fn stop_ends_a_running_answer_and_the_composer_waits_meanwhile() {
     let provider = ScriptedProvider::new(
         "anthropic",
