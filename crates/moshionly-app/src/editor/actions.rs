@@ -726,10 +726,8 @@ mod tests {
         let node = editor.document().get(&folder).unwrap();
         assert_eq!(node.name(), "Folder 1");
         assert_eq!(editor.document().parent_of(&fade).unwrap().id, folder);
-        assert_eq!(
-            folders_of(editor.document(), std::slice::from_ref(&fade)),
-            [folder.clone()]
-        );
+        let folders = folders_of(editor.document(), std::slice::from_ref(&fade));
+        assert_eq!(folders.as_slice(), std::slice::from_ref(&folder));
 
         editor.set_actions([fade.clone()]);
         assert!(editor.ungroup_actions().unwrap());
