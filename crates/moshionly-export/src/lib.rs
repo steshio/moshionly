@@ -19,6 +19,7 @@
 pub mod error;
 pub mod format;
 mod frames;
+mod gif;
 pub mod job;
 mod output;
 mod png;

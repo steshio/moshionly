@@ -9,10 +9,13 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The quantizer that comes with `gif` is left out; `src/gif/palette.rs` chooses colours.
+gif = { version = "0.14", default-features = false, features = ["raii_no_panic", "std"] }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
 tempfile = "3"
 thiserror = "2"
 
 [dev-dependencies]
+gif = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }

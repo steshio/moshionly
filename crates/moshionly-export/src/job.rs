@@ -9,6 +9,7 @@ use moshionly_render::{AssetLoader, FontLibrary, RenderWarning, Renderer};
 use crate::error::ExportError;
 use crate::format::Format;
 use crate::frames::FrameSource;
+use crate::gif;
 use crate::output::Output;
 use crate::png;
 use crate::progress::{CancelToken, Phase, Progress};
@@ -187,7 +188,8 @@ fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
     match cx.plan.format {
         Format::Png => png::write_still(cx, path),
         Format::PngSequence => png::write_sequence(cx, path),
-        format @ (Format::Gif | Format::Mp4 | Format::WebM | Format::ProRes) => {
+        Format::Gif => gif::write(cx, path),
+        format @ (Format::Mp4 | Format::WebM | Format::ProRes) => {
             Err(ExportError::NotWritten(format))
         }
     }
