@@ -33,7 +33,6 @@ const MAX_INPUT_CHARS: usize = 1500;
 pub fn message_list(
     ui: &mut Ui,
     messages: &[Message],
-    provider_id: &str,
     images: &mut ImageCache,
 ) -> Option<ListAction> {
     let theme = Theme::of(ui);
@@ -48,7 +47,7 @@ pub fn message_list(
                 person_message(ui, message, images);
                 None
             }
-            Author::Assistant => answer(ui, message, index == last, provider_id, images),
+            Author::Assistant => answer(ui, message, index == last, images),
         };
         action = action.or(found);
     }
@@ -102,7 +101,6 @@ fn answer(
     ui: &mut Ui,
     message: &Message,
     is_last: bool,
-    provider_id: &str,
     images: &mut ImageCache,
 ) -> Option<ListAction> {
     let theme = Theme::of(ui);
@@ -125,6 +123,9 @@ fn answer(
             Part::Tool(call) => tool_chip(ui, id, call, images),
             Part::Image(image) => thumbnail_row(ui, &[image], images),
             Part::Error(error) => {
+                // The advice is about the provider that failed, not the
+                // one chosen since.
+                let provider_id = message.provider_id.as_deref().unwrap_or_default();
                 let found = error_card(ui, error, provider_id, name, is_last);
                 action = action.or(found);
             }
@@ -889,6 +890,7 @@ mod tests {
             state: AnswerState::Finished(StopReason::EndTurn),
             usage: None,
             provider: Some("Ollama".into()),
+            provider_id: Some("ollama".into()),
         };
         assert!(says_nothing(&answer(Vec::new())));
         assert!(says_nothing(&answer(vec![Part::Text(" \n".into())])));

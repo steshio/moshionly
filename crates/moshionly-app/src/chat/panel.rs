@@ -331,10 +331,6 @@ fn body_contents(
         empty_body(ui, controller, view, actions);
         return;
     }
-    let provider_id = controller
-        .selected()
-        .map(|status| status.info.id.clone())
-        .unwrap_or_default();
     ScrollArea::vertical()
         .id_salt("chat-messages")
         .auto_shrink([false, false])
@@ -354,8 +350,7 @@ fn body_contents(
                     .layout(Layout::top_down(Align::Min)),
             );
             inner.spacing_mut().item_spacing.y = 0.0;
-            let action =
-                messages::message_list(&mut inner, conversation.messages(), &provider_id, images);
+            let action = messages::message_list(&mut inner, conversation.messages(), images);
             let used = inner.min_rect();
             ui.allocate_rect(
                 Rect::from_min_max(top.min, pos2(top.right(), used.bottom() + theme.space.lg)),

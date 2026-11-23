@@ -117,6 +117,10 @@ pub struct Message {
     pub usage: Option<Usage>,
     /// The name of the provider that answered, for an answer.
     pub provider: Option<String>,
+    /// The id of the provider that answered, for an answer. The way
+    /// forward after an error (which command signs in, whether the service
+    /// runs on this computer) depends on it.
+    pub provider_id: Option<String>,
 }
 
 impl Message {
@@ -247,6 +251,7 @@ impl Conversation {
             state: AnswerState::Finished(StopReason::EndTurn),
             usage: None,
             provider: None,
+            provider_id: None,
         });
         let id = self.take_id();
         self.messages.push(Message {
@@ -256,6 +261,7 @@ impl Conversation {
             state: AnswerState::Running,
             usage: None,
             provider: Some(provider_name.to_owned()),
+            provider_id: Some(provider_id.to_owned()),
         });
         self.turn_provider = Some(provider_id.to_owned());
     }
@@ -518,6 +524,7 @@ mod tests {
         assert_eq!(assistant.author, Author::Assistant);
         assert!(assistant.is_running());
         assert_eq!(assistant.provider.as_deref(), Some("Claude Code"));
+        assert_eq!(assistant.provider_id.as_deref(), Some("claude-code"));
         assert!(conversation.is_running());
         assert_ne!(person.id, assistant.id);
     }

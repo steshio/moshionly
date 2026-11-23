@@ -427,6 +427,40 @@ fn every_attached_picture_can_be_seen_and_removed() {
 }
 
 #[test]
+fn an_error_keeps_the_advice_of_the_ai_that_failed() {
+    let provider = ScriptedProvider::new(
+        "claude-code",
+        vec![Step::Event(ChatEvent::Error {
+            message: "not signed in".into(),
+            kind: ErrorKind::NotSignedIn,
+        })],
+    );
+    let source = ready(&["claude-code", "codex"])
+        .with_provider(provider)
+        .with_provider(ScriptedProvider::new("codex", Vec::new()));
+    let mut harness = harness(source, Arc::default());
+    type_message(&mut harness, "Fade the title in");
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        idle(state) && !state.chat.controller().conversation().is_empty()
+    });
+    assert!(harness.query_by_label_contains("run claude once").is_some());
+
+    // Switching to another AI to carry on leaves the advice as it was.
+    harness
+        .state_mut()
+        .chat
+        .controller_mut()
+        .select_provider("codex");
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label_contains("run claude once").is_some(),
+        "still how to sign in to Claude Code"
+    );
+    assert!(harness.query_by_label_contains("codex login").is_none());
+}
+
+#[test]
 fn with_no_ai_ready_the_panel_says_so_and_opens_the_settings() {
     let mut harness = harness(ready(&[]), Arc::default());
     harness.run_steps(2);
