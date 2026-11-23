@@ -215,7 +215,7 @@ async fn mcp(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(refusal) = check_host(&headers, state.port) {
+    if let Some(refusal) = foreign_host(&headers, state.port) {
         return refusal;
     }
     if let Some(origin) = header_text(&headers, header::ORIGIN.as_str())
@@ -345,7 +345,7 @@ fn delete(state: &Shared, headers: &HeaderMap) -> Response {
 
 /// `GET /health`: whether the app is running, and which version.
 async fn health(State(state): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    if let Err(refusal) = check_host(&headers, state.port) {
+    if let Some(refusal) = foreign_host(&headers, state.port) {
         return refusal;
     }
     let info = server_info();
@@ -365,12 +365,11 @@ async fn not_found() -> Response {
     )
 }
 
-/// Refuses a request whose `Host` is not this machine at this port, which
-/// is how a web page would reach the server through a domain it controls.
-pub(crate) fn check_host(headers: &HeaderMap, port: u16) -> Result<(), Response> {
-    let Some(host) = header_text(headers, header::HOST.as_str()) else {
-        return Ok(());
-    };
+/// The refusal for a request whose `Host` is not this machine at this
+/// port, which is how a web page would reach the server through a domain
+/// it controls. `None` when the host is fine.
+pub(crate) fn foreign_host(headers: &HeaderMap, port: u16) -> Option<Response> {
+    let host = header_text(headers, header::HOST.as_str())?;
     let (name, given_port) = match host.rsplit_once(':') {
         Some((name, port)) if !name.is_empty() && !port.contains(']') => (name, Some(port)),
         _ => (host.as_str(), None),
@@ -381,13 +380,12 @@ pub(crate) fn check_host(headers: &HeaderMap, port: u16) -> Result<(), Response>
     );
     let right_port = given_port.is_none_or(|given| given == port.to_string());
     if local && right_port {
-        Ok(())
-    } else {
-        Err(plain(
-            StatusCode::FORBIDDEN,
-            &format!("This server only answers to 127.0.0.1:{port}, not to \"{host}\"."),
-        ))
+        return None;
     }
+    Some(plain(
+        StatusCode::FORBIDDEN,
+        &format!("This server only answers to 127.0.0.1:{port}, not to \"{host}\"."),
+    ))
 }
 
 /// Whether `origin` is this server's own address.

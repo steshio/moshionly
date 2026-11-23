@@ -6,10 +6,12 @@
 //! (`2025-03-26` to `2025-11-25`) that open with an `initialize`
 //! handshake. Only tools are offered; there are no resources or prompts.
 //!
-//! [`http::HttpServer`] serves it on this machine's loopback address.
+//! [`http::HttpServer`] serves it on this machine's loopback address, and
+//! [`stdio::serve`] on standard input and output for `moshionly mcp`.
 
 pub mod http;
 mod protocol;
+pub mod stdio;
 
 use serde_json::Value;
 
