@@ -106,6 +106,31 @@ module.exports = {
   vector: (spec) => node('VECTOR', Object.assign({ fills: [], strokes: [], cornerRadius: 0 }, spec)),
   line: (spec) => node('LINE', Object.assign({ fills: [], strokes: [], height: 0 }, spec)),
   boolean: (spec, children) => node('BOOLEAN_OPERATION', Object.assign({ fills: [], strokes: [], booleanOperation: 'UNION' }, spec), children || []),
+  text: (spec) =>
+    node(
+      'TEXT',
+      Object.assign(
+        {
+          characters: '',
+          fontName: { family: 'Inter', style: 'Regular' },
+          fontSize: 16,
+          fontWeight: 400,
+          lineHeight: { unit: 'AUTO' },
+          letterSpacing: { unit: 'PERCENT', value: 0 },
+          textCase: 'ORIGINAL',
+          textDecoration: 'NONE',
+          textAlignHorizontal: 'LEFT',
+          textAlignVertical: 'TOP',
+          textAutoResize: 'WIDTH_AND_HEIGHT',
+          textTruncation: 'DISABLED',
+          paragraphSpacing: 0,
+          paragraphIndent: 0,
+          fills: [solid(0, 0, 0)],
+          strokes: [],
+        },
+        spec,
+      ),
+    ),
   solid,
   toFigma,
 };

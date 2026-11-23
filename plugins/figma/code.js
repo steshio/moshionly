@@ -1525,6 +1525,229 @@ function normalisedPath(outline, placement) {
 }
 
 // ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+/** The text properties read per run of characters. */
+const TEXT_FIELDS = [
+  'fontName',
+  'fontSize',
+  'fontWeight',
+  'fontStyle',
+  'lineHeight',
+  'letterSpacing',
+  'textCase',
+  'textDecoration',
+  'fills',
+  'listOptions',
+];
+
+/** Weights named in font style names, longest names first. */
+const WEIGHT_WORDS = [
+  ['extralight', 200],
+  ['ultralight', 200],
+  ['extrabold', 800],
+  ['ultrabold', 800],
+  ['semibold', 600],
+  ['demibold', 600],
+  ['hairline', 100],
+  ['regular', 400],
+  ['medium', 500],
+  ['normal', 400],
+  ['light', 300],
+  ['black', 900],
+  ['heavy', 900],
+  ['thin', 100],
+  ['book', 400],
+  ['bold', 700],
+];
+
+/** The weight of a font, from Figma's number or the style's name. */
+function fontWeight(weight, fontName) {
+  const axes = fontName && fontName.variationSettings;
+  if (axes && typeof axes.wght === 'number') return Math.round(clamp(axes.wght, 1, 1000));
+  if (typeof weight === 'number' && weight > 0) return Math.round(clamp(weight, 1, 1000));
+  const style = String((fontName && fontName.style) || '').toLowerCase().replace(/[\s_-]/g, '');
+  for (const [word, value] of WEIGHT_WORDS) {
+    if (style.includes(word)) return value;
+  }
+  return 400;
+}
+
+/**
+ * The runs of differently styled characters of a text node. Real Figma
+ * nodes have `getStyledTextSegments`; test fixtures list
+ * `styledTextSegments`; otherwise the node's own values make one run.
+ */
+function textRuns(node) {
+  if (typeof node.getStyledTextSegments === 'function') {
+    try {
+      return node.getStyledTextSegments(TEXT_FIELDS);
+    } catch (error) {
+      // Fall back to the node's own values below.
+    }
+  }
+  if (Array.isArray(node.styledTextSegments) && node.styledTextSegments.length > 0) {
+    return node.styledTextSegments;
+  }
+  const characters = String(node.characters || '');
+  const run = { characters, start: 0, end: characters.length };
+  for (const field of TEXT_FIELDS) run[field] = node[field];
+  return [run];
+}
+
+/** The style of one run, in Moshionly's terms where they are simple. */
+function runStyle(run) {
+  const fontName = run.fontName && !isMixed(run.fontName) ? run.fontName : { family: 'Inter', style: 'Regular' };
+  return {
+    family: fontName.family || 'Inter',
+    styleName: fontName.style || 'Regular',
+    weight: fontWeight(run.fontWeight, fontName),
+    italic: run.fontStyle === 'ITALIC' || /italic|oblique/i.test(fontName.style || ''),
+    size: Math.max(0.01, numberOr(run.fontSize, 16)),
+    lineHeight: run.lineHeight || { unit: 'AUTO' },
+    letterSpacing: run.letterSpacing || { unit: 'PERCENT', value: 0 },
+    textCase: run.textCase || 'ORIGINAL',
+    decoration: run.textDecoration || 'NONE',
+    fills: run.fills,
+  };
+}
+
+function describeStyle(style) {
+  return style.family + ' ' + style.styleName + ' ' + px(style.size) + ' px';
+}
+
+/**
+ * The style used by most characters of the text, and a note listing the
+ * others when there are several: Moshionly text has one style.
+ */
+function dominantStyle(node, runs, run) {
+  const tally = new Map();
+  for (const segment of runs) {
+    const style = runStyle(segment);
+    const key = JSON.stringify(style);
+    const length = Math.max(0, numberOr(segment.end, 0) - numberOr(segment.start, 0)) || String(segment.characters || '').length;
+    const entry = tally.get(key) || { style, length: 0 };
+    entry.length += length;
+    tally.set(key, entry);
+  }
+  const entries = Array.from(tally.values()).sort((a, b) => b.length - a.length);
+  if (entries.length === 0) return runStyle({});
+  const main = entries[0].style;
+  if (entries.length > 1) {
+    const others = entries.slice(1, 4).map((entry) => {
+      const style = entry.style;
+      const differences = [];
+      if (describeStyle(style) !== describeStyle(main)) differences.push(describeStyle(style));
+      if (JSON.stringify(style.fills) !== JSON.stringify(main.fills)) differences.push('another colour');
+      if (JSON.stringify([style.lineHeight, style.letterSpacing]) !== JSON.stringify([main.lineHeight, main.letterSpacing])) {
+        differences.push('other spacing');
+      }
+      if (style.textCase !== main.textCase || style.decoration !== main.decoration) differences.push('other case or decoration');
+      return differences.join(', ') || 'small differences';
+    });
+    const more = entries.length > 4 ? ' and ' + (entries.length - 4) + ' more' : '';
+    run.note(
+      node,
+      'Mixed text styles: Moshionly text has one style, so all of it uses ' + describeStyle(main) +
+        ', the style of most of it. Other parts used: ' + others.join('; ') + more + '.',
+    );
+  }
+  return main;
+}
+
+/** Line height as a percentage of the font size. */
+function lineHeightPercent(style) {
+  const value = style.lineHeight;
+  // "Auto" follows the font's own spacing, which for most fonts is close
+  // to Moshionly's default of 120%.
+  if (!value || value.unit === 'AUTO') return 120;
+  const percent = value.unit === 'PIXELS' ? (numberOr(value.value, 0) / style.size) * 100 : numberOr(value.value, 120);
+  return percent > 0 ? round(percent, 2) : 120;
+}
+
+/** Letter spacing as a percentage of the font size. */
+function letterSpacingPercent(style) {
+  const value = style.letterSpacing;
+  if (!value) return 0;
+  const percent = value.unit === 'PIXELS' ? (numberOr(value.value, 0) / style.size) * 100 : numberOr(value.value, 0);
+  return round(percent, 2);
+}
+
+const TEXT_ALIGN = { LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'left' };
+const VERTICAL_ALIGN = { TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' };
+const AUTO_SIZE = { WIDTH_AND_HEIGHT: 'width_and_height', HEIGHT: 'height', NONE: 'fixed', TRUNCATE: 'fixed' };
+const TEXT_CASE = { ORIGINAL: 'original', UPPER: 'upper', LOWER: 'lower', TITLE: 'title' };
+
+function convertText(node, container, m, run) {
+  const placement = place(m, ownBox(node));
+  if (placement.mirrored || placement.skewed || placement.stretched) {
+    // TODO: send mirrored, skewed or stretched text as an image (next step).
+    run.note(node, 'This text is mirrored, skewed or stretched in Figma; Moshionly draws it straight.');
+  }
+  const text = newLayer('text', node, run, container, placement);
+  styleLayer(text, node, run, placement);
+  const runs = textRuns(node);
+  const style = dominantStyle(node, runs, run);
+
+  const fill = readPaints(style.fills, node, run, placement, 'text fill');
+  if (fill.paint !== undefined) text.fill = fill.paint;
+  if (fill.image || fill.special) {
+    run.note(node, 'Its ' + PAINT_NAMES[fill.image ? 'IMAGE' : fill.special] + ' text fill was left out.');
+  }
+  strokeLayer(text, node, run, placement);
+
+  // Figma separates lines with U+2028 when Shift+Enter is used.
+  text.content = String(node.characters || '').replace(/\r\n?|\u2028|\u2029/g, '\n');
+  text.font = { family: style.family, weight: style.weight };
+  if (style.italic) text.font.italic = true;
+  text.font_size = px(style.size);
+  const lineHeight = lineHeightPercent(style);
+  if (lineHeight !== 120) text.line_height = lineHeight;
+  const letterSpacing = letterSpacingPercent(style);
+  if (letterSpacing !== 0) text.letter_spacing = letterSpacing;
+
+  const align = TEXT_ALIGN[node.textAlignHorizontal] || 'left';
+  if (align !== 'left') text.align = align;
+  if (node.textAlignHorizontal === 'JUSTIFIED') {
+    run.note(node, 'Justified text is aligned left; Moshionly does not justify.');
+  }
+  const vertical = VERTICAL_ALIGN[node.textAlignVertical] || 'top';
+  if (vertical !== 'top') text.vertical_align = vertical;
+  const autoSize = AUTO_SIZE[node.textAutoResize] || 'fixed';
+  if (autoSize !== 'width_and_height') text.auto_size = autoSize;
+  if (node.textAutoResize === 'TRUNCATE' || node.textTruncation === 'ENDING') {
+    run.note(node, 'Figma cuts this text short with an ellipsis when it does not fit; Moshionly shows all of it.');
+  }
+  const textCase = TEXT_CASE[style.textCase];
+  if (textCase && textCase !== 'original') text.case = textCase;
+  if (!textCase) run.note(node, 'Small capitals are drawn as typed; Moshionly has no small capitals.');
+
+  noteTextExtras(node, style, runs, run);
+  run.emit(text);
+}
+
+/** Notes for text features Moshionly does not draw. */
+function noteTextExtras(node, style, runs, run) {
+  if (style.decoration === 'UNDERLINE' || style.decoration === 'STRIKETHROUGH') {
+    run.note(node, 'Its ' + (style.decoration === 'UNDERLINE' ? 'underline' : 'strikethrough') + ' was left out.');
+  }
+  if (runs.some((segment) => segment.listOptions && segment.listOptions.type && segment.listOptions.type !== 'NONE')) {
+    run.note(node, 'List bullets and numbers are not drawn; the items arrive as plain lines.');
+  }
+  const paragraphs = String(node.characters || '').split('\n').length;
+  if (paragraphs > 1 && numberOr(node.paragraphSpacing, 0) > 0) {
+    run.note(node, 'The extra space between paragraphs (' + px(node.paragraphSpacing) + ' px) was left out.');
+  }
+  if (numberOr(node.paragraphIndent, 0) > 0) {
+    run.note(node, 'The paragraph indent was left out.');
+  }
+  if (node.leadingTrim === 'CAP_HEIGHT') {
+    run.note(node, 'Figma trims the space above and below this text; in Moshionly it sits a little lower in its box.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The walk
 // ---------------------------------------------------------------------------
 
@@ -1544,6 +1767,7 @@ const CONVERTERS = {
   LINE: convertLine,
   VECTOR: convertVector,
   BOOLEAN_OPERATION: convertBoolean,
+  TEXT: convertText,
 };
 
 async function convertLayer(node, container, run) {
