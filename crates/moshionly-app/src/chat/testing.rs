@@ -258,10 +258,13 @@ impl ChatProvider for ScriptedProvider {
 }
 
 /// Fixed statuses and scripted providers in place of the real ones.
+///
+/// Clones share their statuses, providers and holds.
 #[derive(Debug, Clone, Default)]
 pub struct ScriptedSource {
     statuses: Arc<Mutex<Vec<ProviderStatus>>>,
     providers: Arc<Mutex<HashMap<String, ScriptedProvider>>>,
+    checks_held: Arc<AtomicBool>,
 }
 
 impl ScriptedSource {
@@ -269,8 +272,21 @@ impl ScriptedSource {
     pub fn new(statuses: Vec<ProviderStatus>) -> Self {
         Self {
             statuses: Arc::new(Mutex::new(statuses)),
-            providers: Arc::default(),
+            ..Self::default()
         }
+    }
+
+    /// Keeps every check of all providers waiting until
+    /// [`release_checks`](Self::release_checks), like a slow probe. Each
+    /// still reports the settings it started with. Checks of one provider
+    /// are not held.
+    pub fn hold_checks(&self) {
+        self.checks_held.store(true, Ordering::Release);
+    }
+
+    /// Lets the held checks of all providers finish.
+    pub fn release_checks(&self) {
+        self.checks_held.store(false, Ordering::Release);
     }
 
     /// Answers with `provider` for its id.
@@ -293,6 +309,9 @@ impl ScriptedSource {
 #[async_trait]
 impl ProviderSource for ScriptedSource {
     async fn statuses(&self, registry: &ProviderRegistry) -> Vec<ProviderStatus> {
+        while self.checks_held.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         let mut statuses = lock(&self.statuses).clone();
         for status in &mut statuses {
             status.enabled = registry.settings().is_enabled(&status.info.id);

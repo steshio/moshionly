@@ -114,11 +114,16 @@ pub struct Polled {
 
 /// A result from the background, for the UI thread.
 enum Update {
+    /// Every provider's status, from check number `check`.
     Statuses {
-        generation: u64,
+        check: u64,
         statuses: Vec<ProviderStatus>,
     },
-    Status(ProviderStatus),
+    /// One provider's status, from check number `check`.
+    Status {
+        check: u64,
+        status: ProviderStatus,
+    },
     Models {
         provider: String,
         result: Result<Vec<ModelInfo>, String>,
@@ -184,7 +189,14 @@ pub struct Controller {
     waker: Waker,
     statuses: Option<Vec<ProviderStatus>>,
     checking: bool,
-    generation: u64,
+    /// Numbers every check, of all providers or of one, in the order they
+    /// start.
+    checks: u64,
+    /// The number of the latest check of all providers.
+    full_check: u64,
+    /// For each provider, the number of the check its status came from. A
+    /// check that started earlier cannot replace it.
+    checked: HashMap<String, u64>,
     models: HashMap<String, ModelList>,
     keys: HashMap<String, KeyNote>,
     selected: Option<String>,
@@ -220,7 +232,9 @@ impl Controller {
             waker: Waker::default(),
             statuses: None,
             checking: false,
-            generation: 0,
+            checks: 0,
+            full_check: 0,
+            checked: HashMap::new(),
             models: HashMap::new(),
             keys: HashMap::new(),
             selected: None,
@@ -314,30 +328,30 @@ impl Controller {
 
     /// Checks every provider again.
     pub fn refresh_statuses(&mut self) {
-        self.generation += 1;
+        self.checks += 1;
+        self.full_check = self.checks;
         self.checking = true;
-        let (generation, registry, source) = (
-            self.generation,
-            self.registry.clone(),
-            Arc::clone(&self.source),
-        );
+        let (check, registry, source) =
+            (self.checks, self.registry.clone(), Arc::clone(&self.source));
         self.spawn(async move {
             let statuses = source.statuses(&registry).await;
-            Some(Update::Statuses {
-                generation,
-                statuses,
-            })
+            Some(Update::Statuses { check, statuses })
         });
     }
 
     /// Checks one provider again.
     pub fn refresh_status(&mut self, id: &str) {
-        let (registry, source, id) = (
+        self.checks += 1;
+        let (check, registry, source, id) = (
+            self.checks,
             self.registry.clone(),
             Arc::clone(&self.source),
             id.to_owned(),
         );
-        self.spawn(async move { source.status(&registry, &id).await.map(Update::Status) });
+        self.spawn(async move {
+            let status = source.status(&registry, &id).await?;
+            Some(Update::Status { check, status })
+        });
     }
 
     /// Asks a provider for its models, unless that was done.
@@ -408,6 +422,7 @@ impl Controller {
         self.models
             .retain(|id, _| reach(&before, id) == reach(&settings, id));
         *self.registry.settings_mut() = settings;
+        self.follow_settings();
         if let Some(path) = &self.settings_file {
             match self.registry.settings().save_to(path) {
                 Ok(()) => self.settings_problem = None,
@@ -639,17 +654,20 @@ impl Controller {
 
     fn take(&mut self, update: Update) {
         match update {
-            Update::Statuses {
-                generation,
-                statuses,
-            } => {
-                if generation == self.generation {
-                    self.statuses = Some(statuses);
+            Update::Statuses { check, statuses } => {
+                if check == self.full_check {
+                    let rows = statuses
+                        .into_iter()
+                        .map(|status| self.newest(check, status))
+                        .collect();
+                    self.statuses = Some(rows);
+                    self.follow_settings();
                     self.checking = false;
                     self.reselect();
                 }
             }
-            Update::Status(status) => {
+            Update::Status { check, status } => {
+                let status = self.newest(check, status);
                 if let Some(statuses) = &mut self.statuses
                     && let Some(slot) = statuses
                         .iter_mut()
@@ -657,6 +675,7 @@ impl Controller {
                 {
                     *slot = status;
                 }
+                self.follow_settings();
                 self.reselect();
             }
             Update::Models { provider, result } => {
@@ -706,6 +725,31 @@ impl Controller {
                 self.refresh_status(&provider);
                 self.keys.insert(provider, note);
             }
+        }
+    }
+
+    /// The status to keep for a provider when check number `check` reports
+    /// `status`: that one, unless the status there came from a check that
+    /// started later, such as one after a key was saved while all
+    /// providers were being checked.
+    fn newest(&mut self, check: u64, status: ProviderStatus) -> ProviderStatus {
+        let id = &status.info.id;
+        if self.checked.get(id).is_some_and(|&seen| seen > check)
+            && let Some(kept) = self.status(id)
+        {
+            return kept.clone();
+        }
+        self.checked.insert(id.clone(), check);
+        status
+    }
+
+    /// Says for every provider whether it is offered as the settings say
+    /// now. A check reports the settings of when it started, which a switch
+    /// turned meanwhile has changed.
+    fn follow_settings(&mut self) {
+        let settings = self.registry.settings();
+        for status in self.statuses.iter_mut().flatten() {
+            status.enabled = settings.is_enabled(&status.info.id);
         }
     }
 
@@ -1172,6 +1216,56 @@ mod tests {
             controller.key_note("claude-code"),
             Some(KeyNote::Failed(_))
         ));
+    }
+
+    #[test]
+    fn a_provider_turned_off_during_a_check_stays_off() {
+        let source = ScriptedSource::new(statuses(&["claude-code", "codex"]))
+            .with_provider(ScriptedProvider::new("claude-code", Vec::new()))
+            .with_provider(ScriptedProvider::new("codex", Vec::new()));
+        let mut controller = controller(source.clone());
+        assert_eq!(controller.selected().unwrap().info.id, "claude-code");
+
+        // Every provider is being checked when the person turns one off.
+        source.hold_checks();
+        controller.refresh_statuses();
+        controller.change_settings(|settings| {
+            settings.provider_mut("claude-code").enabled = false;
+        });
+        controller.refresh_status("claude-code");
+        wait_until(&mut controller, |c| {
+            c.selected().is_some_and(|s| s.info.id == "codex")
+        });
+
+        // The check that started before the switch was turned lands last.
+        source.release_checks();
+        assert!(controller.settle(WAIT));
+        let status = controller.status("claude-code").unwrap();
+        assert!(!status.enabled, "shown as off");
+        assert!(!status.is_usable(), "not offered in the picker");
+        assert_eq!(controller.selected().unwrap().info.id, "codex");
+    }
+
+    #[test]
+    fn a_check_that_started_before_a_key_was_saved_does_not_hide_it() {
+        let registry =
+            ProviderRegistry::new(AiSettings::default(), Arc::new(MemoryKeyStore::new()));
+        let source = ScriptedSource::new(vec![
+            status("anthropic", ReadyState::MissingKey, "Add a key.").unwrap(),
+        ]);
+        let mut controller = Controller::new(registry, Arc::new(source.clone()), None);
+        controller.ensure_checked();
+        assert!(controller.settle(WAIT));
+
+        source.hold_checks();
+        controller.refresh_statuses();
+        controller.save_key("anthropic", ApiKey::new("sk-ant-test-0123456789abcdef"));
+        wait_until(&mut controller, |c| {
+            c.status("anthropic").unwrap().key_stored
+        });
+        source.release_checks();
+        assert!(controller.settle(WAIT));
+        assert!(controller.status("anthropic").unwrap().key_stored);
     }
 
     #[test]
