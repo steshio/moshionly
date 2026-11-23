@@ -11,8 +11,18 @@ use serde_json::{Map, Value};
 
 /// How many decimals each kind of number keeps.
 pub(crate) mod places {
+    /// Positions, sizes and other lengths in pixels.
+    pub const LENGTH: i32 = 3;
+    /// Angles in degrees.
+    pub const ANGLE: i32 = 3;
+    /// Percentages: scale and opacity.
+    pub const PERCENT: i32 = 3;
+    /// Colour channels from 0 to 1.
+    pub const COLOR: i32 = 4;
     /// Times in frames.
     pub const TIME: i32 = 3;
+    /// Keyframe easing handles.
+    pub const EASE: i32 = 4;
 }
 
 /// `value` rounded to `places` decimals.

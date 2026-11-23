@@ -6,18 +6,43 @@
 //! becomes keyframes with Bezier easing that land on the values Moshionly
 //! shows at every frame. What Lottie cannot express exactly is drawn as
 //! closely as it can be and listed as a warning that names the layer.
+//!
+//! | Module | What it does |
+//! |---|---|
+//! | `fit` | Keyframes that follow a value over time within a tolerance |
+//! | `timeline` | Layer properties over time, and where they change |
+//! | `layers` | The layer tree as Lottie layers |
+//! | `shapes` | Outlines: rectangles, arcs, stars, pen paths |
+//! | `paint` | Fills and strokes: colours and gradients |
+//! | `props`, `json` | Writing properties and numbers compactly |
 
+mod clock;
+mod fit;
 mod json;
+mod layers;
+mod paint;
+mod props;
+mod shapes;
+mod timeline;
+mod warnings;
 
 use std::fs;
 use std::path::Path;
 
+use moshionly_core::Family;
+use moshionly_core::model::Paint;
+use moshionly_render::Background;
 use serde_json::Value;
 
 use crate::error::ExportError;
 use crate::job::Context;
 use crate::progress::Phase;
+use clock::Clock;
+use fit::Animated;
 use json::{num, object, places};
+use layers::{Comp, Converter};
+use props::Transform;
+use timeline::Timeline;
 
 /// The Lottie format version the files follow.
 const VERSION: &str = "5.12.0";
@@ -52,26 +77,87 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         // A plan for Lottie always has frames; it is an animated format.
         return Ok(None);
     };
+    let clock = Clock::new(times);
+    let document = cx.source.document;
+    let artboard = document
+        .get(cx.source.artboard)
+        .ok_or_else(|| ExportError::Internal {
+            frame: 0,
+            message: "the planned artboard is missing".into(),
+        })?;
+    let timeline = Timeline { document, clock };
     cx.reporter.report(Phase::Rendering, 0);
-    let animation = object([
-        ("v", Value::from(VERSION)),
-        ("fr", num(times.rate().fps(), 3)),
-        ("ip", Value::from(0)),
-        ("op", num(times.len() as f64, places::TIME)),
-        ("w", Value::from(cx.plan.width)),
-        ("h", Value::from(cx.plan.height)),
-        ("nm", Value::from(cx.plan.artboard_name.as_str())),
-        ("ddd", Value::from(0)),
-        ("assets", Value::Array(Vec::new())),
-        ("layers", Value::Array(Vec::new())),
-        ("meta", object([("g", Value::from("Moshionly"))])),
-    ]);
+
+    let total = document
+        .descendants(&artboard.id, Family::Layer)
+        .len()
+        .max(1) as u64;
+    let frames = cx.plan.frame_count();
+    let mut converted = 0;
+    let warnings = {
+        let reporter = &mut cx.reporter;
+        let progress = Box::new(move || {
+            converted += 1;
+            reporter.report(Phase::Rendering, frames * converted.min(total) / total);
+            reporter.check()
+        });
+        let mut converter = Converter::new(timeline, progress);
+        let mut comp = Comp::default();
+
+        // A size other than the artboard's own scales everything from one
+        // layer that draws nothing.
+        let scale = cx.plan.scale;
+        let root = ((scale - 1.0).abs() > 1e-9).then(|| comp.index());
+        converter.add_children(&artboard.id, &mut comp, root, [0.0, 0.0])?;
+        let over = match cx.plan.render.background {
+            Background::Transparent => None,
+            Background::Artboard => Some(None),
+            Background::Over(color) => Some(Some(color)),
+        };
+        if let Some(over) = over {
+            // A colour behind an artboard that is opaque throughout is never
+            // seen.
+            let opaque = converter.survey.iter().all(|frame| {
+                matches!(
+                    timeline.fill(&artboard.id, *frame),
+                    Some(Paint::Solid(color)) if color.a == 255
+                )
+            });
+            converter.background(artboard, &mut comp, root, over.filter(|_| !opaque));
+        }
+        if let Some(root) = root {
+            let transform = Transform {
+                scale: Animated::Static(vec![scale * 100.0]),
+                ..Transform::default()
+            };
+            let mut layer = converter.layer(artboard, 3, root, None, &transform);
+            layer.insert("nm".into(), Value::from("Size"));
+            comp.layers.push(Value::Object(layer));
+        }
+        let animation = object([
+            ("v", Value::from(VERSION)),
+            ("fr", num(clock.fps, 3)),
+            ("ip", Value::from(0)),
+            ("op", num(clock.out_point(), places::TIME)),
+            ("w", Value::from(cx.plan.width)),
+            ("h", Value::from(cx.plan.height)),
+            ("nm", Value::from(cx.plan.artboard_name.as_str())),
+            ("ddd", Value::from(0)),
+            ("assets", Value::Array(Vec::new())),
+            ("layers", Value::Array(comp.layers)),
+            ("meta", object([("g", Value::from("Moshionly"))])),
+        ]);
+        let text = serde_json::to_string(&animation).map_err(|error| ExportError::Internal {
+            frame: 0,
+            message: error.to_string(),
+        })?;
+        fs::write(path, text).map_err(|error| ExportError::io("written", path, error))?;
+        std::mem::take(&mut converter.warnings)
+    };
+    for warning in warnings.into_vec() {
+        cx.reporter.note(warning);
+    }
     cx.reporter.check()?;
     cx.reporter.report(Phase::Encoding, cx.plan.frame_count());
-    let text = serde_json::to_string(&animation).map_err(|error| ExportError::Internal {
-        frame: 0,
-        message: error.to_string(),
-    })?;
-    fs::write(path, text).map_err(|error| ExportError::io("written", path, error))?;
     Ok(None)
 }
