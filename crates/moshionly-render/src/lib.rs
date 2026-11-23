@@ -11,6 +11,8 @@
 
 pub mod error;
 pub mod frame;
+pub mod options;
 
 pub use error::{RenderError, RenderWarning};
 pub use frame::Frame;
+pub use options::{Background, RenderOptions};
