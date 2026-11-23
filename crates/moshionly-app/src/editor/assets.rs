@@ -3,14 +3,15 @@
 //! A saved project is meant to be self-contained: the images its layers
 //! show sit in its folder (imports put them in `assets/`), and image layers
 //! name them relative to the project file, so the folder can be moved or
-//! shared as a whole. Saving the project in another folder keeps that true:
-//! the images are copied along and the layers point at the copies.
+//! shared as a whole. Saving the project in another folder, and pasting an
+//! image layer into another project, keep that true: the images are copied
+//! along and the layers point at the copies.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use moshionly_core::io::{self, Asset};
-use moshionly_core::{Document, Edit};
+use moshionly_core::{Document, Edit, Node};
 
 use super::inspect::image_of;
 
@@ -216,8 +217,57 @@ pub fn gather_images(document: &Document, from: Option<&Path>, to: &Path) -> Gat
     gathered
 }
 
+/// Makes the image sources of `nodes`, copied from a project saved as
+/// `project_file`, absolute, so that they can be found from anywhere: for
+/// the clipboard.
+pub fn absolute_sources(nodes: &mut [Node], project_file: Option<&Path>) {
+    for node in nodes {
+        if let moshionly_core::model::NodeData::Image(image) = &mut node.data
+            && let Some(file) = image_file(&image.source, project_file)
+        {
+            image.source = file.to_string_lossy().into_owned();
+        }
+    }
+}
+
+/// Makes the images of `nodes`, about to be pasted into a project saved as
+/// `project_file`, part of it: an image from elsewhere is copied into its
+/// assets folder and its layer points at the copy. A project never saved
+/// has no folder, so its images keep their full paths. Returns a message
+/// for each image that could not be copied, or whose file is missing.
+pub fn adopt_images(nodes: &mut [Node], project_file: Option<&Path>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for node in nodes {
+        let moshionly_core::model::NodeData::Image(image) = &mut node.data else {
+            continue;
+        };
+        let Some(file) = image_file(&image.source, None) else {
+            continue;
+        };
+        if !file.exists() {
+            problems.push(format!(
+                "The image {} is missing, so its layer shows nothing.",
+                shown_name(&file)
+            ));
+            continue;
+        }
+        let Some(project) = project_file else {
+            image.source = file.to_string_lossy().into_owned();
+            continue;
+        };
+        match follow(&file.to_string_lossy(), None, project) {
+            Ok(Some(next)) => image.source = next,
+            Ok(None) => {}
+            Err(problem) => problems.push(problem),
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
+    use moshionly_core::NodeId;
+
     use super::*;
 
     /// A folder of its own for one test, emptied first.
@@ -336,6 +386,39 @@ mod tests {
             "{:?}",
             gathered.problems
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pasted_images_join_the_project_they_are_pasted_into() {
+        let root = scratch("paste");
+        write(&root.join("a/assets/hero.png"), b"hero");
+        let doc = document(&["assets/hero.png", "assets/gone.png"]);
+        let mut nodes: Vec<Node> = ["i0", "i1"]
+            .iter()
+            .map(|id| doc.get(&NodeId::from(*id)).unwrap().clone())
+            .collect();
+        absolute_sources(&mut nodes, Some(&root.join("a/p.moshi")));
+        let source = |nodes: &[Node], at: usize| image_of(&nodes[at]).unwrap().source.clone();
+        assert!(Path::new(&source(&nodes, 0)).is_absolute());
+
+        // Into a project never saved: full paths.
+        let mut unsaved = nodes.clone();
+        let problems = adopt_images(&mut unsaved, None);
+        assert_eq!(problems.len(), 1, "the missing image is reported");
+        assert_eq!(source(&unsaved, 0), source(&nodes, 0));
+
+        // Into a saved project elsewhere: copied into its assets.
+        let mut saved = nodes.clone();
+        let problems = adopt_images(&mut saved, Some(&root.join("b/q.moshi")));
+        assert_eq!(problems.len(), 1);
+        assert_eq!(source(&saved, 0), "assets/hero.png");
+        assert!(root.join("b/assets/hero.png").exists());
+
+        // Back into the project it came from: named as before, no copy.
+        let mut home = nodes.clone();
+        adopt_images(&mut home, Some(&root.join("a/p.moshi")));
+        assert_eq!(source(&home, 0), "assets/hero.png");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -984,3 +984,59 @@ fn a_first_save_copies_images_into_the_project() {
     assert_eq!(source_in(&reread, &id), "assets/photo.png");
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn an_image_pasted_into_another_project_comes_with_its_file() {
+    let folder = scratch("paste-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let first = project_with_an_image(&folder.join("a"));
+    let second = folder.join("b/other.moshi");
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(
+        &second,
+        r#"{"format":"moshionly","version":1,"name":"Other","nodes":[
+        {"id":"scene","parent":null,"index":"a0","type":"artboard","width":1080,"height":1080}
+        ]}"#,
+    )
+    .unwrap();
+    let mut harness = harness_on(&first);
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("photo"));
+    harness.run();
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the photo went on the clipboard");
+    harness.run();
+    harness.state_mut().open_path(&second);
+    harness.run();
+    harness.event(egui::Event::Paste(copied));
+    harness.run();
+    let pasted = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .expect("the pasted photo is selected");
+    assert_eq!(
+        source_in(harness.state().editor().document(), pasted.as_str()),
+        "assets/hero.png"
+    );
+    assert_eq!(
+        std::fs::read(folder.join("b/assets/hero.png")).unwrap(),
+        png()
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}

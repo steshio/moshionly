@@ -11,10 +11,13 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use moshionly_core::build::{self, ARTBOARD_GAP, Place};
 use moshionly_core::{Document, Edit, Family, Node, NodeId, NodeType};
 use serde_json::{Value, json};
+
+use super::assets;
 
 /// The marker that says a text is Moshionly's clipboard.
 pub const MARKER: &str = "clipboard";
@@ -88,12 +91,15 @@ pub fn copied_nodes(document: &Document, ids: &[NodeId]) -> Vec<Node> {
     nodes
 }
 
-/// The clipboard text for `ids` of `document`.
-pub fn copy(document: &Document, ids: &[NodeId]) -> Option<String> {
-    let nodes = copied_nodes(document, ids);
+/// The clipboard text for `ids` of `document`, saved as `project_file`
+/// (or never saved). Image sources are written as full paths, so that the
+/// images can be found from whatever project they are pasted into.
+pub fn copy(document: &Document, ids: &[NodeId], project_file: Option<&Path>) -> Option<String> {
+    let mut nodes = copied_nodes(document, ids);
     if nodes.is_empty() {
         return None;
     }
+    assets::absolute_sources(&mut nodes, project_file);
     let values: Vec<Value> = nodes.iter().map(Node::to_value).collect();
     Some(json!({ "moshionly": MARKER, "version": VERSION, "nodes": values }).to_string())
 }
@@ -297,7 +303,7 @@ mod tests {
     #[test]
     fn the_clipboard_text_round_trips() {
         let doc = document();
-        let text = copy(&doc, &[NodeId::from("loose")]).unwrap();
+        let text = copy(&doc, &[NodeId::from("loose")], None).unwrap();
         assert!(text.contains("\"moshionly\":\"clipboard\""));
         let nodes = read(&text).unwrap();
         assert_eq!(ids(&nodes), ["loose", "other"]);
@@ -307,13 +313,13 @@ mod tests {
             read("{\"moshionly\":\"clipboard\",\"version\":99,\"nodes\":[]}"),
             Err(PasteError::Broken(_))
         ));
-        assert!(copy(&doc, &[NodeId::from("missing")]).is_none());
+        assert!(copy(&doc, &[NodeId::from("missing")], None).is_none());
     }
 
     #[test]
     fn pasting_makes_fresh_copies_with_their_animations() {
         let mut doc = document();
-        let nodes = read(&copy(&doc, &[NodeId::from("card")]).unwrap()).unwrap();
+        let nodes = read(&copy(&doc, &[NodeId::from("card")], None).unwrap()).unwrap();
         let (edits, roots) = paste(&doc, &nodes, Some(&NodeId::from("ab")), &Place::Last).unwrap();
         doc.apply(&edits).unwrap();
         assert_eq!(roots.len(), 1);
@@ -344,7 +350,7 @@ mod tests {
             ]}"##,
         )
         .unwrap();
-        let layers = read(&copy(&source, &[NodeId::from("loose")]).unwrap()).unwrap();
+        let layers = read(&copy(&source, &[NodeId::from("loose")], None).unwrap()).unwrap();
         let (edits, roots) =
             paste(&target, &layers, Some(&NodeId::from("main")), &Place::Last).unwrap();
         target.apply(&edits).unwrap();
@@ -354,7 +360,7 @@ mod tests {
         );
         assert_eq!(target.animations_targeting(&roots[0]).len(), 1);
 
-        let artboard = read(&copy(&source, &[NodeId::from("ab")]).unwrap()).unwrap();
+        let artboard = read(&copy(&source, &[NodeId::from("ab")], None).unwrap()).unwrap();
         let (edits, roots) = paste(&target, &artboard, None, &Place::Last).unwrap();
         target.apply(&edits).unwrap();
         let pasted = target.get(&roots[0]).unwrap().layer().unwrap();

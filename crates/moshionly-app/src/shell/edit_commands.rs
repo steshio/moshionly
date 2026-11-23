@@ -8,7 +8,7 @@ use moshionly_core::{Document, Edit, Family, NodeId, NodeType};
 use super::Shell;
 use crate::{
     commands::{CommandId, CommandRegistry},
-    editor::{Editor, clipboard},
+    editor::{Editor, assets, clipboard},
     widgets::Toast,
 };
 
@@ -47,8 +47,11 @@ impl Shell {
     /// Puts the selected layers on the clipboard as Moshionly's JSON.
     /// Returns whether there was anything to copy.
     fn copy(&mut self, ctx: &Context) -> bool {
-        let Some(text) = clipboard::copy(self.editor.document(), self.editor.selection.ids())
-        else {
+        let Some(text) = clipboard::copy(
+            self.editor.document(),
+            self.editor.selection.ids(),
+            self.editor.project_file(),
+        ) else {
             return false;
         };
         ctx.copy_text(text.clone());
@@ -62,13 +65,17 @@ impl Shell {
         let Some(text) = text else {
             return;
         };
-        let nodes = match clipboard::read(text) {
+        let mut nodes = match clipboard::read(text) {
             Ok(nodes) => nodes,
             Err(error) => {
                 self.toasts.push(Toast::info(error.to_string()));
                 return;
             }
         };
+        // Images from another project are copied into this one.
+        for problem in assets::adopt_images(&mut nodes, self.editor.project_file()) {
+            self.toasts.push(Toast::warning(problem));
+        }
         let document = std::sync::Arc::clone(self.editor.document());
         let (parent, place) = paste_target(&document, &self.editor);
         let result = clipboard::paste(&document, &nodes, parent.as_ref(), &place);
