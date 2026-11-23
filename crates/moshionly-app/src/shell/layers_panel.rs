@@ -93,6 +93,10 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
 
     let delete_shortcut = CommandId::Delete.shortcut_label().unwrap_or_default();
     let pointer = ui.input(|i| i.pointer.interact_pos());
+    // Escape lets go of rows being dragged: nothing moves.
+    if panel.dragging.is_some() && ui.input(|i| i.key_pressed(Key::Escape)) {
+        *panel.dragging = None;
+    }
     let mut drop: Option<Drop> = None;
     let mut dropped = false;
     ScrollArea::vertical()
@@ -160,8 +164,12 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
                     *panel.dragging = Some(ids);
                 }
                 let rect = shown.response.rect;
+                // Only a row the pointer is really over takes the drop: not
+                // one at the same height while the pointer is over the
+                // canvas, nor one scrolled out of view.
                 if let (Some(moving), Some(pointer)) = (panel.dragging.as_ref(), pointer)
-                    && rect.y_range().contains(pointer.y)
+                    && rect.contains(pointer)
+                    && ui.clip_rect().contains(pointer)
                     && !moving.contains(&row.id)
                 {
                     let moving_artboards = moving.iter().any(|id| {

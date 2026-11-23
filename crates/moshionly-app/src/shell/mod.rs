@@ -316,7 +316,8 @@ impl Shell {
             || self.pending.is_some()
             || self.text_edit.is_some()
             || self.pen.is_some()
-            || self.renaming.is_some();
+            || self.renaming.is_some()
+            || self.list_drag.is_some();
 
         self.editor.attach(&ctx);
         if self.editor.sync() {

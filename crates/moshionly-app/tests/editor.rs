@@ -1040,3 +1040,59 @@ fn an_image_pasted_into_another_project_comes_with_its_file() {
     );
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn a_row_let_go_outside_the_list_moves_nothing() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let title = rect_of(&harness, "Title");
+    // Out over the canvas, at the height of another row.
+    drag(
+        &mut harness,
+        dot.center(),
+        egui::pos2(800.0, title.center().y),
+    );
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("dot")).unwrap().parent,
+        Some(NodeId::from("card"))
+    );
+    assert_eq!(harness.state().editor().undo_label(), None);
+}
+
+#[test]
+fn escape_stops_dragging_a_row() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let card = rect_of(&harness, "Card");
+    let to = egui::pos2(card.center().x, card.top() + 2.0);
+    harness.hover_at(dot.center());
+    harness.drag_at(dot.center());
+    for step in 1..=4 {
+        let t = step as f32 / 4.0;
+        harness.hover_at(dot.center() + (to - dot.center()) * t);
+        harness.run();
+    }
+    harness.key_press(Key::Escape);
+    harness.run();
+    harness.drop_at(to);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("dot")).unwrap().parent,
+        Some(NodeId::from("card"))
+    );
+    assert_eq!(selection(&harness), ["dot"], "Escape did not deselect");
+}
