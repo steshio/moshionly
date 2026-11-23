@@ -204,6 +204,13 @@ impl<'a> Converter<'a> {
         }
         let data = canvas.end();
         let text = String::from_utf8_lossy(data.as_bytes());
+        if text.contains("<image") {
+            self.warnings.layer(
+                node,
+                "has characters drawn as pictures, such as colour emoji; Lottie text is drawn \
+                 as outlines, so they are left out.",
+            );
+        }
         svg::paths(&text)
             .into_iter()
             .map(|contour| moved(contour, [-SHIFT, -SHIFT]))
@@ -573,6 +580,13 @@ impl<'a> Converter<'a> {
             else {
                 continue;
             };
+            if !self.steady(id, state, to_stored) {
+                self.warnings.layer(
+                    node,
+                    "counts while it turns or scales; each value is placed as it is when it \
+                     first shows, so the text can sit slightly off while it turns.",
+                );
+            }
             let layout = self.renderer.fonts().measure(&TextRequest {
                 text: &state.content.text,
                 style: &state.content.style,
@@ -660,6 +674,34 @@ impl<'a> Converter<'a> {
         self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
         Ok(())
+    }
+
+    /// Whether a value of a counting text stays where it first shows, in
+    /// the stored box, for all of its stretch of time: whether `placed`,
+    /// worked out at the start, holds at the end too.
+    fn steady(&self, id: &NodeId, state: &State, placed: Affine) -> bool {
+        let timeline = self.timeline;
+        let last = (state.end - 0.01).max(state.start);
+        let Some((node, _)) = text_node(timeline.scenes.at(last).as_deref(), id) else {
+            return true;
+        };
+        let (width, height) = self.size(id, last);
+        let stored = Affine::layer(
+            timeline.number(id, Property::X, last),
+            timeline.number(id, Property::Y, last),
+            width,
+            height,
+            timeline.number(id, Property::Rotation, last),
+            timeline.number(id, Property::Scale, last),
+        );
+        let Some(at_end) = stored.invert().map(|inverse| inverse * node.transform) else {
+            return true;
+        };
+        placed
+            .0
+            .iter()
+            .zip(at_end.0)
+            .all(|(a, b)| (a - b).abs() < 0.25)
     }
 
     /// A composition drawing one letter shape with the text's paints.

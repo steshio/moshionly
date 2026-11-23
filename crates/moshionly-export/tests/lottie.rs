@@ -664,3 +664,36 @@ fn shadows_and_blurs_become_effects() {
             .any(|layer| layer["hasMask"] == true)
     );
 }
+
+#[test]
+fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
+    let nodes = r##",{"id":"star","parent":"board","index":"a0","type":"star","name":"Badge",
+            "width":200,"height":100,"stroke":{"paint":"#000000","width":4,"position":"inside"},
+            "fill":{"type":"radial_gradient","center":[0.5,0.5],"radius":[0.5,0.5],
+                "stops":[{"offset":0,"color":"#FFFFFF"},{"offset":1,"color":"#000000"}]}}
+        ,{"id":"words","parent":"board","index":"a1","type":"text","name":"Words",
+            "content":"Soft words","font_size":40}
+        ,{"id":"in","parent":"board","index":"a0","type":"text_in","target":"words",
+            "start":0,"end":800,"effect":"blur","split":"words"}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    assert!(
+        said.contains("\"Badge\" has a stretched radial gradient"),
+        "{said}"
+    );
+    assert!(
+        said.contains("\"Badge\" has a stroke inside or outside its edge"),
+        "{said}"
+    );
+    assert!(said.contains("\"Words\" has letters that blur"), "{said}");
+    assert_eq!(exported.warnings.len(), 3, "{said}");
+    // Everything is still exported.
+    assert_eq!(
+        layer(&lottie["layers"], "Words")["shapes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(layer(&lottie["layers"], "Badge")["ty"], 4);
+}
