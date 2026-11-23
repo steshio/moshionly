@@ -19,7 +19,12 @@ const DEMO: &str = concat!(
 
 /// The editor on the demo project, in a 1440 by 900 window.
 fn harness() -> Harness<'static, Shell> {
-    let session = SessionHandle::open(DEMO).expect("the demo file opens");
+    harness_on(std::path::Path::new(DEMO))
+}
+
+/// The editor on the project at `path`, in a 1440 by 900 window.
+fn harness_on(path: &std::path::Path) -> Harness<'static, Shell> {
+    let session = SessionHandle::open(path).expect("the project opens");
     let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
     let shell = Shell::headless(Settings::default(), session, renderer);
     let mut harness = Harness::builder()
@@ -870,4 +875,112 @@ fn closing_keeps_a_path_still_being_drawn() {
     harness.run();
     assert!(harness.state().is_asking());
     assert_eq!(layers_of(&harness, moshionly_core::NodeType::Path).len(), 1);
+}
+
+/// A 2 by 1 PNG.
+fn png() -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(2, 1, image::Rgba([13, 153, 255, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    bytes.into_inner()
+}
+
+/// A project in `folder` with one artboard and an image layer `photo`
+/// showing `assets/hero.png`, which is there too.
+fn project_with_an_image(folder: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(folder.join("assets")).unwrap();
+    std::fs::write(folder.join("assets/hero.png"), png()).unwrap();
+    let file = folder.join("project.moshi");
+    std::fs::write(
+        &file,
+        r#"{"format":"moshionly","version":1,"name":"Photo","nodes":[
+        {"id":"scene","parent":null,"index":"a0","type":"artboard","width":1080,"height":1080},
+        {"id":"photo","parent":"scene","index":"a0","type":"image","x":100,"y":100,"width":200,"height":100,"source":"assets/hero.png"}
+        ]}"#,
+    )
+    .unwrap();
+    file
+}
+
+/// The source of an image layer in a document.
+fn source_in(document: &moshionly_core::Document, id: &str) -> String {
+    moshionly_app::editor::inspect::image_of(document.get(&NodeId::from(id)).unwrap())
+        .unwrap()
+        .source
+        .clone()
+}
+
+#[test]
+fn saving_in_another_folder_takes_the_images_along() {
+    let folder = scratch("save-as-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let original = project_with_an_image(&folder.join("a"));
+    let copy = folder.join("b/copy.moshi");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    let mut harness = harness_on(&original);
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(copy.clone()),
+    }));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    // The image went along, and the saved copy finds it.
+    assert_eq!(
+        std::fs::read(folder.join("b/assets/hero.png")).unwrap(),
+        png()
+    );
+    let reread = moshionly_core::io::load(&copy).unwrap();
+    assert_eq!(source_in(&reread, "photo"), "assets/hero.png");
+    assert!(!harness.state().editor().has_unsaved_changes());
+    // The editor looks for images next to the new file.
+    let editor = harness.state().editor();
+    assert_eq!(
+        editor.project_file().map(std::path::Path::to_path_buf),
+        Some(std::path::absolute(&copy).unwrap())
+    );
+    std::fs::remove_dir_all(folder.join("a")).unwrap();
+    assert_eq!(
+        editor.renderer().assets().natural_size("assets/hero.png"),
+        Ok((2, 1)),
+        "found in the new folder, the old one is gone"
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_first_save_copies_images_into_the_project() {
+    let folder = scratch("first-save-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let downloads = folder.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let photo = downloads.join("photo.png");
+    std::fs::write(&photo, png()).unwrap();
+    let saved = folder.join("work/teaser.moshi");
+    std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    let mut harness = harness();
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(saved.clone()),
+    }));
+    // A new project, with a photo dropped in from elsewhere.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    let (ids, problems) = harness
+        .state_mut()
+        .editor_mut()
+        .import_images(&[photo.as_path()], None);
+    assert!(problems.is_empty(), "{problems:?}");
+    let id = ids[0].to_string();
+    // Unsaved, the photo is used from where it is.
+    assert_eq!(
+        source_in(harness.state().editor().document(), &id),
+        photo.to_string_lossy()
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run();
+    assert!(folder.join("work/assets/photo.png").exists());
+    let reread = moshionly_core::io::load(&saved).unwrap();
+    assert_eq!(source_in(&reread, &id), "assets/photo.png");
+    let _ = std::fs::remove_dir_all(&folder);
 }

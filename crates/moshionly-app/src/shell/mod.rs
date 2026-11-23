@@ -322,6 +322,10 @@ impl Shell {
         if self.editor.sync() {
             self.after_document_change();
         }
+        if self.editor.take_project_change() {
+            // Relative image paths now lead somewhere else.
+            self.pictures.clear();
+        }
         self.pictures.poll(&ctx);
         self.editor
             .set_animating(self.inspector.tab == InspectorTab::Animate);

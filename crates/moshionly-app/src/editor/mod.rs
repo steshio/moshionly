@@ -11,6 +11,7 @@
 //! The rules are kept apart from the window, in modules that can be tested
 //! on their own:
 //!
+//! - [`assets`]: the image files a project uses, kept with its file.
 //! - [`selection`]: what a click selects, groups and locks included.
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
 //! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
@@ -24,6 +25,7 @@
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
+pub mod assets;
 pub mod clipboard;
 pub mod create;
 pub mod describe;
@@ -107,6 +109,9 @@ pub struct Editor {
     versions: HashMap<NodeId, u64>,
     /// The project file images are found next to.
     project: Option<PathBuf>,
+    /// The project file changed since [`take_project_change`](Self::take_project_change)
+    /// was last asked.
+    project_changed: bool,
 }
 
 impl Editor {
@@ -134,6 +139,7 @@ impl Editor {
             scenes: HashMap::new(),
             versions: HashMap::new(),
             project,
+            project_changed: false,
         };
         editor.artboard = editor.document.artboards().first().cloned();
         editor
@@ -183,14 +189,22 @@ impl Editor {
 
     /// Catches up with the session: takes the newest document and lets go
     /// of selected and hovered nodes that no longer exist. Returns whether
-    /// the document changed.
+    /// the document, or the file it is saved as, changed.
     pub fn sync(&mut self) -> bool {
         self.notifier.changed.store(false, Ordering::Release);
         let (revision, document, path) = self
             .session
             .read(|s| (s.revision(), s.snapshot(), s.path().map(ToOwned::to_owned)));
+        // Saving as another file changes where relative image paths are
+        // found without changing the document.
+        let moved = self.project != path;
+        if moved {
+            self.renderer.assets().set_project_file(path.clone());
+            self.project = path;
+            self.project_changed = true;
+        }
         if revision == self.revision {
-            return false;
+            return moved;
         }
         let previous = std::mem::replace(&mut self.document, document);
         self.revision = revision;
@@ -222,12 +236,20 @@ impl Editor {
         }
         self.scenes
             .retain(|artboard, _| self.document.contains(artboard));
-        // Relative image paths are found next to the project file.
-        if self.project != path {
-            self.renderer.assets().set_project_file(path.clone());
-            self.project = path;
-        }
         true
+    }
+
+    /// The project file the document is saved as, which relative image
+    /// paths are found next to. `None` for a project never saved.
+    pub fn project_file(&self) -> Option<&std::path::Path> {
+        self.project.as_deref()
+    }
+
+    /// Whether the project file changed (opened, saved as another file)
+    /// since the last time this was asked: pictures with images in them
+    /// need drawing again.
+    pub fn take_project_change(&mut self) -> bool {
+        std::mem::take(&mut self.project_changed)
     }
 
     /// Whether something changed the document since the last sync, for
@@ -521,6 +543,21 @@ mod tests {
         editor.apply("Add rectangle", &edits).unwrap();
         assert_eq!(editor.artboard_version(&first), editor.revision());
         assert!(editor.artboard_version(&second) < editor.revision());
+    }
+
+    #[test]
+    fn saving_as_another_file_is_noticed_without_an_edit() {
+        let mut editor = editor();
+        assert!(!editor.take_project_change());
+        let revision = editor.revision();
+        let file = std::path::absolute("elsewhere/teaser.moshi").unwrap();
+        editor.session().write(|s| s.set_path(Some(file.clone())));
+        assert_eq!(editor.session().revision(), revision, "not an edit");
+        assert!(editor.sync());
+        assert_eq!(editor.project_file(), Some(file.as_path()));
+        assert!(editor.take_project_change());
+        assert!(!editor.take_project_change(), "told once");
+        assert!(!editor.sync(), "nothing new");
     }
 
     #[test]

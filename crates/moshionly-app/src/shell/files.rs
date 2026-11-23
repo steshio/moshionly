@@ -14,6 +14,7 @@ use moshionly_core::io;
 use super::{InspectorTab, Shell, new_document};
 use crate::{
     dialogs::file_name,
+    editor::assets,
     theme::Theme,
     widgets::{ButtonKind, ModalFrame, TextButton, Toast, modal_footer},
 };
@@ -188,6 +189,8 @@ impl Shell {
         let Some(path) = self.dialogs.save_project(&suggested) else {
             return false;
         };
+        let path = std::path::absolute(&path).unwrap_or(path);
+        let gathered = self.gather_images(&path);
         // An untitled project takes the name of its file.
         let stem = path
             .file_stem()
@@ -208,10 +211,35 @@ impl Shell {
                 true
             }
             Err(error) => {
+                // The images were pointed at copies next to a file that
+                // was not written: point them back.
+                if gathered && self.editor.undo_label() == Some(format!("Undo {GATHERED}")) {
+                    let _ = self.editor.undo();
+                }
                 self.toasts.push(Toast::error(sentence(&error.to_string())));
                 false
             }
         }
+    }
+
+    /// Before the project is saved as `path`: when that is in another
+    /// folder, or the project was never saved, copies the images it uses
+    /// into that folder and points the image layers at the copies, as one
+    /// undo step, so that the saved project is complete on its own. Says
+    /// which images could not be copied. Returns whether the step was made.
+    fn gather_images(&mut self, path: &Path) -> bool {
+        let from = self.editor.session().path();
+        if from
+            .as_deref()
+            .is_some_and(|from| assets::same_folder(from, path))
+        {
+            return false;
+        }
+        let gathered = assets::gather_images(self.editor.document(), from.as_deref(), path);
+        for problem in gathered.problems {
+            self.toasts.push(Toast::warning(problem));
+        }
+        self.apply_or_toast(GATHERED, &gathered.edits)
     }
 
     /// Starts afresh after another document took the place of the old one:
@@ -280,6 +308,10 @@ impl Shell {
         }
     }
 }
+
+/// The undo step that points image layers at their copies next to a newly
+/// saved project file.
+const GATHERED: &str = "Copy images into the project";
 
 /// A message as a sentence: a capital at the start.
 fn sentence(message: &str) -> String {
