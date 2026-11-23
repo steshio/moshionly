@@ -73,7 +73,6 @@ fn effort(quality: Quality) -> Effort {
 pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
     let plan = cx.plan;
     let moments = plan.moments.to_vec();
-    cx.reporter.report(Phase::Preparing, 0);
     let palette = choose_palette(cx, &moments)?;
     let transparent = palette.len() as u8;
 

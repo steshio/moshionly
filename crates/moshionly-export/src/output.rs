@@ -60,6 +60,13 @@ impl Output {
             if destination.is_dir() {
                 return Err(ExportError::DestinationIsFolder(destination));
             }
+            // Temporary files are private by default; the export becomes
+            // an ordinary file, readable as the person's settings allow.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(fs::Permissions::from_mode(0o666));
+            }
             let file = builder
                 .tempfile_in(parent)
                 .map_err(|error| ExportError::io("created", parent, error))?;
@@ -179,6 +186,14 @@ mod tests {
         assert_eq!(output.commit().unwrap(), 6);
         assert_eq!(fs::read(&destination).unwrap(), b"GIF89a");
         assert_eq!(leftovers(dir.path()), ["clip.gif"]);
+        // The file has the permissions of any other new file.
+        let ordinary = dir.path().join("ordinary");
+        fs::write(&ordinary, b"").unwrap();
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions(),
+            fs::metadata(&ordinary).unwrap().permissions()
+        );
+        fs::remove_file(ordinary).unwrap();
 
         // A second export replaces the first.
         let output = Output::create(&destination, false).unwrap();

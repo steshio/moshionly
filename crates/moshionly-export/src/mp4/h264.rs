@@ -13,6 +13,8 @@ use openh264::encoder::{
     IntraFramePeriod, Profile, QpRange, RateControlMode, UsageType, VuiConfig,
 };
 
+use openh264_sys2::{ENCODER_OPTION_TRACE_LEVEL, WELS_LOG_QUIET};
+
 use super::yuv::Yuv420;
 use crate::error::ExportError;
 use crate::settings::Quality;
@@ -69,8 +71,20 @@ impl H264Encoder {
             .qp(QpRange::new(settings.qp.0, settings.qp.1))
             .intra_frame_period(IntraFramePeriod::from_num_frames(key_interval))
             .vui(VuiConfig::bt709());
-        let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
+        let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|error| ExportError::H264(error.to_string()))?;
+        // OpenH264 prints warnings to the terminal while it starts, before
+        // the wrapper turns its log off, so turn it off first.
+        let mut quiet = WELS_LOG_QUIET as u32;
+        // SAFETY: the encoder is alive for the call. OpenH264 accepts the
+        // trace level before it is initialised (it only touches the trace
+        // object made with the encoder), and reads the level as a `u32`
+        // from the pointer during the call, which points at `quiet`.
+        unsafe {
+            encoder
+                .raw_api()
+                .set_option(ENCODER_OPTION_TRACE_LEVEL, (&raw mut quiet).cast());
+        }
         Ok(Self {
             encoder,
             sps: None,
