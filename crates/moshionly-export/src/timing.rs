@@ -292,15 +292,23 @@ impl FrameTimes {
     /// its true end, so the error never builds up and the delays add up to
     /// the length of the whole export, rounded to a hundredth.
     pub fn centisecond_delays(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
-        let end_of = move |frames: u64| {
+        (0..self.count as usize).map(|index| self.delay_of(index as u64))
+    }
+
+    /// The display time of frame `index` in hundredths of a second, as
+    /// [`centisecond_delays`](Self::centisecond_delays) gives it, without
+    /// going through the frames before it. `None` past the last frame.
+    pub fn centisecond_delay(&self, index: u64) -> Option<u32> {
+        (index < self.count).then(|| self.delay_of(index))
+    }
+
+    fn delay_of(&self, index: u64) -> u32 {
+        let end_of = |frames: u64| {
             let hundredths = frames as f64 * 100.0 * f64::from(self.rate.denominator)
                 / f64::from(self.rate.numerator);
             hundredths.round() as u64
         };
-        (0..self.count as usize).map(move |index| {
-            let index = index as u64;
-            (end_of(index + 1) - end_of(index)) as u32
-        })
+        end_of(index.saturating_add(1)).saturating_sub(end_of(index)) as u32
     }
 }
 
@@ -413,6 +421,10 @@ mod tests {
         let times = FrameTimes::whole(4000.0, FrameRate::FPS_25).unwrap();
         assert!(times.centisecond_delays().all(|delay| delay == 4));
         assert_eq!(times.centisecond_delays().sum::<u32>(), 400);
+
+        // One frame's delay on its own is the same.
+        assert_eq!(times.centisecond_delay(5), Some(4));
+        assert_eq!(times.centisecond_delay(100), None);
 
         // 29.97 fps over ten seconds is 10.01 seconds of frames.
         let times = FrameTimes::whole(10_000.0, FrameRate::FPS_29_97).unwrap();

@@ -36,7 +36,7 @@ use crate::error::ExportError;
 use crate::frames::{self, Pass};
 use crate::job::Context;
 use crate::progress::Phase;
-use crate::settings::{Loop, Moment, Plan, Quality};
+use crate::settings::{Loop, Plan, Quality};
 use dither::Indexer;
 use palette::{ColorCounts, Palette};
 
@@ -84,8 +84,7 @@ fn effort(quality: Quality) -> Effort {
 /// Writes the animated GIF of `cx.plan` to `path`.
 pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
     let plan = cx.plan;
-    let moments = plan.moments.to_vec();
-    let palette = choose_palette(cx, &moments)?;
+    let palette = choose_palette(cx)?;
     let transparent = palette.len() as u8;
 
     let file = File::create(path).map_err(|error| ExportError::io("created", path, error))?;
@@ -101,10 +100,6 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
     .map_err(gif_error)?;
     let mut writer = FrameWriter::new(encoder, plan, transparent)?;
 
-    let delays: Vec<u32> = match plan.moments.frames() {
-        Some(times) => times.centisecond_delays().collect(),
-        None => vec![0; moments.len()],
-    };
     let indexer = Indexer {
         palette: &palette,
         dither: plan.dither,
@@ -112,13 +107,19 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
     };
     let width = plan.width as usize;
     let pass = Pass {
-        moments: &moments,
+        moments: plan.moments,
         options: plan.render,
         frame_bytes: width * plan.height as usize * 5,
         report_progress: true,
     };
     let prepare = |_: u64, frame: Frame| Ok(indexer.index(frame.premultiplied(), width));
-    let mut consume = |index: u64, indices: Vec<u8>| writer.push(indices, delays[index as usize]);
+    let mut consume = |index: u64, indices: Vec<u8>| {
+        let delay = plan
+            .moments
+            .frames()
+            .and_then(|times| times.centisecond_delay(index));
+        writer.push(indices, delay.unwrap_or(0))
+    };
     cx.reporter.report(Phase::Rendering, 0);
     frames::render_in_order(cx.source, &pass, &mut cx.reporter, &prepare, &mut consume)?;
     cx.reporter.report(Phase::Encoding, plan.frame_count());
@@ -132,16 +133,16 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
 /// The counts of every frame are added up, which does not depend on the
 /// order the frames are drawn in, and the palette is chosen from the total,
 /// so the same animation always gets the same palette.
-fn choose_palette(cx: &mut Context<'_>, all: &[Moment]) -> Result<Palette, ExportError> {
+fn choose_palette(cx: &mut Context<'_>) -> Result<Palette, ExportError> {
     let plan = cx.plan;
     let effort = effort(plan.quality);
     let pixels = f64::from(plan.width) * f64::from(plan.height);
-    let frame_pixels = (effort.total_pixels / all.len().max(1) as f64)
+    let frame_pixels = (effort.total_pixels / plan.frame_count().max(1) as f64)
         .clamp(effort.min_frame_pixels, effort.max_frame_pixels);
     let shrink = (frame_pixels / pixels).sqrt().min(1.0);
     let options = plan.render.with_scale(plan.scale * shrink);
     let pass = Pass {
-        moments: all,
+        moments: plan.moments,
         options,
         frame_bytes: (pixels * shrink * shrink) as usize * 8,
         report_progress: false,

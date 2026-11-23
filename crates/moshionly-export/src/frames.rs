@@ -20,7 +20,7 @@ use moshionly_render::{Frame, RenderOptions, RenderWarning, Renderer};
 use crate::error::ExportError;
 use crate::job::Reporter;
 use crate::progress::Phase;
-use crate::settings::Moment;
+use crate::settings::{Moment, Moments};
 
 /// Renders frames of one artboard. Cheap to copy and safe to share between
 /// threads: each frame is a pure function of the document and its moment.
@@ -68,9 +68,10 @@ const MEMORY_BUDGET: usize = 512 << 20;
 const MAX_WORKERS: usize = 16;
 
 /// One run of frames through the workers.
-pub(crate) struct Pass<'a> {
-    /// The moment of each frame, in order.
-    pub moments: &'a [Moment],
+pub(crate) struct Pass {
+    /// The moment of each frame, in order. Each is worked out when its
+    /// frame is drawn, so no list of every frame is ever made.
+    pub moments: Moments,
     /// How each frame is rendered.
     pub options: RenderOptions,
     /// Roughly how many bytes one rendered frame and its prepared form
@@ -93,18 +94,18 @@ pub(crate) struct Pass<'a> {
 /// not yet needed.
 pub(crate) fn render_in_order<T: Send>(
     source: FrameSource<'_>,
-    pass: &Pass<'_>,
+    pass: &Pass,
     reporter: &mut Reporter<'_>,
     prepare: &(dyn Fn(u64, Frame) -> Result<T, ExportError> + Sync),
     consume: &mut dyn FnMut(u64, T) -> Result<(), ExportError>,
 ) -> Result<(), ExportError> {
-    let count = pass.moments.len() as u64;
+    let count = pass.moments.len();
     let cores = thread::available_parallelism().map_or(4, NonZeroUsize::get);
     let window = (MEMORY_BUDGET / pass.frame_bytes.max(1)).clamp(2, 2 * cores.max(1));
     let workers = cores
         .clamp(1, MAX_WORKERS)
         .min(window)
-        .min(count as usize)
+        .min(usize::try_from(count).unwrap_or(usize::MAX))
         .max(1);
     let gate = Gate::new(window as u64);
     let cancel = reporter.cancel_token().clone();
@@ -120,7 +121,10 @@ pub(crate) fn render_in_order<T: Send>(
                         gate.stop();
                         break;
                     }
-                    let moment = pass.moments[index as usize];
+                    // Never past the end: claims stop at the count.
+                    let Some(moment) = pass.moments.get(index) else {
+                        break;
+                    };
                     let result = source
                         .render(index, moment, &pass.options)
                         .and_then(|frame| {

@@ -29,10 +29,9 @@ pub(crate) fn write_still(cx: &mut Context<'_>, path: &Path) -> Result<(), Expor
 /// or more when there are 10 000 frames or more, so the names sort in
 /// order.
 pub(crate) fn write_sequence(cx: &mut Context<'_>, dir: &Path) -> Result<(), ExportError> {
-    let moments = cx.plan.moments.to_vec();
-    let digits = sequence_digits(moments.len() as u64);
+    let digits = sequence_digits(cx.plan.frame_count());
     let pass = Pass {
-        moments: &moments,
+        moments: cx.plan.moments,
         options: cx.plan.render,
         frame_bytes: cx.plan.width as usize * cx.plan.height as usize * 5,
         report_progress: true,

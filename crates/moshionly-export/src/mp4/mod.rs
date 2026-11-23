@@ -38,9 +38,8 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
     let mut muxer = Mp4Writer::new(dir, plan.width, plan.height, rate)
         .map_err(|error| ExportError::io("created", dir, error))?;
 
-    let moments = plan.moments.to_vec();
     let pass = Pass {
-        moments: &moments,
+        moments: plan.moments,
         options: plan.render,
         frame_bytes: width * height * 6,
         report_progress: true,
@@ -48,9 +47,9 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError
     let prepare =
         |_: u64, frame: Frame| Ok(Yuv420::from_rgba(frame.premultiplied(), width, height));
     let mut consume = |index: u64, picture: Yuv420| {
-        let time_ms = match moments[index as usize] {
-            Moment::At(time) => time,
-            Moment::AtRest => 0.0,
+        let time_ms = match plan.moments.get(index) {
+            Some(Moment::At(time)) => time,
+            Some(Moment::AtRest) | None => 0.0,
         };
         let encoded = encoder.encode(&picture, time_ms)?;
         muxer

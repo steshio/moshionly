@@ -252,9 +252,8 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: &Ffmpeg) -> Resul
     let format = plan.format;
     let mut child = Running::start(ffmpeg, &arguments(plan, path), format)?;
 
-    let moments = plan.moments.to_vec();
     let pass = Pass {
-        moments: &moments,
+        moments: plan.moments,
         options: plan.render,
         frame_bytes: plan.width as usize * plan.height as usize * 8,
         report_progress: true,
