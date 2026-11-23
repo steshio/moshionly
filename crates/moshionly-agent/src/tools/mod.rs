@@ -14,6 +14,7 @@ mod apply;
 mod args;
 mod common;
 mod evaluate;
+mod fonts;
 mod node;
 mod overview;
 mod query;
@@ -21,6 +22,7 @@ mod schema;
 mod screenshot;
 #[cfg(test)]
 pub(crate) mod testing;
+mod undo;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -89,6 +91,8 @@ const TOOLS: &[&ToolDef] = &[
     &apply::APPLY_EDITS,
     &screenshot::SCREENSHOT,
     &evaluate::EVALUATE,
+    &fonts::LIST_FONTS,
+    &undo::UNDO_LAST_AGENT_CHANGE,
 ];
 
 /// The JSON Schema of an input object with these properties, of which
