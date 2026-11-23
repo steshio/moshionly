@@ -140,6 +140,64 @@ fn enter_sends_and_shift_enter_starts_a_new_line() {
 }
 
 #[test]
+fn the_next_message_can_be_typed_as_soon_as_the_answer_is_in() {
+    let provider = ScriptedProvider::new("anthropic", vec![Step::text("On it.")]);
+    let mut harness = harness(
+        ready(&["anthropic"]).with_provider(provider.clone()),
+        Arc::default(),
+    );
+    type_message(&mut harness, "Fade in");
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        idle(state) && state.chat.controller().conversation().messages().len() == 2
+    });
+    assert!(harness.get_by_label("Message").is_focused());
+
+    // No click: the text goes straight into the box, and Enter sends it.
+    harness.get_by_label("Message").type_text("Then move it");
+    harness.run_steps(1);
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        idle(state) && state.chat.controller().conversation().messages().len() == 4
+    });
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].messages.last().unwrap().text, "Then move it");
+}
+
+#[test]
+fn the_composer_leaves_the_keyboard_alone_after_a_click_elsewhere() {
+    let provider = ScriptedProvider::new(
+        "anthropic",
+        vec![Step::text("Working on it"), Step::WaitForStop],
+    );
+    let mut harness = harness(
+        ready(&["anthropic"]).with_provider(provider.clone()),
+        Arc::default(),
+    );
+    type_message(&mut harness, "Make it bounce");
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        state.chat.controller().conversation().messages().len() == 2
+    });
+
+    // The person clicks elsewhere while the answer arrives, then stops it.
+    let blank = harness.get_by_label("Working on it").rect().left_bottom() + vec2(0.0, 120.0);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: blank,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    harness.run_steps(1);
+    harness.get_by_label("Stop").click();
+    settle(&mut harness, idle);
+    assert!(!harness.get_by_label("Message").is_focused());
+}
+
+#[test]
 fn stop_ends_a_running_answer_and_the_composer_waits_meanwhile() {
     let provider = ScriptedProvider::new(
         "anthropic",

@@ -273,6 +273,7 @@ impl Chat {
             mcp_running: inputs.mcp_url.is_some(),
             has_selection: !inputs.focus.selection.is_empty(),
             notice: self.notice.as_deref(),
+            dialog_open: self.settings_open,
         };
         let actions = panel::panel(ui, &self.controller, view, &mut self.images);
         for action in actions {

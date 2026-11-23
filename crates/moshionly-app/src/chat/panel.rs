@@ -61,6 +61,8 @@ pub struct PanelView<'a> {
     /// A short note to show above the composer, such as a picture that
     /// could not be attached.
     pub notice: Option<&'a str>,
+    /// Whether a dialog, such as the AI settings, is open over the window.
+    pub dialog_open: bool,
 }
 
 /// The fewest lines the composer shows.
@@ -510,6 +512,7 @@ fn composer_box(
     }
 
     let id = ui.make_persistent_id("chat-composer");
+    keep_typing(ui, id, rect, busy, view.dialog_open);
     let focused = ui.memory(|m| m.has_focus(id));
     paint::panel(
         ui.painter(),
@@ -619,9 +622,48 @@ fn composer_box(
 
     let has_content = !view.draft.trim().is_empty() || !view.attachments.is_empty();
     if (enter || send_clicked) && can_send && has_content {
+        if focused {
+            ui.data_mut(|d| d.insert_temp(refocus_key(id), true));
+        }
         actions.push(PanelAction::Send(
             std::mem::take(view.draft).trim().to_owned(),
         ));
+    }
+}
+
+/// Where the composer notes that it had the keyboard when its message was
+/// sent.
+fn refocus_key(composer: egui::Id) -> egui::Id {
+    composer.with("refocus")
+}
+
+/// Gives the keyboard back to the composer when the answer to a message
+/// sent from it is over, so the next one can be typed straight away.
+///
+/// The box is disabled while the answer arrives, which takes its focus.
+/// The focus comes back only if the person stayed: a click outside the
+/// composer meanwhile, an open dialog or another field with the focus
+/// means they moved on, and the focus is left where it is.
+fn keep_typing(ui: &Ui, composer: egui::Id, area: Rect, busy: bool, dialog_open: bool) {
+    let key = refocus_key(composer);
+    if !ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    if busy {
+        let clicked_elsewhere = ui.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_none_or(|pos| !area.contains(pos))
+        });
+        if clicked_elsewhere {
+            ui.data_mut(|d| d.remove::<bool>(key));
+        }
+        return;
+    }
+    ui.data_mut(|d| d.remove::<bool>(key));
+    if !dialog_open && ui.memory(|m| m.focused().is_none()) {
+        ui.memory_mut(|m| m.request_focus(composer));
     }
 }
 
