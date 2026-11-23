@@ -4,7 +4,9 @@
 
 Moshionly is a native app written in Rust. It runs on macOS first, with Linux and Windows to follow. Your projects are files on your own disk.
 
-> **Status: early.** The project is being built in the open, crate by crate. See [the roadmap](#roadmap) for what works today.
+> **Status: early.** The project is being built in the open, crate by crate. The engine, the AI providers and the editor's window are in place; the editor still shows sample content because it is not yet wired to the engine. See [the roadmap](#roadmap) for exactly what works today.
+
+![The Moshionly editor](docs/images/editor-light.png)
 
 ## Why another motion tool
 
@@ -18,7 +20,7 @@ Moshionly works the other way round:
 
 There is nothing to keyframe and nothing breaks when you change the design later. Because every animation is a small, readable object, an AI agent can read your file, add or adjust animations, look at a rendered frame, and hand the result back fully editable.
 
-## What it does
+## What it is built to do
 
 - **Canvas and layers**: artboards, rectangles, ellipses, stars, pen paths, text, images, groups and masks.
 - **Styling**: solid and gradient fills, strokes, corner radius, shadow, blur, blend modes.
@@ -40,7 +42,19 @@ cd moshionly
 cargo run --release
 ```
 
-The first build downloads and compiles dependencies and takes a few minutes. Later builds are fast.
+The first build downloads and compiles dependencies and takes a few minutes. Later builds are fast. Today this opens the editor with sample content.
+
+To try the engine on a real file, print a frame of the demo project as data:
+
+```bash
+cargo run -p moshionly-core --example inspect -- crates/moshionly-core/examples/demo.moshi 800
+```
+
+To see which AI providers are ready on your machine:
+
+```bash
+cargo run -p moshionly-ai --example chat -- --list
+```
 
 Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`) to unlock ProRes and WebM export.
 
@@ -58,7 +72,7 @@ plugins/figma        the Figma plugin
 docs/                architecture and file format
 ```
 
-Read [docs/architecture.md](docs/architecture.md) for how the pieces fit. The short version: a document is a flat list of layers and actions, a frame is a pure function of the document and a time, and every change is one of three edits.
+Read [docs/architecture.md](docs/architecture.md) for how the pieces fit and [docs/file-format.md](docs/file-format.md) for the `.moshi` file format. The short version: a document is a flat list of layers and actions, a frame is a pure function of the document and a time, and every change is one of three edits.
 
 ## Make it yours
 
@@ -71,14 +85,21 @@ Moshionly is MIT licensed. Fork it, rename it, change the look, add your own act
 
 ## Roadmap
 
-- [ ] Document model, edits, undo, file format
-- [ ] Animation engine: actions, presets, easing, text animation
+Done:
+
+- [x] Document model, edits, undo, the `.moshi` file format
+- [x] Animation engine: actions, presets, easing, text animation, counters
+- [x] AI providers: Claude Code, Cursor Agent, Codex and Gemini command-line agents, the Anthropic API and any OpenAI-compatible API
+- [x] Editor window: theme, controls, canvas with pan and zoom, timeline, command palette (showing sample content)
+
+Next:
+
 - [ ] Skia renderer
-- [ ] Desktop editor: canvas, layers, inspector, timeline
-- [ ] Export: PNG, GIF, MP4, Lottie
 - [ ] Agent tools and MCP server
-- [ ] AI chat with subscription and API providers
 - [ ] Figma plugin and re-import
+- [ ] Wire the editor to the engine: real layers, inspector, timeline and playback
+- [ ] Export: PNG, GIF, MP4, Lottie
+- [ ] Chat panel in the editor
 - [ ] Components, video and audio layers, shader effects
 - [ ] Linux and Windows builds
 
