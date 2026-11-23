@@ -527,6 +527,165 @@ function fillLayer(layer, node, run, placement, part) {
 }
 
 // ---------------------------------------------------------------------------
+// Strokes
+// ---------------------------------------------------------------------------
+
+const STROKE_POSITIONS = { INSIDE: 'inside', OUTSIDE: 'outside', CENTER: 'center' };
+const STROKE_CAPS = { NONE: 'butt', ROUND: 'round', SQUARE: 'square' };
+const STROKE_JOINS = { MITER: 'miter', ROUND: 'round', BEVEL: 'bevel' };
+
+/** The widths of the four sides of a frame or rectangle, when Figma has them. */
+function sideWidths(node) {
+  const sides = [node.strokeTopWeight, node.strokeRightWeight, node.strokeBottomWeight, node.strokeLeftWeight];
+  return sides.every((side) => typeof side === 'number') ? sides : null;
+}
+
+/**
+ * The stroke of `node` as Moshionly writes it, or `undefined` for none.
+ * Moshionly strokes have one paint, one width, a position, a cap and a join.
+ */
+function readStroke(node, run, placement, part) {
+  const result = readPaints(node.strokes, node, run, placement, 'stroke', part);
+  const other = result.image ? 'IMAGE' : result.special;
+  if (other) {
+    run.note(node, 'Its ' + (PAINT_NAMES[other] || 'special') + ' stroke has no Moshionly equivalent and was left out.', part);
+  }
+  if (result.paint === undefined) return undefined;
+
+  let width = node.strokeWeight;
+  const sides = sideWidths(node);
+  if (isMixed(width) || (sides && sides.some((side) => side !== sides[0]))) {
+    width = sides ? Math.max(...sides) : 1;
+    run.note(
+      node,
+      'Its sides have strokes of different widths; Moshionly draws the widest (' + px(width) + ' px) all round.',
+      part,
+    );
+  }
+  width = Math.max(0, numberOr(width, 1));
+  if (placement.stretched) width *= Math.sqrt(Math.abs(placement.shape.sx * placement.shape.sy));
+  if (width <= 0) return undefined;
+
+  const stroke = { paint: result.paint, width: px(width) };
+  const position = STROKE_POSITIONS[node.strokeAlign] || 'center';
+  if (position !== 'center') stroke.position = position;
+
+  const cap = node.strokeCap;
+  if (isMixed(cap)) {
+    run.note(node, 'Its line ends differ from point to point; Moshionly draws them all flat.', part);
+  } else if (cap && !STROKE_CAPS[cap]) {
+    run.note(
+      node,
+      'Its ' + String(cap).toLowerCase().replace(/_/g, ' ') + ' line ends are not in Moshionly; they are drawn flat.',
+      part,
+    );
+  } else if (cap && STROKE_CAPS[cap] !== 'butt') {
+    stroke.cap = STROKE_CAPS[cap];
+  }
+
+  const join = node.strokeJoin;
+  if (isMixed(join)) {
+    run.note(node, 'Its corners are joined differently from point to point; Moshionly uses sharp joins.', part);
+  } else if (join && STROKE_JOINS[join] && STROKE_JOINS[join] !== 'miter') {
+    stroke.join = STROKE_JOINS[join];
+  }
+
+  if (Array.from(node.dashPattern || []).some((dash) => dash > 0)) {
+    run.note(node, 'Its dashed stroke is drawn as a solid line.', part);
+  }
+  const variable = node.variableWidthStrokeProperties;
+  if (variable && variable.widthProfile && variable.widthProfile !== 'UNIFORM') {
+    run.note(node, 'Its stroke of varying width became an even ' + stroke.width + ' px stroke.', part);
+  }
+  const complex = node.complexStrokeProperties;
+  if (complex && complex.type && complex.type !== 'BASIC') {
+    run.note(node, 'Its ' + String(complex.type).toLowerCase() + ' stroke became a plain stroke.', part);
+  }
+  return stroke;
+}
+
+function strokeLayer(layer, node, run, placement, part) {
+  const stroke = readStroke(node, run, placement, part);
+  if (stroke) layer.stroke = stroke;
+}
+
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
+
+/** Readable names of effects Moshionly does not have. */
+const EFFECT_NAMES = {
+  INNER_SHADOW: 'inner shadow',
+  BACKGROUND_BLUR: 'background blur',
+  NOISE: 'noise',
+  TEXTURE: 'texture',
+  GLASS: 'glass',
+  SHADER: 'shader',
+};
+
+function visibleEffects(node) {
+  return Array.from(node.effects || []).filter((effect) => effect && effect.visible !== false);
+}
+
+/**
+ * The drop shadow and layer blur of `node` written onto `layer`.
+ *
+ * Figma's shadow blur and layer blur radius are the values a designer
+ * types, which are twice the standard deviation of the Gaussian, as in
+ * CSS's box-shadow; Moshionly's `blur` means the same, so they carry over
+ * unchanged. Both programs draw a shadow in the layer's own coordinates, so
+ * it turns with the layer; a mirror flips its offset.
+ */
+function effectLayer(layer, node, run, placement, part) {
+  const effects = visibleEffects(node);
+  const shadows = effects.filter((effect) => effect.type === 'DROP_SHADOW');
+  if (shadows.length > 0) {
+    const strength = (effect) => numberOr(effect.color && effect.color.a, 1);
+    const shadow = shadows.reduce((best, effect) => (strength(effect) > strength(best) ? effect : best));
+    if (shadows.length > 1) {
+      run.note(node, 'Has ' + shadows.length + ' drop shadows; Moshionly layers have one, so the strongest was kept.', part);
+    }
+    const offset = shadow.offset || { x: 0, y: 0 };
+    const [ox, oy] = [numberOr(offset.x, 0), numberOr(offset.y, 0)];
+    const { sx, sy, skew } = placement.shape;
+    layer.shadow = {
+      color: colorHex(shadow.color || {}, numberOr(shadow.color && shadow.color.a, 1)),
+      x: px(sx * ox + skew * oy),
+      y: px(sy * oy),
+      blur: px(Math.max(0, numberOr(shadow.radius, 0))),
+    };
+    if (numberOr(shadow.spread, 0) !== 0) {
+      run.note(node, 'Its shadow’s spread (' + px(shadow.spread) + ' px) was left out; Moshionly shadows have none.', part);
+    }
+    if (!blendsNormally(shadow)) {
+      run.note(node, 'Its shadow’s blend mode was left out; the shadow blends normally.', part);
+    }
+  }
+
+  const blurs = effects.filter((effect) => effect.type === 'LAYER_BLUR');
+  if (blurs.length > 0) {
+    const amount = (effect) =>
+      effect.blurType === 'PROGRESSIVE'
+        ? (numberOr(effect.radius, 0) + numberOr(effect.startRadius, 0)) / 2
+        : numberOr(effect.radius, 0);
+    const blur = Math.max(...blurs.map(amount));
+    if (blur > 0) layer.blur = px(blur);
+    if (blurs.some((effect) => effect.blurType === 'PROGRESSIVE')) {
+      run.note(node, 'Its blur fades across the layer in Figma; Moshionly blurs it evenly by ' + px(blur) + ' px.', part);
+    }
+  }
+
+  const missing = new Map();
+  for (const effect of effects) {
+    const name = EFFECT_NAMES[effect.type];
+    if (name) missing.set(name, (missing.get(name) || 0) + 1);
+  }
+  for (const [name, count] of missing) {
+    run.note(node, (count > 1 ? count + ' ' + name + 's were' : 'Its ' + name + ' was') + ' left out; Moshionly has no ' + name + '.', part);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The conversion run
 // ---------------------------------------------------------------------------
 
@@ -721,16 +880,18 @@ function newLayer(type, node, run, container, placement, part) {
 }
 
 /**
- * Opacity, visibility, lock and blend mode of `node`, written onto `layer`
- * where they differ from Moshionly's defaults. `layer.source_id` is set too.
+ * Opacity, visibility, lock, blend mode, shadow and blur of `node`, written
+ * onto `layer` where they differ from Moshionly's defaults.
+ * `layer.source_id` is set too.
  */
-function styleLayer(layer, node, run, part) {
+function styleLayer(layer, node, run, placement, part) {
   const opacity = round(clamp(numberOr(node.opacity, 1), 0, 1) * 100, 2);
   if (opacity !== 100) layer.opacity = opacity;
   if (node.visible === false) layer.hidden = true;
   if (node.locked === true) layer.locked = true;
   const mode = blendMode(node, run, part);
   if (mode !== 'normal') layer.blend_mode = mode;
+  effectLayer(layer, node, run, placement, part);
   layer.source_id = run.sourceId(node, part);
   return layer;
 }
@@ -790,6 +951,8 @@ function frameStyleReasons(node) {
   if (node.blendMode && node.blendMode !== 'NORMAL' && node.blendMode !== 'PASS_THROUGH') {
     reasons.push('blend mode');
   }
+  if (Array.from(node.strokes || []).some(isVisiblePaint)) reasons.push('stroke');
+  if (visibleEffects(node).length > 0) reasons.push('effects');
   return reasons;
 }
 
@@ -819,9 +982,13 @@ async function convertArtboard(node, run) {
   const placement = place(IDENTITY, ownBox(node));
   if (frameStyleReasons(node).length > 0) {
     const body = newLayer('group', node, run, inside, placement, 'frame');
-    styleLayer(body, node, run, 'frame');
+    styleLayer(body, node, run, placement, 'frame');
     fillLayer(body, node, run, placement, 'frame');
+    strokeLayer(body, node, run, placement, 'frame');
     styleFrame(body, node, run, placement, 'frame');
+    if (body.shadow) {
+      run.note(node, 'Its shadow reaches past the artboard, which cuts it off at the edge.', 'frame');
+    }
     run.emit(body);
     inside = { id: body.id, frame: transform };
   } else {
@@ -842,8 +1009,9 @@ function styleFrame(group, node, run, placement, part) {
 async function convertFrame(node, container, m, run) {
   const placement = place(m, ownBox(node));
   const group = newLayer('group', node, run, container, placement);
-  styleLayer(group, node, run);
+  styleLayer(group, node, run, placement);
   fillLayer(group, node, run, placement);
+  strokeLayer(group, node, run, placement);
   styleFrame(group, node, run, placement);
   run.emit(group);
   await convertChildren(node, containerFor(group, container, placement), run);
@@ -853,7 +1021,7 @@ async function convertFrame(node, container, m, run) {
 async function convertGroup(node, container, m, run) {
   const placement = place(m, ownBox(node));
   const group = newLayer('group', node, run, container, placement);
-  styleLayer(group, node, run);
+  styleLayer(group, node, run, placement);
   run.emit(group);
   await convertChildren(node, containerFor(group, container, placement), run);
 }
@@ -874,8 +1042,9 @@ function convertRectangle(node, container, m, run) {
     return convertOutline(node, container, m, run, fillOutline(node) || rectangleOutline(node));
   }
   const rect = newLayer('rect', node, run, container, placement);
-  styleLayer(rect, node, run);
+  styleLayer(rect, node, run, placement);
   fillLayer(rect, node, run, placement);
+  strokeLayer(rect, node, run, placement);
   const radius = cornerRadiusValue(cornerRadii(node), placement);
   if (radius !== undefined) rect.corner_radius = radius;
   noteCorners(node, run);
@@ -911,8 +1080,9 @@ function convertEllipse(node, container, m, run) {
     return convertOutline(node, container, m, run, fillOutline(node) || ellipseOutline(node));
   }
   const ellipse = newLayer('ellipse', node, run, container, placement);
-  styleLayer(ellipse, node, run);
+  styleLayer(ellipse, node, run, placement);
   fillLayer(ellipse, node, run, placement);
+  strokeLayer(ellipse, node, run, placement);
   // Figma and Moshionly both measure arcs clockwise from 3 o'clock; Figma
   // in radians, Moshionly in degrees.
   const arc = node.arcData || {};
@@ -977,8 +1147,9 @@ function convertStar(node, container, m, run) {
   const box = starBox(points, inner, corners);
   const placement = placeSymmetric(m, box, box.x + box.width / 2);
   const star = newLayer('star', node, run, container, placement);
-  styleLayer(star, node, run);
+  styleLayer(star, node, run, placement);
   fillLayer(star, node, run, placement);
+  strokeLayer(star, node, run, placement);
   if (points !== 5) star.points = points;
   if (Math.abs(inner - 0.4) > 1e-9) star.inner_radius = round(inner, 5);
   run.emit(star);
@@ -1033,7 +1204,8 @@ function convertBoolean(node, container, m, run) {
 function convertOutline(node, container, m, run, outline) {
   const placement = place(m, ownBox(node));
   const layer = newLayer('path', node, run, container, placement);
-  styleLayer(layer, node, run);
+  styleLayer(layer, node, run, placement);
+  strokeLayer(layer, node, run, placement);
   const shape = outline || { subpaths: [], fillRule: 'non_zero', open: 0, filled: 0 };
   // Figma does not fill paths that are all open; Moshionly would.
   const filled = shape.filled === undefined ? shape.subpaths.length > 0 : shape.filled > 0;
