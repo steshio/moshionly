@@ -21,6 +21,7 @@ pub(crate) static EVALUATE: ToolDef = ToolDef {
         \"times\". x and y are the top-left corner in the parent's coordinates before rotation \
         and scale, opacity is 0 to 100, scale a multiplier, rotation degrees.",
     read_only: true,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

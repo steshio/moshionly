@@ -23,6 +23,9 @@ pub struct ToolSpec {
     /// Whether the tool only reads. A tool that is not read-only changes
     /// the document or writes files.
     pub read_only: bool,
+    /// Whether the tool can take away or overwrite what is there, as
+    /// opposed to only adding to it.
+    pub destructive: bool,
 }
 
 /// One piece of a tool's result.

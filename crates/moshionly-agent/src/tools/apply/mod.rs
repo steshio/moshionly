@@ -53,6 +53,7 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         result gives the ids of what was made; on failure nothing is applied and the error names \
         the operation and the field to fix.",
     read_only: false,
+    destructive: true,
     schema,
     run,
 };

@@ -15,6 +15,7 @@ pub(crate) static LIST_FONTS: ToolDef = ToolDef {
         available is drawn with a fallback, so pick from this list when setting \"font\" on a \
         text layer. Narrow a long list with \"query\".",
     read_only: true,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

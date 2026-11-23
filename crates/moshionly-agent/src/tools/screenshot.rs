@@ -21,6 +21,7 @@ pub(crate) static SCREENSHOT: ToolDef = ToolDef {
         fits, nothing cut off, colours that read well. Images are small by default (768 px on \
         the long edge); crop or name a layer to see detail.",
     read_only: true,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

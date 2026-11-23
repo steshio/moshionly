@@ -22,6 +22,7 @@ pub(crate) static GET_NODE: ToolDef = ToolDef {
         layer you have only seen in a list, and to learn what already animates it so new \
         motion fits in. For an animation it also names the layer it changes.",
     read_only: true,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

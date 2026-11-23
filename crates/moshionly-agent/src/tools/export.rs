@@ -21,6 +21,7 @@ pub(crate) static EXPORT: ToolDef = ToolDef {
         get_overview lists the formats this host can write. Export only when the person asks for \
         a file.",
     read_only: false,
+    destructive: false,
     schema: || {
         let formats: Vec<&str> = ExportFormat::ALL
             .iter()

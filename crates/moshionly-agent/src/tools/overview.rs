@@ -19,6 +19,7 @@ pub(crate) static GET_OVERVIEW: ToolDef = ToolDef {
         other tools take. The person may be editing at the same time, so call this again when \
         you come back to a file instead of trusting ids you read earlier.",
     read_only: true,
+    destructive: false,
     schema: || input_schema(json!({}), &[]),
     run,
 };

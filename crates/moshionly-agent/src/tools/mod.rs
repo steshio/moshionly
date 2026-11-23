@@ -79,6 +79,8 @@ pub(crate) struct ToolDef {
     pub title: &'static str,
     pub description: &'static str,
     pub read_only: bool,
+    /// Whether the tool can take away or overwrite what is there.
+    pub destructive: bool,
     /// The JSON Schema of the input. Its `properties` are also the list of
     /// argument names the tool accepts.
     pub schema: fn() -> Value,
@@ -180,6 +182,7 @@ impl Tools {
                 description: def.description,
                 input_schema: (def.schema)(),
                 read_only: def.read_only,
+                destructive: def.destructive,
             })
             .collect()
     }
@@ -290,6 +293,7 @@ mod tests {
         title: "Echo",
         description: "Repeats its text, or fails on request.",
         read_only: true,
+        destructive: false,
         schema: || input_schema(json!({ "text": { "type": "string" } }), &["text"]),
         run: |_, args| {
             let text = args.required_string("text", "what to repeat")?;

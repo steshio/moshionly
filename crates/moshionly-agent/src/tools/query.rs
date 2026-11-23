@@ -23,6 +23,7 @@ pub(crate) static QUERY_NODES: ToolDef = ToolDef {
         {\"target\":\"<layer id>\"} for what animates a layer, {\"name\":\"title\"} to find a \
         layer by name.",
     read_only: true,
+    destructive: false,
     schema,
     run,
 };

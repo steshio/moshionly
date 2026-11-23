@@ -19,6 +19,7 @@ pub(crate) static IMPORT_IMAGE: ToolDef = ToolDef {
         image's size in pixels and a ready-made node to add with apply_edits. Web addresses are \
         not fetched; download the image first.",
     read_only: false,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

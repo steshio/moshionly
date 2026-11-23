@@ -25,6 +25,7 @@ pub(crate) static GET_SCHEMA: ToolDef = ToolDef {
         before the first time you add or change a node of it; unknown fields are refused, not \
         ignored.",
     read_only: true,
+    destructive: false,
     schema: || {
         input_schema(
             json!({

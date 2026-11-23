@@ -16,6 +16,7 @@ pub(crate) static UNDO_LAST_AGENT_CHANGE: ToolDef = ToolDef {
         if they changed something since, it refuses and says what their change was, and you \
         should make the reverse edit with apply_edits instead.",
     read_only: false,
+    destructive: true,
     schema: || input_schema(json!({}), &[]),
     run,
 };
