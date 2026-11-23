@@ -248,3 +248,104 @@ fn a_marquee_selects_what_it_touches() {
     drag(&mut harness, from, to);
     assert_eq!(selection(&harness), ["card"]);
 }
+
+/// The layers of the demo's artboard of `kind`, by id.
+fn layers_of(harness: &Harness<'_, Shell>, kind: moshionly_core::NodeType) -> Vec<NodeId> {
+    harness
+        .state()
+        .editor()
+        .document()
+        .nodes()
+        .filter(|node| node.node_type() == kind)
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+#[test]
+fn the_rectangle_tool_draws_and_hands_back_to_select() {
+    let mut harness = harness();
+    harness.key_press(Key::R);
+    harness.run();
+    assert_eq!(
+        harness.state().tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    let from = screen(&harness, pos2(60.0, 60.0));
+    let to = screen(&harness, pos2(200.0, 160.0));
+    drag(&mut harness, from, to);
+    let rects = layers_of(&harness, moshionly_core::NodeType::Rect);
+    // The demo has one rect already: the card's accent.
+    assert_eq!(rects.len(), 2);
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    let new = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    assert!(rects.contains(&new));
+    let layer = harness
+        .state()
+        .editor()
+        .document()
+        .get(&new)
+        .unwrap()
+        .layer()
+        .unwrap()
+        .clone();
+    assert!((layer.x - 60.0).abs() < 1.0 && (layer.width - 140.0).abs() < 1.0);
+}
+
+#[test]
+fn the_text_tool_places_text_to_type_into() {
+    let mut harness = harness();
+    harness.key_press(Key::T);
+    harness.run();
+    let at = screen(&harness, pos2(80.0, 900.0));
+    click(&mut harness, at);
+    assert!(harness.state().is_editing_text());
+    harness.event(egui::Event::Text("Hello".to_owned()));
+    harness.run();
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!harness.state().is_editing_text());
+    let texts = layers_of(&harness, moshionly_core::NodeType::Text);
+    let document = harness.state().editor().document().clone();
+    let typed = texts
+        .iter()
+        .filter_map(|id| moshionly_app::editor::inspect::text_of(document.get(id).unwrap()))
+        .any(|text| text.content == "Hello");
+    assert!(typed, "the words were kept");
+    // Adding and typing were one step.
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Add text")
+    );
+}
+
+#[test]
+fn the_pen_draws_a_path() {
+    let mut harness = harness();
+    harness.key_press(Key::P);
+    harness.run();
+    for world in [pos2(100.0, 100.0), pos2(200.0, 50.0), pos2(300.0, 150.0)] {
+        let at = screen(&harness, world);
+        click(&mut harness, at);
+    }
+    harness.key_press(Key::Enter);
+    harness.run();
+    let paths = layers_of(&harness, moshionly_core::NodeType::Path);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    let layer = harness
+        .state()
+        .editor()
+        .document()
+        .get(&paths[0])
+        .unwrap()
+        .layer()
+        .unwrap()
+        .clone();
+    assert!((layer.width - 200.0).abs() < 1.0 && (layer.height - 100.0).abs() < 1.0);
+}

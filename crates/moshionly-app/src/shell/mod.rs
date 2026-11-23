@@ -34,7 +34,8 @@ pub use self::{
 use crate::{
     canvas::CanvasRenderer,
     commands::{CommandId, CommandRegistry, Palette},
-    editor::{Editor, timeline::timeline_groups, tree::TreeState},
+    dialogs::{Dialogs, NoDialogs, is_image},
+    editor::{Editor, pen::Pen, text::TextEditing, timeline::timeline_groups, tree::TreeState},
     key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
@@ -82,6 +83,14 @@ pub struct Shell {
     drag: Option<CanvasDrag>,
     /// Snapping guides to draw while dragging.
     guides: Vec<[Pos2; 2]>,
+    /// The world position under the pointer, while it is over the canvas.
+    pointer: Option<Pos2>,
+    /// A path being drawn with the pen.
+    pen: Option<Pen>,
+    /// Text being edited on the canvas.
+    text_edit: Option<TextEditing>,
+    /// How files are chosen.
+    dialogs: Box<dyn Dialogs>,
     /// What is typed into the chat composer.
     chat_draft: String,
 }
@@ -157,6 +166,10 @@ impl Shell {
             selected_actions: Vec::new(),
             drag: None,
             guides: Vec::new(),
+            pointer: None,
+            pen: None,
+            text_edit: None,
+            dialogs: Box::new(NoDialogs),
             chat_draft: String::new(),
         }
     }
@@ -167,6 +180,17 @@ impl Shell {
     /// empty space drags the window.
     pub fn use_top_bar_as_title_bar(&mut self, inset: f32) {
         self.title_inset = Some(inset);
+    }
+
+    /// Says how files are chosen: the app gives the operating system's
+    /// dialogs; until then every dialog is cancelled.
+    pub fn set_dialogs(&mut self, dialogs: Box<dyn Dialogs>) {
+        self.dialogs = dialogs;
+    }
+
+    /// Whether text is being edited on the canvas.
+    pub fn is_editing_text(&self) -> bool {
+        self.text_edit.is_some()
     }
 
     /// The name of the open project: the document's name, or its file's.
@@ -256,9 +280,12 @@ impl Shell {
         let window = ctx.content_rect();
         let layout = ShellLayout::compute(window, &self.settings.panels, &theme.size);
         let mut requested: Vec<CommandId> = Vec::new();
-        // Escape closes an open menu or the palette before it means anything
-        // else.
-        let overlay_open = egui::Popup::is_any_open(&ctx) || self.palette.is_open();
+        // Escape closes an open menu or the palette, and ends a path or text
+        // being edited, before it means anything else.
+        let overlay_open = egui::Popup::is_any_open(&ctx)
+            || self.palette.is_open()
+            || self.text_edit.is_some()
+            || self.pen.is_some();
 
         self.editor.attach(&ctx);
         if self.editor.sync() {
@@ -268,6 +295,8 @@ impl Shell {
         self.editor
             .set_animating(self.inspector.tab == InspectorTab::Animate);
         self.follow_selection();
+        self.dropped_files(&ctx);
+        self.pen_keys(&ctx);
 
         // The canvas first, so the panels' edges are drawn over it.
         requested.extend(self.canvas_panel(ui, layout.canvas));
@@ -368,6 +397,58 @@ impl Shell {
         }
         self.update_commands();
         output
+    }
+
+    /// Images dropped on the window are placed where they were dropped.
+    fn dropped_files(&mut self, ctx: &Context) {
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_owned())
+                .collect()
+        });
+        let images: Vec<&std::path::Path> = dropped
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .filter(|path| is_image(path))
+            .collect();
+        if !images.is_empty() {
+            let at = self.pointer;
+            self.import_images(&images, at);
+        }
+    }
+
+    /// Asks for images and places them on the current artboard.
+    fn import_image_dialog(&mut self) {
+        self.editor.tool = Tool::Select;
+        if let Some(paths) = self.dialogs.import_images() {
+            let paths: Vec<&std::path::Path> =
+                paths.iter().map(std::path::PathBuf::as_path).collect();
+            self.import_images(&paths, None);
+        }
+    }
+
+    /// Places image files as image layers, and says which could not be used.
+    fn import_images(&mut self, paths: &[&std::path::Path], at: Option<Pos2>) {
+        let (_, problems) = self.editor.import_images(paths, at);
+        for problem in problems {
+            self.toasts.push(Toast::error(problem));
+        }
+    }
+
+    /// Enter and Escape finish a path drawn with the pen.
+    fn pen_keys(&mut self, ctx: &Context) {
+        if self.pen.is_none() || ctx.text_edit_focused() {
+            return;
+        }
+        let finish = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+        });
+        if finish {
+            self.finish_pen(false);
+        }
     }
 
     /// The arrow keys move the selection by a pixel, or ten with Shift,
@@ -659,12 +740,29 @@ impl Shell {
                 }
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
+            CommandId::ImportImage => self.import_image_dialog(),
             other => match Tool::from_command(other) {
-                Some(tool) => self.editor.tool = tool,
+                Some(tool) => self.choose_tool(tool),
                 None => return false,
             },
         }
         true
+    }
+
+    /// Switches to `tool`, finishing a path or text in progress first. The
+    /// image tool asks for an image straight away.
+    fn choose_tool(&mut self, tool: Tool) {
+        if self.pen.is_some() && tool != Tool::Pen {
+            self.finish_pen(false);
+        }
+        if self.text_edit.is_some() {
+            self.finish_text_edit();
+        }
+        if tool == Tool::Image {
+            self.import_image_dialog();
+        } else {
+            self.editor.tool = tool;
+        }
     }
 
     /// Undoes or redoes one step, and says what when it was not obvious.

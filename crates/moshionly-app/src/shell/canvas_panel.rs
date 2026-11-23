@@ -1,17 +1,24 @@
 //! The canvas: the artboards' pictures, what is drawn over them, and what
-//! the pointer does there.
+//! the pointer does there with each tool.
 
-use egui::{Color32, Modifiers, Pos2, Rect, Ui};
+use egui::{Color32, FontId, Modifiers, Pos2, Rect, TextEdit, Ui, UiBuilder, Vec2};
 use moshionly_core::NodeId;
-use moshionly_core::model::Paint;
+use moshionly_core::model::{Paint, TextAlign};
 
-use super::{Shell, parts, tool_bar, tool_cursor};
+use super::{Shell, Tool, parts, tool_bar, tool_cursor};
 use crate::{
     canvas::{RenderKey, plan},
     commands::CommandId,
-    editor::{Pick, drag::Drag, inspect::artboard_of},
+    editor::{
+        Pick,
+        create::{CreateDrag, CreateError, click_origin, tool_type},
+        drag::Drag,
+        inspect::{artboard_of, text_of},
+        pen::{Pen, PenPress},
+    },
     theme::Theme,
     viewport::{Artboard, Overlays, Viewport, ViewportEvent},
+    widgets::Toast,
 };
 
 /// A drag on the canvas, from the moment it starts until it ends.
@@ -28,6 +35,10 @@ pub(super) enum CanvasDrag {
         /// What was selected before, kept when Shift is held.
         base: Vec<NodeId>,
     },
+    /// Drawing a new layer with a drawing tool.
+    Create(CreateDrag),
+    /// Pulling out the handles of the pen's newest anchor.
+    PenHandles,
 }
 
 impl Shell {
@@ -90,12 +101,17 @@ impl Shell {
         drop(artboards);
 
         let zoom = self.camera.zoom;
+        self.pointer = viewport.pointer;
         for event in viewport.events {
             self.canvas_event(event, zoom);
         }
+        self.text_field(ui, canvas);
         // The hover outline shows what a click would select.
         let pointer = viewport.pointer.filter(|_| {
-            tool == super::Tool::Select && viewport.handle.is_none() && self.drag.is_none()
+            self.editor.tool == Tool::Select
+                && viewport.handle.is_none()
+                && self.drag.is_none()
+                && self.text_edit.is_none()
         });
         self.editor.update_hover(pointer, zoom);
         picked.into_iter().collect()
@@ -108,6 +124,7 @@ impl Shell {
         let near = visible.expand2(visible.size() * 0.5);
         let document = std::sync::Arc::clone(self.editor.document());
         let time = self.editor.view_time();
+        let skip = self.text_edit.as_ref().map(|editing| editing.id.clone());
         for id in document.artboards() {
             let Some(rect) = self.editor.artboard_rect(id) else {
                 continue;
@@ -128,20 +145,32 @@ impl Shell {
                 revision: self.editor.artboard_version(id),
                 time,
                 plan,
-                skip: None,
+                skip: skip
+                    .clone()
+                    .filter(|layer| document.artboard_of(layer).is_some_and(|a| a.id == *id)),
             };
             self.pictures.request(id, &document, key);
         }
     }
 
     /// What is drawn over the artboards: the selection with its handles,
-    /// the hover outline, a marquee and snapping guides.
+    /// the hover outline, a marquee, snapping guides, a path being drawn
+    /// and the box of text being edited.
     fn overlays(&mut self) -> Overlays {
-        let ids = self.editor.selection.ids().to_vec();
         let mut overlays = Overlays {
             show_size: true,
             ..Overlays::default()
         };
+        if let Some(editing) = &self.text_edit {
+            let id = editing.id.clone();
+            overlays.editing = self.editor.box_of(&id);
+            return overlays;
+        }
+        if let Some(pen) = &self.pen {
+            overlays.pen = Some(pen.overlay(self.pointer, self.camera.zoom));
+            return overlays;
+        }
+        let ids = self.editor.selection.ids().to_vec();
         if ids.len() > 1 {
             overlays.outlines = ids.iter().filter_map(|id| self.editor.box_of(id)).collect();
         }
@@ -160,17 +189,38 @@ impl Shell {
 
     /// Acts on one thing the pointer did on the canvas.
     fn canvas_event(&mut self, event: ViewportEvent, zoom: f32) {
-        if self.editor.tool != super::Tool::Select {
-            // TODO: the drawing tools come with the creation commit.
-            return;
+        // Pressing anywhere on the canvas commits text being edited.
+        if self.text_edit.is_some()
+            && matches!(
+                event,
+                ViewportEvent::Clicked { .. }
+                    | ViewportEvent::DragStarted { .. }
+                    | ViewportEvent::HandleDragStarted { .. }
+                    | ViewportEvent::ArtboardNameClicked { .. }
+            )
+        {
+            self.finish_text_edit();
+            if matches!(event, ViewportEvent::Clicked { .. }) {
+                return;
+            }
         }
+        match self.editor.tool {
+            Tool::Select | Tool::Image => self.select_event(event, zoom),
+            Tool::Pen => self.pen_event(event, zoom),
+            tool => self.draw_event(tool, event, zoom),
+        }
+    }
+
+    /// The select tool: selecting, moving, resizing and turning.
+    fn select_event(&mut self, event: ViewportEvent, zoom: f32) {
         match event {
             ViewportEvent::Clicked { world, modifiers } => {
                 self.editor.click(world, modifiers, zoom);
             }
             ViewportEvent::DoubleClicked { world, .. } => {
-                // TODO: editing text on the canvas comes with its own commit.
-                let _ = self.editor.double_click(world, zoom);
+                if let Some(text) = self.editor.double_click(world, zoom) {
+                    self.text_edit = self.editor.begin_text_edit(&text, false);
+                }
             }
             ViewportEvent::ArtboardNameClicked { key, modifiers } => {
                 let id = NodeId::from(key.as_str());
@@ -183,9 +233,7 @@ impl Shell {
             }
             ViewportEvent::SecondaryClicked { world, .. } => {
                 // A right click on something not selected selects it first.
-                let target = self
-                    .editor
-                    .layer_at(world, crate::editor::Pick::Normal, zoom);
+                let target = self.editor.layer_at(world, Pick::Normal, zoom);
                 if let Some(target) = target
                     && !self.editor.selection.contains(&target)
                 {
@@ -206,12 +254,194 @@ impl Shell {
                 world, modifiers, ..
             } => self.continue_drag(world, modifiers, zoom),
             ViewportEvent::DragStopped { .. } | ViewportEvent::HandleDragStopped { .. } => {
-                if let Some(CanvasDrag::Selection(_)) = self.drag {
-                    self.editor.end_drag();
-                }
-                self.drag = None;
-                self.guides.clear();
+                self.stop_drag();
             }
+        }
+    }
+
+    /// The drawing tools: a click places a layer at its default size, a drag
+    /// draws it. Afterwards the select tool comes back.
+    fn draw_event(&mut self, tool: Tool, event: ViewportEvent, zoom: f32) {
+        let text = tool == Tool::Text;
+        match event {
+            ViewportEvent::Clicked { world, .. } => {
+                let at = click_origin(world);
+                if text {
+                    // Adding text and typing it is one undo step.
+                    self.editor.begin_gesture("Add text");
+                    match self.editor.create_at(tool, at) {
+                        Ok(id) => self.text_edit = self.editor.begin_text_edit(&id, true),
+                        Err(error) => {
+                            let _ = self.editor.cancel_gesture();
+                            self.toasts.push(Toast::warning(error.to_string()));
+                        }
+                    }
+                } else if let Err(error) = self.editor.create_at(tool, at) {
+                    self.toasts.push(Toast::warning(error.to_string()));
+                }
+                self.editor.tool = Tool::Select;
+            }
+            ViewportEvent::DragStarted { world, .. } => match self.editor.begin_create(tool, world)
+            {
+                Ok(drag) => self.drag = Some(CanvasDrag::Create(drag)),
+                Err(error) => {
+                    self.toasts.push(Toast::warning(error.to_string()));
+                    self.editor.tool = Tool::Select;
+                }
+            },
+            ViewportEvent::Dragged { world, modifiers } => {
+                if let Some(CanvasDrag::Create(drag)) = &self.drag {
+                    let drag = drag.clone();
+                    match self.editor.drag_create(&drag, world, modifiers, zoom) {
+                        Ok(guides) => self.guides = guides,
+                        Err(error) => self.toasts.push(Toast::error(error.to_string())),
+                    }
+                }
+            }
+            ViewportEvent::DragStopped { .. } => {
+                if let Some(CanvasDrag::Create(drag)) = self.drag.take() {
+                    if text {
+                        // The words are typed next, in the same undo step.
+                        self.text_edit = self.editor.begin_text_edit(&drag.id, true);
+                    } else {
+                        self.editor.end_create(&drag);
+                    }
+                }
+                self.guides.clear();
+                self.editor.tool = Tool::Select;
+            }
+            _ => {}
+        }
+        if tool_type(tool).is_none() {
+            self.editor.tool = Tool::Select;
+        }
+    }
+
+    /// The pen: clicks add corners, drags add curves, the first anchor
+    /// closes the path.
+    fn pen_event(&mut self, event: ViewportEvent, zoom: f32) {
+        let press = |shell: &mut Self, world: Pos2| -> bool {
+            if shell.pen.is_none() {
+                match shell.editor.artboard_at(world) {
+                    Some(artboard) => shell.pen = Some(Pen::new(artboard)),
+                    None => {
+                        shell
+                            .toasts
+                            .push(Toast::warning(CreateError::NoArtboard.to_string()));
+                        return false;
+                    }
+                }
+            }
+            let closed = shell
+                .pen
+                .as_mut()
+                .is_some_and(|pen| pen.press(world, zoom) == PenPress::Closed);
+            if closed {
+                shell.finish_pen(true);
+                return false;
+            }
+            true
+        };
+        match event {
+            ViewportEvent::Clicked { world, .. } => {
+                press(self, world);
+            }
+            ViewportEvent::DragStarted { world, .. } => {
+                if press(self, world) {
+                    self.drag = Some(CanvasDrag::PenHandles);
+                }
+            }
+            ViewportEvent::Dragged { world, .. } => {
+                if let (Some(CanvasDrag::PenHandles), Some(pen)) = (&self.drag, &mut self.pen) {
+                    pen.pull_handles(world);
+                }
+            }
+            ViewportEvent::DragStopped { .. } => self.drag = None,
+            _ => {}
+        }
+    }
+
+    /// Ends the path being drawn with the pen and goes back to the select
+    /// tool. A path with fewer than two anchors is dropped.
+    pub(super) fn finish_pen(&mut self, closed: bool) {
+        if let Some(pen) = self.pen.take() {
+            match self.editor.finish_pen(&pen, closed) {
+                Ok(_) => {}
+                Err(error) => self.toasts.push(Toast::error(error.to_string())),
+            }
+        }
+        self.drag = None;
+        self.editor.tool = Tool::Select;
+    }
+
+    /// Commits text being edited on the canvas.
+    pub(super) fn finish_text_edit(&mut self) {
+        if let Some(editing) = self.text_edit.take()
+            && let Err(error) = self.editor.finish_text_edit(editing)
+        {
+            self.toasts.push(Toast::error(error.problem.message));
+        }
+    }
+
+    /// The text field over text being edited: in the layer's place, at its
+    /// size on screen, in its colour.
+    fn text_field(&mut self, ui: &mut Ui, canvas: Rect) {
+        let Some(editing) = &mut self.text_edit else {
+            return;
+        };
+        let document = std::sync::Arc::clone(self.editor.document());
+        let Some(text) = document.get(&editing.id).and_then(text_of) else {
+            self.text_edit = None;
+            return;
+        };
+        let zoom = self.camera.zoom;
+        let id = editing.id.clone();
+        let Some(area) = self.editor.box_of(&id) else {
+            return;
+        };
+        let editing = self.text_edit.as_mut().expect("checked above");
+        let top_left = self
+            .camera
+            .world_to_screen(canvas, area.center - area.size / 2.0);
+        let width = area.size.x * zoom;
+        let wraps = text.auto_size != moshionly_core::model::AutoSize::WidthAndHeight;
+        let color = text
+            .fill
+            .as_ref()
+            .map_or(Color32::BLACK, |paint| paint_color(paint).to_opaque());
+        let size = (text.font_size as f32 * zoom).max(1.0);
+        let room = Rect::from_min_max(top_left, canvas.max.max(top_left + Vec2::splat(4.0)));
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("text-edit", id.as_str()))
+                .max_rect(room),
+        );
+        child.set_clip_rect(canvas.intersect(ui.clip_rect()));
+        let align = match text.align {
+            TextAlign::Left => egui::Align2::LEFT_TOP,
+            TextAlign::Center => egui::Align2::CENTER_TOP,
+            TextAlign::Right => egui::Align2::RIGHT_TOP,
+        };
+        let field = TextEdit::multiline(&mut editing.buffer)
+            .id_salt("canvas-text")
+            .font(FontId::proportional(size))
+            .text_color(color)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .background_color(Color32::TRANSPARENT)
+            .align(align)
+            .desired_rows(1)
+            .desired_width(if wraps {
+                width.max(size)
+            } else {
+                f32::INFINITY
+            });
+        let response = child.add(field).accessible_name("Text");
+        if !response.has_focus() && !response.lost_focus() {
+            response.request_focus();
+        }
+        if response.lost_focus() {
+            self.finish_text_edit();
         }
     }
 
@@ -267,8 +497,7 @@ impl Shell {
                 match self.editor.drag_to(&drag, world, modifiers, zoom) {
                     Ok(guides) => self.guides = guides,
                     Err(error) => {
-                        self.toasts
-                            .push(crate::widgets::Toast::error(error.problem.message));
+                        self.toasts.push(Toast::error(error.problem.message));
                         let _ = self.editor.cancel_gesture();
                         self.drag = None;
                         self.guides.clear();
@@ -287,8 +516,17 @@ impl Shell {
                 self.editor.selection.set(base);
                 self.editor.selection.extend(hits);
             }
-            None => {}
+            _ => {}
         }
+    }
+
+    /// Ends a drag of the select tool.
+    fn stop_drag(&mut self) {
+        if let Some(CanvasDrag::Selection(_)) = self.drag {
+            self.editor.end_drag();
+        }
+        self.drag = None;
+        self.guides.clear();
     }
 
     /// Starts a marquee at `world`. Shift keeps what is selected.

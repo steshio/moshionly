@@ -15,17 +15,22 @@
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
 //! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
 //! - [`drag`]: a drag of the selection as one undo step.
+//! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
+//!   typing text on the canvas.
 //! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
+pub mod create;
 pub mod describe;
 pub mod drag;
 pub mod inspect;
+pub mod pen;
 pub mod selection;
 pub mod snap;
+pub mod text;
 pub mod timeline;
 pub mod transform;
 pub mod tree;

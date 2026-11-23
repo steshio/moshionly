@@ -26,7 +26,7 @@ use moshionly_app::{
     shell::{InspectorTab, Shell},
     theme::{Theme, icons},
     timeline::{Timeline, TimelineState},
-    viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, Viewport},
+    viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, PenOverlay, Viewport},
     widgets::*,
 };
 
@@ -507,6 +507,17 @@ fn viewport() {
                     to: egui::pos2(1240.0, 800.0),
                     label: "160".to_owned(),
                 }],
+                pen: Some(PenOverlay {
+                    path: vec![
+                        egui::pos2(1340.0, 900.0),
+                        egui::pos2(1440.0, 760.0),
+                        egui::pos2(1540.0, 940.0),
+                    ],
+                    anchors: vec![egui::pos2(1340.0, 900.0), egui::pos2(1440.0, 760.0)],
+                    handles: vec![[egui::pos2(1440.0, 760.0), egui::pos2(1500.0, 740.0)]],
+                    closing: false,
+                }),
+                editing: None,
             };
             Viewport::new(&mut camera)
                 .artboards(&artboards)

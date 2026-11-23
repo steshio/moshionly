@@ -84,6 +84,7 @@ impl MoshionlyApp {
         let settings = Settings::load(cc.storage);
         theme::set_mode(&cc.egui_ctx, settings.theme);
         let mut shell = Shell::untitled(settings);
+        shell.set_dialogs(Box::new(dialogs::NativeDialogs));
         if cfg!(target_os = "macos") {
             shell.use_top_bar_as_title_bar(MAC_WINDOW_BUTTONS);
         }
@@ -102,9 +103,6 @@ impl MoshionlyApp {
             let chosen = match id {
                 CommandId::OpenProject => dialogs::open_project(),
                 CommandId::SaveAs => dialogs::save_project(&self.shell.project_name()),
-                CommandId::ImportImage => {
-                    dialogs::import_images().and_then(|paths| paths.into_iter().next())
-                }
                 _ => {
                     self.shell.toast(Toast::info(format!(
                         "\"{}\" is not available yet",
