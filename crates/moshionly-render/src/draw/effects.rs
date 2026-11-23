@@ -44,6 +44,10 @@ pub(crate) fn sigma(blur: f64) -> Option<f32> {
 
 /// The filter that adds `node`'s shadow behind what it draws and then
 /// blurs the result, or `None` when the node has neither.
+///
+/// TODO: Skia's CPU image-filter blur costs about 5 ms for a 600 by 400
+/// layer whatever the radius (measured with the benchmark example); a
+/// shadow drawn from a blurred mask for plain shapes would be far cheaper.
 pub(crate) fn filter(node: &SceneNode) -> Option<sk::ImageFilter> {
     let shadowed = node.shadow.as_ref().and_then(shadow);
     match sigma(node.blur) {

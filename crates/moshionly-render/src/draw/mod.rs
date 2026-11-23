@@ -19,6 +19,7 @@ use crate::assets::{self, AssetLoader};
 use crate::convert;
 use crate::error::RenderWarning;
 use crate::fonts::FontLibrary;
+use crate::hit::{Geometry, Precision};
 use crate::options::Background;
 
 /// Draws scenes onto one canvas and collects what went wrong on the way.
@@ -119,6 +120,13 @@ impl<'a> Painter<'a> {
             return;
         }
 
+        // Offscreen layers are only as large as what the node can draw;
+        // a node that draws nothing is skipped.
+        let geometry = Geometry { fonts: self.fonts };
+        let Some(visual) = geometry.visual(node, Precision::Quick) else {
+            return;
+        };
+        let visual = layer_bounds(&visual);
         // Opacity and blend mode apply to everything below as a whole, so
         // that what the node draws does not show through itself.
         let composite = opacity < 1.0 || blend != sk::BlendMode::SrcOver;
@@ -126,19 +134,32 @@ impl<'a> Painter<'a> {
             let mut paint = sk::Paint::default();
             paint.set_alpha_f(opacity);
             paint.set_blend_mode(blend);
-            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
+            canvas.save_layer(
+                &sk::canvas::SaveLayerRec::default()
+                    .bounds(&visual)
+                    .paint(&paint),
+            );
         }
         if let Some(clip) = &node.clip {
             canvas.clip_rrect(convert::rounded_rect(&clip.rect, &clip.radii), None, true);
         }
         if node.mask.is_some() {
             // The mask cuts into this layer only, not into what is behind.
-            canvas.save_layer(&sk::canvas::SaveLayerRec::default());
+            canvas.save_layer(&sk::canvas::SaveLayerRec::default().bounds(&visual));
         }
         if let Some(filter) = filter {
+            // The filter's layer holds the content; the shadow and blur
+            // it adds may reach past it.
+            let content = geometry
+                .content(node, Precision::Quick)
+                .map(|content| layer_bounds(&content));
             let mut paint = sk::Paint::default();
             paint.set_image_filter(filter);
-            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
+            let mut layer = sk::canvas::SaveLayerRec::default().paint(&paint);
+            if let Some(content) = &content {
+                layer = layer.bounds(content);
+            }
+            canvas.save_layer(&layer);
             self.content(node, 1.0);
             canvas.restore();
         } else {
@@ -149,7 +170,11 @@ impl<'a> Painter<'a> {
             // its alpha; the rest goes.
             let mut paint = sk::Paint::default();
             paint.set_blend_mode(sk::BlendMode::DstIn);
-            canvas.save_layer(&sk::canvas::SaveLayerRec::default().paint(&paint));
+            canvas.save_layer(
+                &sk::canvas::SaveLayerRec::default()
+                    .bounds(&visual)
+                    .paint(&paint),
+            );
             self.node(mask);
             canvas.restore();
             canvas.restore();
@@ -234,6 +259,12 @@ impl<'a> Painter<'a> {
             self.canvas.draw_path(path, &paint);
         }
     }
+}
+
+/// Bounds for an offscreen layer around `rect`, with a pixel to spare for
+/// anti-aliased edges.
+fn layer_bounds(rect: &Rect) -> sk::Rect {
+    convert::rect(rect).with_outset((1.0, 1.0))
 }
 
 /// Whether a node draws at most one thing, so that fading that one thing

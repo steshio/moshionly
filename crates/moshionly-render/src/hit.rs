@@ -6,7 +6,7 @@
 //! between its points is not hit, a ring not through its hole, an outline
 //! only near its edge.
 
-use moshionly_core::model::{StrokeJoin, StrokePosition};
+use moshionly_core::model::StrokeJoin;
 use moshionly_core::scene::{Clip, Content, Scene, SceneNode, SceneStroke};
 use moshionly_core::{Affine, NodeId, Point, Rect};
 use skia_safe as sk;
@@ -114,14 +114,16 @@ impl Geometry<'_> {
                 .frame()
                 .corners()
                 .map(|corner| to_artboard.apply(corner)),
-            visual: self.visual(node).map(|local| to_artboard.bounds_of(&local)),
+            visual: self
+                .visual(node, Precision::Exact)
+                .map(|local| to_artboard.bounds_of(&local)),
         })
     }
 
     /// The box around everything `node` draws, in its own coordinates, or
     /// `None` when it draws nothing.
-    pub(crate) fn visual(&self, node: &SceneNode) -> Option<Rect> {
-        let content = self.content(node)?;
+    pub(crate) fn visual(&self, node: &SceneNode, precision: Precision) -> Option<Rect> {
+        let content = self.content(node, precision)?;
         let [left, top, right, bottom] = effects::reach(node);
         let mut visual = Rect::new(
             content.x - left,
@@ -134,19 +136,22 @@ impl Geometry<'_> {
         }
         if let Some(mask) = &node.mask {
             let transform = usable(&mask.transform)?;
-            visual = intersection(&visual, &transform.bounds_of(&self.visual(mask)?))?;
+            visual = intersection(
+                &visual,
+                &transform.bounds_of(&self.visual(mask, precision)?),
+            )?;
         }
         Some(visual)
     }
 
     /// The box around what `node`'s content draws, before effects.
-    fn content(&self, node: &SceneNode) -> Option<Rect> {
+    pub(crate) fn content(&self, node: &SceneNode, precision: Precision) -> Option<Rect> {
         match &node.content {
             Content::Group { children } => children
                 .iter()
                 .filter_map(|child| {
                     let transform = usable(&child.transform)?;
-                    Some(transform.bounds_of(&self.visual(child)?))
+                    Some(transform.bounds_of(&self.visual(child, precision)?))
                 })
                 .reduce(|all, one| all.union(&one)),
             Content::Rect { fill, stroke, .. }
@@ -154,22 +159,35 @@ impl Geometry<'_> {
             | Content::Star { fill, stroke, .. }
             | Content::Path { fill, stroke, .. } => {
                 let outline = geometry::outline(node)?;
-                let filled = fill
-                    .as_ref()
-                    .map(|_| rect(&outline.path.compute_tight_bounds()));
-                let stroked = stroke
-                    .as_ref()
-                    .and_then(|stroke| stroke::area(&outline, stroke))
-                    .map(|area| rect(&area.compute_tight_bounds()));
+                let shape = || match precision {
+                    Precision::Exact => rect(&outline.path.compute_tight_bounds()),
+                    Precision::Quick => rect(outline.path.bounds()),
+                };
+                let filled = fill.as_ref().map(|_| shape());
+                let stroked = stroke.as_ref().and_then(|stroke| match precision {
+                    Precision::Exact => stroke::area(&outline, stroke)
+                        .map(|area| rect(&area.compute_tight_bounds())),
+                    Precision::Quick => {
+                        Some(outset(&shape(), stroke_reach(stroke, outline.closed)))
+                    }
+                });
                 union(filled, stroked)
             }
-            Content::Image { .. } => Some(node.frame()),
+            Content::Image { stroke, .. } => {
+                let reach = stroke
+                    .as_ref()
+                    .map_or(0.0, |stroke| stroke_reach(stroke, true));
+                Some(outset(&node.frame(), reach))
+            }
             Content::Text(text) => {
                 if text.fill.is_none() && text.stroke.is_none() {
                     return None;
                 }
                 let block = self.fonts.layout(&text.text, &text.style, text.wrap_width);
-                let outset = text.stroke.as_ref().map_or(0.0, text_stroke_reach);
+                let outset_by = text
+                    .stroke
+                    .as_ref()
+                    .map_or(0.0, |stroke| stroke_reach(stroke, true));
                 // The same rule as drawing: one unit over everything is
                 // the whole text.
                 let whole = matches!(
@@ -182,19 +200,23 @@ impl Geometry<'_> {
                         let range = unit.start..unit.end;
                         let ink = block.ink((!whole).then_some(&range))?;
                         let spread = effects::sigma(unit.blur).map_or(0.0, |s| 3.0 * f64::from(s));
-                        let reach = outset + spread;
-                        let ink = Rect::new(
-                            ink.x - reach,
-                            ink.y + text.offset_y - reach,
-                            ink.width + 2.0 * reach,
-                            ink.height + 2.0 * reach,
-                        );
-                        Some(usable(&unit.transform)?.bounds_of(&ink))
+                        let ink = Rect::new(ink.x, ink.y + text.offset_y, ink.width, ink.height);
+                        Some(usable(&unit.transform)?.bounds_of(&outset(&ink, outset_by + spread)))
                     })
                     .reduce(|all, one| all.union(&one))
             }
         }
     }
+}
+
+/// How carefully to measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Precision {
+    /// The tight box, for callers. Strokes are measured as drawn.
+    Exact,
+    /// A box that may be a little loose but is cheap, for sizing the
+    /// painter's offscreen layers every frame.
+    Quick,
 }
 
 /// Whether `point`, in `node`'s coordinates, is on what the node draws.
@@ -241,22 +263,26 @@ fn widened(stroke: &SceneStroke, reach: f64, closed: bool) -> SceneStroke {
     }
 }
 
-/// How far a stroke on text can reach past the glyphs' ink.
-fn text_stroke_reach(stroke: &SceneStroke) -> f64 {
+/// How far a stroke can reach past the outline it follows, corners and
+/// ends included.
+pub(crate) fn stroke_reach(stroke: &SceneStroke, closed: bool) -> f64 {
     let width = if stroke.width.is_finite() {
         stroke.width.max(0.0)
     } else {
         0.0
     };
-    let side = match stroke.position {
-        StrokePosition::Inside => 0.0,
-        StrokePosition::Center => width / 2.0,
-        StrokePosition::Outside => width,
+    let side = match stroke::side(stroke, closed) {
+        None => width / 2.0,
+        Some(sk::ClipOp::Intersect) => 0.0,
+        Some(_) => width,
     };
-    match stroke.join {
-        StrokeJoin::Miter => side * f64::from(stroke::MITER_LIMIT),
-        StrokeJoin::Round | StrokeJoin::Bevel => side,
-    }
+    // Mitred corners reach furthest; square caps and the diagonal of a
+    // round join reach half a width times the square root of 2.
+    let corner = match stroke.join {
+        StrokeJoin::Miter => f64::from(stroke::MITER_LIMIT),
+        StrokeJoin::Round | StrokeJoin::Bevel => std::f64::consts::SQRT_2,
+    };
+    side * corner
 }
 
 /// The transform, if every number in it is finite and it does not flatten
@@ -283,6 +309,16 @@ fn rect(bounds: &sk::Rect) -> Rect {
     )
 }
 
+/// `rect` grown by `by` on every side.
+fn outset(rect: &Rect, by: f64) -> Rect {
+    Rect::new(
+        rect.x - by,
+        rect.y - by,
+        rect.width + 2.0 * by,
+        rect.height + 2.0 * by,
+    )
+}
+
 fn union(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.union(&b)),
@@ -301,7 +337,7 @@ fn intersection(a: &Rect, b: &Rect) -> Option<Rect> {
 mod tests {
     use super::*;
     use crate::{AssetLoader, Renderer};
-    use moshionly_core::model::{BlendMode, Font, Shadow, StrokeCap, TextAlign};
+    use moshionly_core::model::{BlendMode, Font, Shadow, StrokeCap, StrokePosition, TextAlign};
     use moshionly_core::scene::{ScenePaint, TextContent, TextStyle, TextUnit};
     use moshionly_core::{Color, NodeId};
 
