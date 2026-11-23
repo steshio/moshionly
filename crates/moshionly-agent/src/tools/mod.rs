@@ -13,10 +13,12 @@
 mod apply;
 mod args;
 mod common;
+mod evaluate;
 mod node;
 mod overview;
 mod query;
 mod schema;
+mod screenshot;
 #[cfg(test)]
 pub(crate) mod testing;
 
@@ -85,6 +87,8 @@ const TOOLS: &[&ToolDef] = &[
     &node::GET_NODE,
     &schema::GET_SCHEMA,
     &apply::APPLY_EDITS,
+    &screenshot::SCREENSHOT,
+    &evaluate::EVALUATE,
 ];
 
 /// The JSON Schema of an input object with these properties, of which

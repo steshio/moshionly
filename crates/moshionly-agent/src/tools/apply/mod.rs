@@ -62,13 +62,16 @@ const MAX_OPERATIONS: usize = 500;
 /// The most new nodes a result lists one by one.
 const MAX_LISTED: usize = 100;
 
+/// Looks at an operation before its fields are checked.
+type Check = fn(&Args) -> Result<(), ToolError>;
+
 /// One kind of operation: its name, the fields it takes, and what it does.
 struct Operation {
     name: &'static str,
     fields: &'static [&'static str],
     /// Looks at the operation before its fields are checked, to answer a
     /// common mistake better than "not a field" would.
-    check: Option<fn(&Args) -> Result<(), ToolError>>,
+    check: Option<Check>,
     run: fn(&mut Batch, &Args) -> Result<(), ToolError>,
 }
 

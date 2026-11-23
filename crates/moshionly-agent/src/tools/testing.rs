@@ -78,3 +78,67 @@ pub(crate) fn call_error(tools: &Tools, name: &str, arguments: Value) -> String 
     );
     text
 }
+
+/// A frame request as the stand-in renderer saw it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SeenRequest {
+    pub artboard: String,
+    pub layer: Option<String>,
+    pub time_ms: Option<f64>,
+    pub crop: Option<moshionly_core::Rect>,
+    pub max_size: u32,
+}
+
+/// A renderer that draws nothing: it returns a few bytes in place of a PNG,
+/// sized as a real one would be, and remembers what it was asked for.
+#[derive(Debug, Default)]
+pub(crate) struct StubFrames {
+    seen: std::sync::Mutex<Vec<SeenRequest>>,
+    failure: std::sync::Mutex<Option<String>>,
+}
+
+impl StubFrames {
+    /// What has been asked for so far.
+    pub fn requests(&self) -> Vec<SeenRequest> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    /// Makes every later render fail with `message`.
+    pub fn fail_with(&self, message: &str) {
+        *self.failure.lock().unwrap() = Some(message.to_owned());
+    }
+}
+
+impl crate::host::FrameSource for StubFrames {
+    fn render(
+        &self,
+        request: &crate::host::FrameRequest<'_>,
+    ) -> Result<crate::host::Frame, crate::host::HostError> {
+        self.seen.lock().unwrap().push(SeenRequest {
+            artboard: request.artboard.to_string(),
+            layer: request.layer.map(ToString::to_string),
+            time_ms: request.time_ms,
+            crop: request.crop,
+            max_size: request.max_size,
+        });
+        if let Some(message) = self.failure.lock().unwrap().clone() {
+            return Err(crate::host::HostError::Failed(message));
+        }
+        let document = request.document;
+        let artboard = document.world_bounds(request.artboard).unwrap_or_default();
+        let region = request.crop.unwrap_or(moshionly_core::Rect::new(
+            0.0,
+            0.0,
+            artboard.width,
+            artboard.height,
+        ));
+        let scale = f64::from(request.max_size) / region.width.max(region.height).max(1.0);
+        Ok(crate::host::Frame {
+            png: b"\x89PNG stand-in".to_vec(),
+            width: (region.width * scale).round() as u32,
+            height: (region.height * scale).round() as u32,
+            region,
+            layer_box: request.layer.and_then(|layer| document.world_bounds(layer)),
+        })
+    }
+}
