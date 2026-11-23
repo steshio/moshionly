@@ -10,6 +10,7 @@
 use moshionly_core::eval::Property;
 use moshionly_core::model::{FillRule, StrokeJoin, StrokePosition};
 use moshionly_core::{Color, Document, Node, NodeData, NodeId};
+use moshionly_render::Renderer;
 use serde_json::{Map, Value};
 
 use crate::error::ExportError;
@@ -56,19 +57,23 @@ pub(crate) struct Converter<'a> {
     pub survey: Vec<f64>,
     /// Precompositions and images, for the file's `assets`.
     pub assets: Vec<Value>,
+    /// Draws text, for its outlines.
+    pub renderer: &'a Renderer,
     /// Reports each converted layer.
     progress: Progress<'a>,
 }
 
 impl<'a> Converter<'a> {
-    /// A converter reading `timeline`, calling `progress` after each layer.
-    pub fn new(timeline: Timeline<'a>, progress: Progress<'a>) -> Self {
+    /// A converter reading `timeline`, drawing text with `renderer`, and
+    /// calling `progress` after each layer.
+    pub fn new(timeline: Timeline<'a>, renderer: &'a Renderer, progress: Progress<'a>) -> Self {
         let frames = timeline.clock.frames;
         Self {
             timeline,
             warnings: Warnings::default(),
             survey: (0..=frames).map(|frame| frame as f64).collect(),
             assets: Vec::new(),
+            renderer,
             progress,
         }
     }
@@ -123,8 +128,9 @@ impl<'a> Converter<'a> {
                 self.add_group(node, group.clip, comp, parent_index, offset)?;
             }
             NodeData::MaskGroup(_) => self.add_mask_group(node, comp, parent_index, offset)?,
-            // TODO: text and images are converted in the steps that follow;
-            // until then they are left out.
+            NodeData::Text(text) => self.add_text(node, text, comp, parent_index, offset)?,
+            // TODO: images are converted in the step that follows; until
+            // then they are left out.
             _ => self.warnings.layer(
                 node,
                 "is left out: this kind of layer is not exported to Lottie yet.",
@@ -263,7 +269,7 @@ impl<'a> Converter<'a> {
         };
         let (items, notes) = this.painted(node, hints, &geometry, rule, parts);
         drop(geometry);
-        self.note(node, &notes);
+        self.note_paints(node, &notes);
         items
     }
 
@@ -498,7 +504,7 @@ impl<'a> Converter<'a> {
     }
 
     /// Turns what painting noted into warnings about `node`.
-    fn note(&mut self, node: &Node, notes: &[Notes]) {
+    pub fn note_paints(&mut self, node: &Node, notes: &[Notes]) {
         for note in notes {
             if note.mixed {
                 self.warnings.layer(

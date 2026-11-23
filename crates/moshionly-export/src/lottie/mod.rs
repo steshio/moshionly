@@ -25,6 +25,8 @@ mod paint;
 mod props;
 mod scenes;
 mod shapes;
+mod svg;
+mod text;
 mod timeline;
 mod warnings;
 
@@ -109,7 +111,7 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
             reporter.report(Phase::Rendering, frames * converted.min(total) / total);
             reporter.check()
         });
-        let mut converter = Converter::new(timeline, progress);
+        let mut converter = Converter::new(timeline, cx.source.renderer, progress);
         let mut comp = Comp::default();
 
         // A size other than the artboard's own scales everything from one

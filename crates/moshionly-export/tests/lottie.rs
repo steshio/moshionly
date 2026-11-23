@@ -428,3 +428,97 @@ fn groups_clips_and_masks_keep_their_structure() {
         assert!(layer["w"].as_f64().unwrap() >= 200.0 && layer["h"].as_f64().unwrap() >= 100.0);
     }
 }
+
+/// The layer named `name` anywhere in the file: at the top or in a
+/// precomposition.
+fn any_layer<'a>(lottie: &'a Value, name: &str) -> &'a Value {
+    let top = lottie["layers"].as_array().unwrap().iter();
+    let inside = lottie["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|asset| asset["layers"].as_array())
+        .flatten();
+    top.chain(inside)
+        .find(|layer| layer["nm"] == name)
+        .unwrap_or_else(|| panic!("a layer named {name}"))
+}
+
+/// Every point of every path in a list of shape items, recursively.
+fn points(items: &Value, into: &mut Vec<[f64; 2]>) {
+    for item in items.as_array().into_iter().flatten() {
+        match item["ty"].as_str() {
+            Some("gr") => points(&item["it"], into),
+            Some("sh") => {
+                for point in item["ks"]["k"]["v"].as_array().into_iter().flatten() {
+                    into.push([point[0].as_f64().unwrap(), point[1].as_f64().unwrap()]);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn text_becomes_outlines_moved_piece_by_piece() {
+    let (lottie, exported) = export(Settings::default());
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    // "Launch day" comes in letter by letter: a group for each of its nine
+    // letters, each with its own keyframes.
+    let title = any_layer(&lottie, "Title");
+    let groups = title["shapes"].as_array().unwrap();
+    assert_eq!(groups.len(), 9);
+    for group in groups {
+        let items = group["it"].as_array().unwrap();
+        assert!(items.iter().any(|item| item["ty"] == "sh"));
+        assert!(items.iter().any(|item| item["ty"] == "fl"));
+        let transform = items.last().unwrap();
+        assert_eq!(transform["ty"], "tr");
+        assert_eq!(transform["o"]["a"], 1, "each letter fades in");
+        assert_eq!(transform["p"]["a"], 1, "each letter slides up");
+    }
+    // The outlines sit where the renderer puts the text: inside the box the
+    // text is measured into, 64 pixels tall.
+    let mut all = Vec::new();
+    points(&title["shapes"], &mut all);
+    let anchor = &title["ks"]["a"]["k"];
+    let (width, height) = (
+        2.0 * anchor[0].as_f64().unwrap(),
+        2.0 * anchor[1].as_f64().unwrap(),
+    );
+    assert!(all.len() > 50);
+    for [x, y] in all {
+        assert!((-2.0..width + 2.0).contains(&x), "{x} in {width}");
+        assert!((-2.0..height + 2.0).contains(&y), "{y} in {height}");
+    }
+
+    // The counter shows each value in turn, from letters drawn once.
+    let raised = any_layer(&lottie, "Raised");
+    assert_eq!(raised["ty"], 0);
+    let shown = lottie["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["id"] == raised["refId"])
+        .unwrap()["layers"]
+        .as_array()
+        .unwrap();
+    let letters = lottie["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|asset| asset["id"].as_str().unwrap().starts_with("letter"))
+        .count();
+    assert!(
+        shown.len() > 5 * letters,
+        "{} placed, {letters} drawn",
+        shown.len()
+    );
+    assert!(
+        shown
+            .iter()
+            .all(|letter| letter["ip"].as_f64() < letter["op"].as_f64())
+    );
+    // The file stays small.
+    assert!(exported.bytes < 200_000, "{} bytes", exported.bytes);
+}

@@ -13,6 +13,8 @@ use serde_json::{Map, Value};
 pub(crate) mod places {
     /// Positions, sizes and other lengths in pixels.
     pub const LENGTH: i32 = 3;
+    /// Points of glyph outlines, which are many: a hundredth of a pixel.
+    pub const OUTLINE: i32 = 2;
     /// Angles in degrees.
     pub const ANGLE: i32 = 3;
     /// Percentages: scale and opacity.

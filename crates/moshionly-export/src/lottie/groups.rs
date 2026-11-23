@@ -48,7 +48,18 @@ pub(crate) struct Area {
 }
 
 impl Area {
-    fn include(&mut self, point: Point) {
+    /// A `width` by `height` box at the origin.
+    pub fn new(width: f64, height: f64) -> Self {
+        Self {
+            left: 0.0,
+            top: 0.0,
+            right: width,
+            bottom: height,
+        }
+    }
+
+    /// Grows the area to hold `point`.
+    pub fn include(&mut self, point: Point) {
         self.left = self.left.min(point.x);
         self.top = self.top.min(point.y);
         self.right = self.right.max(point.x);
@@ -56,7 +67,7 @@ impl Area {
     }
 
     /// The area with whole-pixel edges, within the limit.
-    fn rounded(self) -> Self {
+    pub fn rounded(self) -> Self {
         let edge = |value: f64, round: fn(f64) -> f64| round(value.clamp(-LIMIT, LIMIT));
         Self {
             left: edge(self.left, f64::floor),
@@ -298,12 +309,7 @@ impl Converter<'_> {
             let (w, h) = self.size(id, *frame);
             (width, height) = (width.max(w), height.max(h));
         }
-        let mut area = Area {
-            left: 0.0,
-            top: 0.0,
-            right: width,
-            bottom: height,
-        };
+        let mut area = Area::new(width, height);
         for frame in &self.survey {
             let Some(scene) = self.timeline.scenes.at(*frame) else {
                 continue;
@@ -324,7 +330,7 @@ impl Converter<'_> {
     }
 
     /// A precomposition whose layers `build` adds; returns its id.
-    fn composition(
+    pub fn composition(
         &mut self,
         node: &Node,
         build: impl FnOnce(&mut Self, &mut Comp) -> Result<(), ExportError>,
@@ -345,7 +351,7 @@ impl Converter<'_> {
     }
 
     /// A layer showing the precomposition `asset`, which covers `area`.
-    fn composition_layer(
+    pub fn composition_layer(
         &self,
         node: &Node,
         asset: &str,
@@ -530,7 +536,7 @@ fn mask(name: &str, outline: &Outline) -> Value {
 }
 
 /// A transform whose anchor moves with its layer's content by `origin`.
-fn anchored(mut transform: Transform, origin: [f64; 2]) -> Transform {
+pub(crate) fn anchored(mut transform: Transform, origin: [f64; 2]) -> Transform {
     transform.anchor = map(&transform.anchor, |anchor| {
         vec![anchor[0] + origin[0], anchor[1] + origin[1]]
     });
