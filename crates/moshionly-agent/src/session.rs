@@ -390,6 +390,21 @@ impl Session {
         &self.redo
     }
 
+    /// Makes the most recent undo step permanent and returns it: its change
+    /// stays, but undo skips it and goes on with the step before. For a
+    /// change that is part of something else rather than an edit of its
+    /// own, such as pointing image layers at copies made while saving the
+    /// project in another folder. Returns `None`, and changes nothing, when
+    /// there is no step or a gesture is open.
+    pub fn forget_last_step(&mut self) -> Option<Step> {
+        if self.gesture.is_some() || !self.history.forget_last() {
+            return None;
+        }
+        let step = self.undo.pop();
+        self.check_steps();
+        step
+    }
+
     /// Undoes the most recent step and returns it, or `None` when there is
     /// nothing to undo. An open gesture is committed first and is then the
     /// step that is undone.
@@ -828,6 +843,39 @@ mod tests {
             .unwrap();
         assert!(session.redo_steps().is_empty());
         assert!(!session.can_redo());
+    }
+
+    #[test]
+    fn a_step_made_permanent_is_skipped_by_undo() {
+        let mut session = session();
+        session
+            .apply(Origin::User, "Move", &[Edit::set("r1", "x", 5)])
+            .unwrap();
+        session
+            .apply(Origin::User, "Relink", &[Edit::set("r1", "y", 7)])
+            .unwrap();
+        let revision = session.revision();
+
+        let forgotten = session.forget_last_step().unwrap();
+        assert_eq!(forgotten.summary, "Relink");
+        assert_eq!(session.revision(), revision, "the document did not change");
+        assert_eq!(session.undo_steps().last().unwrap().summary, "Move");
+        // Undo goes on with the step before, and the permanent change stays.
+        assert_eq!(session.undo().unwrap().unwrap().summary, "Move");
+        let rect = session.document().get(&NodeId::from("r1")).unwrap();
+        assert_eq!(
+            (rect.layer().unwrap().x, rect.layer().unwrap().y),
+            (0.0, 7.0)
+        );
+
+        // Not while a gesture is open: its step is not the last one yet.
+        session.begin_gesture(Origin::User, "Drag");
+        session
+            .apply(Origin::User, "", &[Edit::set("r1", "x", 9)])
+            .unwrap();
+        assert!(session.forget_last_step().is_none());
+        session.commit_gesture();
+        assert_eq!(session.undo_steps().last().unwrap().summary, "Drag");
     }
 
     #[test]
