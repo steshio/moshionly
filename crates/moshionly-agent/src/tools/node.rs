@@ -88,7 +88,58 @@ fn run(context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
         result["children"] = json!(rows);
     }
     shorten_strings(&mut result, STRING_LIMIT);
+    fit(&mut result, context.config.max_result_chars)?;
     Ok(ToolOutput::json(&result))
+}
+
+/// Makes `result` fit in `limit` characters. A path's outline is summed up
+/// first, as it is what makes a node long; then the animations are named
+/// rather than shown whole. A node still too long is refused with a way to
+/// read it in parts.
+fn fit(result: &mut Value, limit: usize) -> Result<(), ToolError> {
+    let fits = |result: &Value| result.to_string().len() <= limit;
+    if fits(result) {
+        return Ok(());
+    }
+    if let Some(path) = result.get_mut("node").and_then(|node| node.get_mut("path"))
+        && let Some(Value::Array(subpaths)) = path.get("subpaths")
+    {
+        let count = subpaths.len();
+        let anchors: usize = subpaths
+            .iter()
+            .filter_map(|subpath| subpath.get("anchors").and_then(Value::as_array))
+            .map(Vec::len)
+            .sum();
+        path["subpaths"] = json!(count);
+        path["anchors"] = json!(anchors);
+        let subpaths = if count == 1 { "subpath" } else { "subpaths" };
+        result["path_note"] = json!(format!(
+            "The outline is too long to show: {count} {subpaths} with {anchors} anchors in all. \
+             \"path\" here counts them instead. To change the shape, set a new \"path\" whole \
+             with apply_edits."
+        ));
+    }
+    if !fits(result)
+        && let Some(Value::Array(animations)) = result.get_mut("animations")
+    {
+        for animation in animations.iter_mut() {
+            let fields = ["id", "type", "name", "start", "end"]
+                .into_iter()
+                .filter_map(|key| Some((key.to_owned(), animation.get(key)?.clone())))
+                .collect();
+            *animation = Value::Object(fields);
+        }
+        result["animations_note"] = json!(
+            "Only named, to keep the result small. get_node on an animation shows it in full."
+        );
+    }
+    if fits(result) {
+        return Ok(());
+    }
+    Err(ToolError::Rejected(format!(
+        "This node is longer than a result may be ({limit} characters), even shortened. Read \
+         it in parts with query_nodes: its id in \"ids\" and a few \"fields\"."
+    )))
 }
 
 fn describe_layer(document: &Document, host: &Host, node: &Node, result: &mut Value) {
@@ -182,8 +233,76 @@ pub(crate) fn find_bounds(nodes: &[SceneNode], id: &NodeId, outer: Affine) -> Op
 
 #[cfg(test)]
 mod tests {
-    use crate::tools::testing::{call, call_error, demo_tools};
-    use serde_json::json;
+    use crate::host::Host;
+    use crate::session::{Session, SessionHandle};
+    use crate::tools::testing::{DEMO, call, call_error, demo_session, demo_tools};
+    use crate::tools::{Tools, ToolsConfig};
+    use serde_json::{Value, json};
+
+    /// The demo project with a path layer `outline` of `anchors` anchors.
+    fn tools_with_path(anchors: usize) -> Tools {
+        let mut project: Value = serde_json::from_str(DEMO).unwrap();
+        let anchors: Vec<Value> = (0..anchors)
+            .map(|n| json!({ "point": [n as f64 / anchors as f64, 0.5] }))
+            .collect();
+        project["nodes"].as_array_mut().unwrap().push(json!({
+            "id": "outline", "parent": "scene", "index": "a2", "type": "path",
+            "width": 100, "height": 100,
+            "path": { "subpaths": [{ "closed": true, "anchors": anchors }] }
+        }));
+        let document = moshionly_core::io::parse(&project.to_string()).unwrap();
+        Tools::new(SessionHandle::new(Session::new(document)), Host::new())
+    }
+
+    #[test]
+    fn a_long_outline_is_summed_up_to_keep_the_result_small() {
+        let short = call(&tools_with_path(4), "get_node", json!({ "id": "outline" }));
+        assert_eq!(
+            short["node"]["path"]["subpaths"][0]["anchors"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(short.get("path_note").is_none());
+
+        let tools = tools_with_path(3000);
+        let output = tools.call("get_node", json!({ "id": "outline" }));
+        let text = output.joined_text();
+        assert!(!output.is_error, "{text}");
+        assert!(
+            text.len() <= ToolsConfig::default().max_result_chars,
+            "{}",
+            text.len()
+        );
+        let long: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(long["node"]["path"]["subpaths"], 1);
+        assert_eq!(long["node"]["path"]["anchors"], 3000);
+        assert!(
+            long["path_note"]
+                .as_str()
+                .unwrap()
+                .contains("1 subpath with 3000 anchors"),
+            "{long}"
+        );
+    }
+
+    #[test]
+    fn a_node_too_long_even_shortened_is_refused_with_a_way_to_read_less() {
+        let tools = Tools::with_config(
+            demo_session(),
+            Host::new(),
+            ToolsConfig {
+                max_result_chars: 200,
+                ..ToolsConfig::default()
+            },
+        );
+        let error = call_error(&tools, "get_node", json!({ "id": "card" }));
+        assert!(
+            error.contains("Read it in parts with query_nodes"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn a_layer_comes_with_its_box_children_and_animations() {
