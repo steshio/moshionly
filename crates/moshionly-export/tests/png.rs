@@ -195,3 +195,25 @@ fn a_sequence_never_writes_into_a_folder_with_files() {
     assert!(matches!(result, Err(ExportError::FolderNotEmpty(_))));
     assert_eq!(common::names_in(dir.path()), ["keep.txt"]);
 }
+
+#[test]
+fn jobs_and_their_results_can_move_to_another_thread() {
+    fn movable<T: Send + Sync + 'static>() {}
+    movable::<moshionly_export::ExportJob>();
+    movable::<moshionly_export::Exported>();
+    movable::<ExportError>();
+    movable::<CancelToken>();
+
+    // Run on a worker thread, cancelled from this one.
+    let dir = tempfile::tempdir().unwrap();
+    let job = common::job(Format::Gif, dir.path().join("t.gif"), Settings::default());
+    let cancel = CancelToken::new();
+    let worker = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || job.run(|_| {}, &cancel))
+    };
+    cancel.cancel();
+    let result = worker.join().unwrap();
+    assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
+    assert!(common::names_in(dir.path()).is_empty());
+}

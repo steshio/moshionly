@@ -210,3 +210,26 @@ fn ffprobe_agrees_when_it_is_installed() {
         assert!(report.lines().any(|got| got == line), "{line} in\n{report}");
     }
 }
+
+#[test]
+fn cancelling_an_mp4_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = common::job(
+        Format::Mp4,
+        dir.path().join("stopped.mp4"),
+        Settings::default(),
+    );
+    let cancel = moshionly_export::CancelToken::new();
+    let error = job
+        .run(
+            |progress| {
+                if progress.frames_done == 10 {
+                    cancel.cancel();
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+    assert!(matches!(error, ExportError::Cancelled), "{error}");
+    assert!(common::names_in(dir.path()).is_empty());
+}
