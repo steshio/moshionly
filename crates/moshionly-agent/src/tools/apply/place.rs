@@ -74,7 +74,22 @@ pub(super) fn index(
     place: &Place,
     moving: Option<&NodeId>,
 ) -> Result<String, ToolError> {
-    build::index_at(&batch.scratch, parent, family, place, moving).map_err(|error| match error {
+    build::index_at(&batch.scratch, parent, family, place, moving)
+        .map_err(|error| explain(batch, args, error, parent, family, place, moving))
+}
+
+/// The error for a node that cannot go where it was asked to, in the words
+/// of the operation's fields.
+pub(super) fn explain(
+    batch: &Batch,
+    args: &Args,
+    error: BuildError,
+    parent: Option<&NodeId>,
+    family: Family,
+    place: &Place,
+    moving: Option<&NodeId>,
+) -> ToolError {
+    match error {
         BuildError::NotASibling(sibling) => {
             let field = match place {
                 Place::Before(_) => args.field("before"),
@@ -98,8 +113,27 @@ pub(super) fn index(
                 ),
             )
         }
-        other => ToolError::Rejected(format!("No place could be found for the node: {other}.")),
-    })
+        BuildError::CannotHold { .. } | BuildError::IntoItself(_) | BuildError::Artboard(..) => {
+            ToolError::argument(args.field("parent"), sentence(&error.to_string()))
+        }
+        BuildError::UnknownNode(id) => {
+            ToolError::argument(args.field("id"), format!("There is no node \"{id}\"."))
+        }
+        other => ToolError::Rejected(sentence(&other.to_string())),
+    }
+}
+
+/// A message from core as a sentence: capitalised, with a full stop.
+pub(super) fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut sentence: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    };
+    if !sentence.ends_with('.') {
+        sentence.push('.');
+    }
+    sentence
 }
 
 fn family_word(family: Family) -> &'static str {

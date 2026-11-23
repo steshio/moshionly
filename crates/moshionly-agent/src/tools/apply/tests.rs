@@ -625,3 +625,244 @@ fn edits_are_seen_by_the_other_tools_and_by_subscribers() {
     let node = call(&tools, "get_node", json!({ "id": "dot" }));
     assert_eq!(node["node"]["x"], 10);
 }
+
+fn layer_ids(tools: &Tools, parent: &str) -> Vec<String> {
+    document(tools)
+        .children(&NodeId::from(parent), moshionly_core::Family::Layer)
+        .iter()
+        .map(|id| id.to_string())
+        .collect()
+}
+
+#[test]
+fn move_reorders_and_reparents_keeping_the_layer_in_place() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([{ "op": "move", "id": "badge", "position": "first" }]),
+    );
+    assert_eq!(result["summary"], "Move 1 node");
+    assert_eq!(layer_ids(&tools, "scene"), ["badge", "card"]);
+
+    // Into the card: the badge keeps its spot on the artboard.
+    apply(
+        &tools,
+        json!([{ "op": "move", "id": "badge", "parent": "card", "after": "title" }]),
+    );
+    assert_eq!(
+        layer_ids(&tools, "card"),
+        ["accent", "title", "badge", "dot"]
+    );
+    assert_eq!(field(&tools, "badge", "x"), 40 - 240);
+    assert_eq!(field(&tools, "badge", "y"), 40 - 340);
+    let node = call(&tools, "get_node", json!({ "id": "badge" }));
+    assert_eq!(
+        node["box"],
+        json!({ "x": 40, "y": 40, "width": 120, "height": 48 })
+    );
+
+    // Without keep_position the numbers stay and the layer jumps.
+    apply(
+        &tools,
+        json!([{ "op": "move", "id": "dot", "parent": "scene", "keep_position": false }]),
+    );
+    assert_eq!(field(&tools, "dot", "x"), 500);
+    assert_eq!(
+        layer_ids(&tools, "scene").last().map(String::as_str),
+        Some("dot")
+    );
+}
+
+#[test]
+fn moving_a_layer_to_another_artboard_takes_its_animations_along() {
+    let tools = demo_tools();
+    apply(
+        &tools,
+        json!([{ "op": "move", "id": "dot", "parent": "second" }]),
+    );
+    let document = document(&tools);
+    let animation = document.get(&NodeId::from("dotmove")).unwrap();
+    assert_eq!(animation.parent, Some(NodeId::from("second")));
+}
+
+#[test]
+fn move_explains_what_it_is_not_for() {
+    let tools = demo_tools();
+    let error = refused(&tools, json!([{ "op": "move", "id": "badge", "x": 100 }]));
+    assert_eq!(error["field"], "x");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("use update with \"set\""),
+        "{error}"
+    );
+    let error = refused(
+        &tools,
+        json!([{ "op": "move", "id": "card", "parent": "dot" }]),
+    );
+    assert_eq!(error["field"], "parent");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be placed in ellipse \"dot\""),
+        "{error}"
+    );
+    let error = refused(
+        &tools,
+        json!([{ "op": "move", "id": "card", "parent": "title" }]),
+    );
+    assert_eq!(error["field"], "parent");
+    let error = refused(
+        &tools,
+        json!([{ "op": "move", "id": "second", "parent": "scene" }]),
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot go inside artboard \"scene\""),
+        "{error}"
+    );
+}
+
+#[test]
+fn artboards_can_change_their_order() {
+    let tools = demo_tools();
+    apply(
+        &tools,
+        json!([{ "op": "move", "id": "second", "before": "scene" }]),
+    );
+    let order: Vec<String> = document(&tools)
+        .artboards()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(order, ["second", "scene"]);
+}
+
+#[test]
+fn clone_copies_a_layer_with_its_animations_in_front_of_it() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([{ "op": "clone", "id": "card", "temp_id": "card2",
+                 "offset": { "y": 420 }, "time_offset": 200 }]),
+    );
+    assert_eq!(result["summary"], "Copy 1 layer");
+    let entry = &result["created"][0];
+    let copy = entry["id"].as_str().unwrap();
+    assert_eq!(entry["temp_id"], "card2");
+    let copies = entry["copies"].as_object().unwrap();
+    // The card, its three layers and the three animations on them.
+    assert_eq!(copies.len(), 7);
+    assert_eq!(copies["card"], copy);
+
+    assert_eq!(layer_ids(&tools, "scene"), ["card", copy, "badge"]);
+    assert_eq!(field(&tools, copy, "y"), 340 + 420);
+    assert_eq!(field(&tools, copy, "x"), 240);
+
+    let document = document(&tools);
+    let title_copy = NodeId::from(copies["title"].as_str().unwrap());
+    let fade = document.animations_targeting(&title_copy);
+    assert_eq!(fade.len(), 1);
+    assert_eq!(fade[0].data.span(), Some((700.0, 1700.0)));
+    let dot_copy = NodeId::from(copies["dot"].as_str().unwrap());
+    assert_eq!(
+        document.animations_targeting(&dot_copy)[0].data.span(),
+        Some((800.0, 1400.0))
+    );
+    // The originals are untouched.
+    assert_eq!(
+        document
+            .get(&NodeId::from("titlefade"))
+            .unwrap()
+            .data
+            .span(),
+        Some((500.0, 1500.0))
+    );
+}
+
+#[test]
+fn clones_make_a_stagger_and_can_be_edited_in_the_same_batch() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "clone", "id": "dot", "temp_id": "dot2",
+              "offset": { "x": -80 }, "time_offset": 100 },
+            { "op": "clone", "id": "dot2", "temp_id": "dot3",
+              "offset": { "x": -80 }, "time_offset": 100 },
+            { "op": "update", "ids": ["dot2", "dot3"], "set": { "fill": "#FF5A1F" } },
+        ]),
+    );
+    let third = created_id(&result, "dot3");
+    assert_eq!(field(&tools, &third, "x"), 340);
+    assert_eq!(field(&tools, &third, "fill"), "#FF5A1F");
+    let document = document(&tools);
+    let span = document.animations_targeting(&NodeId::from(third.as_str()))[0]
+        .data
+        .span();
+    assert_eq!(span, Some((800.0, 1400.0)));
+    assert_eq!(result["summary"], "Copy 2 layers and change 2 nodes");
+}
+
+#[test]
+fn an_animation_is_cloned_onto_another_layer() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([{ "op": "clone", "id": "cardfade", "target": "badge", "time_offset": 150 }]),
+    );
+    assert_eq!(result["summary"], "Copy 1 animation");
+    let copy = result["created"][0]["id"].as_str().unwrap();
+    let document = document(&tools);
+    let node = document.get(&NodeId::from(copy)).unwrap();
+    assert_eq!(node.target(), Some(&NodeId::from("badge")));
+    assert_eq!(node.data.span(), Some((150.0, 650.0)));
+
+    // Onto a layer of another artboard, it moves to that timeline.
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "add", "temp_id": "box", "parent": "second",
+              "node": { "type": "rect", "fill": "#000000" } },
+            { "op": "clone", "id": "cardfade", "target": "box" },
+        ]),
+    );
+    let copy = result["created"][1]["id"].as_str().unwrap();
+    let document = self::document(&tools);
+    assert_eq!(
+        document.get(&NodeId::from(copy)).unwrap().parent,
+        Some(NodeId::from("second"))
+    );
+
+    let error = refused(
+        &tools,
+        json!([{ "op": "clone", "id": "cardfade", "time_offset": -100 }]),
+    );
+    assert_eq!(error["field"], "time_offset");
+    let error = refused(
+        &tools,
+        json!([{ "op": "clone", "id": "badge", "target": "dot" }]),
+    );
+    assert_eq!(error["field"], "target");
+}
+
+#[test]
+fn an_artboard_is_cloned_to_the_right_with_its_timeline() {
+    let tools = demo_tools();
+    let result = apply(&tools, json!([{ "op": "clone", "id": "scene" }]));
+    let copy = result["created"][0]["id"].as_str().unwrap();
+    assert_eq!(field(&tools, copy, "x"), 2080);
+    let overview = call(&tools, "get_overview", json!({}));
+    assert_eq!(overview["artboards"][2]["animations"], 3);
+    assert_eq!(overview["artboards"][2]["layers"], 5);
+    let error = refused(
+        &tools,
+        json!([{ "op": "clone", "id": "scene", "parent": "second" }]),
+    );
+    assert_eq!(error["field"], "parent");
+}

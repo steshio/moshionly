@@ -50,8 +50,10 @@ pub(super) struct Batch {
     temp: HashMap<String, NodeId>,
     /// Each node the batch made, as it is reported.
     pub created: Vec<Value>,
-    /// Number of nodes changed by `update` and `move`.
+    /// Number of nodes changed by `update`.
     pub updated: usize,
+    /// Number of nodes put somewhere else by `move`.
+    pub moved: usize,
     /// Number of nodes that went, counting what went along.
     pub removed: usize,
     /// Number of artboards whose duration was set.
@@ -71,6 +73,7 @@ impl Batch {
             temp: HashMap::new(),
             created: Vec::new(),
             updated: 0,
+            moved: 0,
             removed: 0,
             durations: 0,
             warnings: Vec::new(),
@@ -308,41 +311,42 @@ impl Batch {
             1 => format!("1 {one}"),
             n => format!("{n} {many}"),
         };
-        let mut layers = 0;
-        let mut animations = 0;
-        let mut clones = 0;
+        // New nodes and copies, as layers and animations.
+        let mut added = [0usize; 2];
+        let mut copied = [0usize; 2];
         for entry in &self.created {
             let family = entry["type"]
                 .as_str()
                 .and_then(NodeType::parse)
-                .map(NodeType::family);
+                .map_or(Family::Layer, NodeType::family);
+            let slot = usize::from(family == Family::Animation);
             if entry.get("copies").is_some() {
-                clones += 1;
-            } else if family == Some(Family::Animation) {
-                animations += 1;
+                copied[slot] += 1;
             } else {
-                layers += 1;
+                added[slot] += 1;
             }
         }
         let mut parts = Vec::new();
-        match (layers, animations) {
-            (0, 0) => {}
-            (layers, 0) => parts.push(format!("add {}", count(layers, "layer", "layers"))),
-            (0, animations) => parts.push(format!(
-                "add {}",
-                count(animations, "animation", "animations")
-            )),
-            (layers, animations) => parts.push(format!(
-                "add {} and {}",
-                count(layers, "layer", "layers"),
-                count(animations, "animation", "animations")
-            )),
-        }
-        if clones > 0 {
-            parts.push(format!("copy {}", count(clones, "layer", "layers")));
+        for (verb, [layers, animations]) in [("add", added), ("copy", copied)] {
+            match (layers, animations) {
+                (0, 0) => {}
+                (layers, 0) => parts.push(format!("{verb} {}", count(layers, "layer", "layers"))),
+                (0, animations) => parts.push(format!(
+                    "{verb} {}",
+                    count(animations, "animation", "animations")
+                )),
+                (layers, animations) => parts.push(format!(
+                    "{verb} {} and {}",
+                    count(layers, "layer", "layers"),
+                    count(animations, "animation", "animations")
+                )),
+            }
         }
         if self.updated > 0 {
             parts.push(format!("change {}", count(self.updated, "node", "nodes")));
+        }
+        if self.moved > 0 {
+            parts.push(format!("move {}", count(self.moved, "node", "nodes")));
         }
         if self.removed > 0 {
             parts.push(format!("remove {}", count(self.removed, "node", "nodes")));

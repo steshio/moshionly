@@ -10,6 +10,7 @@ mod add;
 mod batch;
 mod change;
 mod place;
+mod structure;
 mod warn;
 
 use serde_json::{Value, json};
@@ -37,6 +38,14 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         which is replaced whole.\n\
         - remove: \"id\" or \"ids\", with everything inside them and every animation that \
         targets them.\n\
+        - move: put \"id\" in another \"parent\" or at another place among its siblings. A \
+        layer keeps its spot on the artboard and takes its animations along. (To shift a layer \
+        on the artboard, update its x and y.)\n\
+        - clone: copy the layer \"id\" with everything inside it and the animations on all of \
+        it, just in front of the original unless placed otherwise, shifted by \"offset\" \
+        {x, y} and its animations by \"time_offset\" ms; good for repeating an element with a \
+        stagger. Cloning an animation copies it onto the row below, onto \"target\" if given. \
+        \"temp_id\" names the copy; the result maps every original id to its copy.\n\
         - set_duration: the length of an \"artboard\"'s timeline, in milliseconds.\n\
         Where a node goes among its siblings: \"position\" \"first\" or \"last\" (the default: \
         frontmost layer, bottom timeline row), or \"before\" or \"after\" a sibling's id. Units: \
@@ -57,6 +66,9 @@ const MAX_LISTED: usize = 100;
 struct Operation {
     name: &'static str,
     fields: &'static [&'static str],
+    /// Looks at the operation before its fields are checked, to answer a
+    /// common mistake better than "not a field" would.
+    check: Option<fn(&Args) -> Result<(), ToolError>>,
     run: fn(&mut Batch, &Args) -> Result<(), ToolError>,
 }
 
@@ -64,21 +76,37 @@ const OPERATIONS: &[Operation] = &[
     Operation {
         name: "add",
         fields: add::FIELDS,
+        check: None,
         run: add::add,
     },
     Operation {
         name: "update",
         fields: change::UPDATE_FIELDS,
+        check: None,
         run: change::update,
     },
     Operation {
         name: "remove",
         fields: change::REMOVE_FIELDS,
+        check: None,
         run: change::remove,
+    },
+    Operation {
+        name: "move",
+        fields: structure::MOVE_FIELDS,
+        check: Some(structure::check_move),
+        run: structure::move_node,
+    },
+    Operation {
+        name: "clone",
+        fields: structure::CLONE_FIELDS,
+        check: None,
+        run: structure::clone,
     },
     Operation {
         name: "set_duration",
         fields: change::DURATION_FIELDS,
+        check: None,
         run: change::set_duration,
     },
 ];
@@ -116,7 +144,7 @@ fn schema() -> Value {
         },
         "temp_id": {
             "type": "string",
-            "description": "add: a name of your choosing for the new node, such as \"title\". Later operations of this call can use it wherever an id goes. The result gives the real id."
+            "description": "add, clone: a name of your choosing for the new node or copy, such as \"title\". Later operations of this call can use it wherever an id goes. The result gives the real id."
         },
         "id": {
             "type": "string",
@@ -133,7 +161,7 @@ fn schema() -> Value {
         },
         "parent": {
             "type": "string",
-            "description": "add: the artboard or group a layer goes in, or the artboard or animation_group an animation goes in."
+            "description": "add, move, clone: the artboard or group a layer goes in, or the artboard or animation_group an animation goes in."
         },
         "position": {
             "type": "string",
@@ -147,6 +175,24 @@ fn schema() -> Value {
         "after": {
             "type": "string",
             "description": "Place the node just after this sibling (in front of it, for layers)."
+        },
+        "keep_position": {
+            "type": "boolean",
+            "description": "move: keep the layer where it is on the artboard, adjusting x, y, rotation and scale for the new parent. Default true."
+        },
+        "offset": {
+            "type": "object",
+            "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+            "additionalProperties": false,
+            "description": "clone: how far to shift the copy from the original, in pixels, for example {\"x\": 0, \"y\": 120}."
+        },
+        "time_offset": {
+            "type": "number",
+            "description": "clone: milliseconds to shift the copied animations by, so copies play one after another."
+        },
+        "target": {
+            "type": "string",
+            "description": "clone of an animation: the layer the copy animates."
         },
         "artboard": {
             "type": "string",
@@ -292,6 +338,9 @@ fn run_operation(batch: &mut Batch, index: usize, value: &Value) -> Result<(), T
         ));
     };
     batch.begin(index, operation.name);
+    if let Some(check) = operation.check {
+        check(&generic)?;
+    }
     let args = Args::nested(path, value, operation.fields)?;
     (operation.run)(batch, &args)
 }
