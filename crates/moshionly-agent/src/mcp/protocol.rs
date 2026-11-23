@@ -46,6 +46,8 @@ pub(crate) mod code {
     pub const METHOD_NOT_FOUND: i64 = -32601;
     /// The parameters are wrong, including an unknown tool.
     pub const INVALID_PARAMS: i64 = -32602;
+    /// The server failed.
+    pub const INTERNAL_ERROR: i64 = -32603;
     /// HTTP headers and body disagree.
     pub const HEADER_MISMATCH: i64 = -32020;
     /// The protocol version is not one this server speaks.

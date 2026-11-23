@@ -5,7 +5,10 @@
 //! where every request carries its version, and the earlier revisions
 //! (`2025-03-26` to `2025-11-25`) that open with an `initialize`
 //! handshake. Only tools are offered; there are no resources or prompts.
+//!
+//! [`http::HttpServer`] serves it on this machine's loopback address.
 
+pub mod http;
 mod protocol;
 
 use serde_json::Value;
