@@ -11,6 +11,7 @@ mod animate;
 mod design;
 mod easing;
 mod text;
+mod values;
 
 use egui::{RichText, ScrollArea, Ui};
 use moshionly_core::Edit;
@@ -84,6 +85,7 @@ struct Sections {
     shape: bool,
     actions: bool,
     easing: bool,
+    values: bool,
     settings: bool,
 }
 
@@ -101,6 +103,7 @@ impl Default for Sections {
             shape: true,
             actions: true,
             easing: true,
+            values: true,
             settings: true,
         }
     }

@@ -11,7 +11,7 @@ use moshionly_core::schema::{self, FieldInfo};
 use moshionly_core::{Edit, Node, NodeId, NodeType};
 use serde_json::Value;
 
-use super::{Bind, animate::action_name, easing};
+use super::{Bind, animate::action_name, easing, values};
 use crate::{
     editor::actions::retime,
     theme::icons,
@@ -46,6 +46,7 @@ pub(super) fn action_settings(ui: &mut Ui, bind: &mut Bind<'_>, node: &Node) {
     padded(ui, |ui| timing(ui, bind, node));
     ui.add_space(theme.space.md);
     easing::easing_section(ui, bind, node);
+    values::values_section(ui, bind, node);
     settings_section(ui, bind, node);
 
     let result = if delete {
