@@ -233,7 +233,10 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
                     if modifiers.shift || modifiers.command {
                         panel.editor.selection.toggle(row.id.clone());
                     } else {
+                        // About the layer, even one already selected: its
+                        // actions are let go.
                         panel.editor.selection.select(row.id.clone());
+                        panel.editor.set_actions([]);
                     }
                 } else if shown.response.secondary_clicked()
                     && !panel.editor.selection.contains(&row.id)

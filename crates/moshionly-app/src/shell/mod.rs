@@ -369,8 +369,13 @@ impl Shell {
             let times = self.pictures.times();
             self.quality.observe_renders(times.finished(), times.last());
         }
-        self.editor
-            .set_animating(self.inspector.tab == InspectorTab::Animate);
+        let animate = self.inspector.tab == InspectorTab::Animate;
+        if self.editor.is_animating() && !animate {
+            // The Design tab works on layers and does not show actions:
+            // leaving the Animate tab lets go of the selected ones.
+            self.editor.set_actions([]);
+        }
+        self.editor.set_animating(animate);
         self.follow_selection();
         self.dropped_files(&ctx);
         self.pen_keys(&ctx);
@@ -868,16 +873,18 @@ impl Shell {
         }
         edit_commands::enable_edit_commands(&mut self.commands, &self.editor);
         // Selected actions can be deleted, copied and grouped on their own.
-        if !self.editor.actions().is_empty() {
+        if self.on_actions() {
             for id in [
                 CommandId::Delete,
-                CommandId::Deselect,
                 CommandId::Duplicate,
                 CommandId::Group,
                 CommandId::Ungroup,
             ] {
                 self.commands.set_enabled(id, true);
             }
+        }
+        if !self.editor.actions().is_empty() {
+            self.commands.set_enabled(CommandId::Deselect, true);
         }
         let has_artboards = !self.editor.document().artboards().is_empty();
         self.commands
@@ -957,6 +964,13 @@ impl Shell {
         }
     }
 
+    /// Whether Delete, Duplicate, Group and Ungroup work on the selected
+    /// actions rather than the selected layers: when actions are selected
+    /// and the Animate tab, which shows them, is showing.
+    fn on_actions(&self) -> bool {
+        self.inspector.tab == InspectorTab::Animate && !self.editor.actions().is_empty()
+    }
+
     /// Carries out a command if it is one the shell owns. Returns false for
     /// the others.
     fn run(&mut self, ctx: &Context, id: CommandId) -> bool {
@@ -976,16 +990,16 @@ impl Shell {
             CommandId::CommandPalette => self.palette.toggle(),
             CommandId::Undo => self.undo_or_redo(true),
             CommandId::Redo => self.undo_or_redo(false),
-            CommandId::Delete if !self.editor.actions().is_empty() => {
+            CommandId::Delete if self.on_actions() => {
                 self.action_command(BarCommand::Delete);
             }
-            CommandId::Duplicate if !self.editor.actions().is_empty() => {
+            CommandId::Duplicate if self.on_actions() => {
                 self.action_command(BarCommand::Duplicate);
             }
-            CommandId::Group if !self.editor.actions().is_empty() => {
+            CommandId::Group if self.on_actions() => {
                 self.action_command(BarCommand::Group);
             }
-            CommandId::Ungroup if !self.editor.actions().is_empty() => {
+            CommandId::Ungroup if self.on_actions() => {
                 self.action_command(BarCommand::Ungroup);
             }
             CommandId::Delete => self.delete_selection(),

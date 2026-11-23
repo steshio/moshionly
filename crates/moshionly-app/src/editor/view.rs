@@ -141,7 +141,9 @@ impl Editor {
 
     /// Updates the selection for a click at `world`: shift adds or removes,
     /// ⌘ picks the deepest layer. A click on an empty artboard selects it;
-    /// elsewhere on nothing it clears the selection.
+    /// elsewhere on nothing it clears the selection. A plain click on a
+    /// layer is about that layer, even one already selected: it lets go of
+    /// the selected actions.
     pub fn click(&mut self, world: Pos2, modifiers: Modifiers, zoom: f32) {
         let pick = if modifiers.command {
             Pick::Deep
@@ -160,7 +162,10 @@ impl Editor {
         }
         match (target, modifiers.shift) {
             (Some(id), true) => self.selection.toggle(id),
-            (Some(id), false) => self.selection.select(id),
+            (Some(id), false) => {
+                self.selection.select(id);
+                self.actions.clear();
+            }
             (None, true) => {}
             (None, false) => self.selection.clear(),
         }
@@ -363,6 +368,24 @@ pub(crate) mod tests {
         // Off every artboard, nothing.
         editor.click(pos2(1050.0, 500.0), none, 1.0);
         assert!(editor.selection.is_empty());
+    }
+
+    #[test]
+    fn a_plain_click_on_a_layer_lets_go_of_the_selected_actions() {
+        let mut editor = editor();
+        editor.selection.select(id("loose"));
+        let fade = editor.add_actions(NodeType::FadeIn, 0.0).unwrap();
+        assert_eq!(editor.actions(), fade.as_slice());
+        // Shift adds and removes layers; the actions stay.
+        editor.click(pos2(700.0, 650.0), Modifiers::SHIFT, 1.0);
+        editor.click(pos2(700.0, 650.0), Modifiers::SHIFT, 1.0);
+        assert_eq!(editor.selection.ids(), [id("loose")]);
+        assert_eq!(editor.actions(), fade.as_slice());
+        // A plain click on the layer, though it is selected already, is
+        // about the layer.
+        editor.click(pos2(720.0, 120.0), Modifiers::NONE, 1.0);
+        assert_eq!(editor.selection.ids(), [id("loose")]);
+        assert!(editor.actions().is_empty());
     }
 
     #[test]

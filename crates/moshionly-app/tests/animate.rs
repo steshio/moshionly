@@ -270,6 +270,85 @@ fn leaving_the_animate_tab_pauses_playback() {
     }
 }
 
+/// Clicks the bar of `action` on the timeline: the action and its layer
+/// are selected, and the Animate tab shows it.
+fn select_action(harness: &mut Harness<'_, Shell>, action: &NodeId) {
+    let at = bar_center(harness, action);
+    click(harness, at);
+    assert_eq!(
+        harness.state().editor().actions(),
+        std::slice::from_ref(action)
+    );
+    assert_eq!(harness.state().inspector_tab(), InspectorTab::Animate);
+}
+
+#[test]
+fn layer_commands_work_on_the_layer_once_the_person_turns_to_it() {
+    let mut harness = demo();
+    let (dot, dotin) = (NodeId::from("dot"), NodeId::from("dotin"));
+    let undo = |harness: &Harness<'_, Shell>| harness.state().editor().undo_label();
+
+    // In the Animate tab, Delete works on the selected action.
+    select_action(&mut harness, &dotin);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    harness.run();
+    assert_eq!(undo(&harness).as_deref(), Some("Undo Duplicate action"));
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // Switching to the Design tab turns to the layer.
+    select_action(&mut harness, &dotin);
+    harness.key_press(Key::M);
+    harness.run();
+    assert!(harness.state().editor().actions().is_empty());
+    assert_eq!(
+        harness.state().editor().selection.ids(),
+        std::slice::from_ref(&dot)
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    harness.run();
+    assert_eq!(
+        undo(&harness).as_deref(),
+        Some("Undo Duplicate"),
+        "the layer"
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // So does clicking the layer on the canvas, though it is selected.
+    // At two seconds the dot has grown in; a click there picks it, as it
+    // is in the card's group, which is open.
+    select_action(&mut harness, &dotin);
+    harness.state_mut().editor_mut().set_playhead(2000.0);
+    harness.run();
+    let at = screen(&harness, pos2(240.0 + 526.0, 340.0 + 326.0));
+    click(&mut harness, at);
+    assert_eq!(
+        harness.state().editor().selection.ids(),
+        std::slice::from_ref(&dot)
+    );
+    assert!(harness.state().editor().actions().is_empty());
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    assert_eq!(undo(&harness).as_deref(), Some("Undo Group"), "the layer");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // And clicking its row in the layer list.
+    select_action(&mut harness, &dotin);
+    harness
+        .get_all_by_label("Dot")
+        .next()
+        .expect("the dot's row")
+        .click();
+    harness.run();
+    assert!(harness.state().editor().actions().is_empty());
+    harness.key_press(Key::Backspace);
+    harness.run();
+    assert_eq!(undo(&harness).as_deref(), Some("Undo Delete layer"));
+    assert!(!harness.state().editor().document().contains(&dot));
+}
+
 #[test]
 fn the_timeline_context_menu_works_on_the_selected_actions() {
     let mut harness = demo();
