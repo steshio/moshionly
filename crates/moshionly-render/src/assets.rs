@@ -5,12 +5,15 @@
 //! [`moshionly_core::io::resolve_asset`] says which. The
 //! [`AssetLoader`] reads and decodes the image once and keeps the decoded
 //! pixels, up to a memory budget, so frames after the first cost nothing.
-//! A file that changes on disk is read again.
+//! A file that changes on disk is read again. A kept image is found by a
+//! short sample of its source, so a `data:` URI megabytes long is not
+//! hashed whole on every frame.
 //!
 //! Decoding uses the `image` crate, which is the same code on every
 //! platform. Photos are turned upright by their orientation tag.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -67,16 +70,45 @@ impl Default for AssetLoader {
 /// A decoded image and what it was decoded from.
 #[derive(Clone)]
 struct Entry {
+    /// The source the image was decoded from.
+    source: String,
     image: sk::Image,
     /// For files, when the file was last changed, to notice edits.
     modified: Option<SystemTime>,
+    /// The memory the image and its source take.
     bytes: usize,
     used: u64,
 }
 
+/// What a kept image is found by: the length of its source and a hash of a
+/// sample of it. See [`key`].
+type Key = (usize, u64);
+
+/// The key of `source`. A `data:` URI can be megabytes long, and hashing
+/// all of it would cost more on every frame than drawing the image, so
+/// only its start, its end and a few short runs between are hashed. The
+/// source kept with the image is compared whole to confirm a match.
+fn key(source: &str) -> Key {
+    const RUN: usize = 64;
+    const RUNS: usize = 64;
+    let bytes = source.as_bytes();
+    let mut hasher = DefaultHasher::new();
+    if bytes.len() <= RUN * (RUNS + 2) {
+        bytes.hash(&mut hasher);
+    } else {
+        let step = (bytes.len() - RUN) / (RUNS + 1);
+        for run in 0..=RUNS + 1 {
+            let start = (run * step).min(bytes.len() - RUN);
+            bytes[start..start + RUN].hash(&mut hasher);
+        }
+        bytes[bytes.len() - RUN..].hash(&mut hasher);
+    }
+    (bytes.len(), hasher.finish())
+}
+
 struct Store {
     project_file: Option<PathBuf>,
-    images: HashMap<String, Entry>,
+    images: HashMap<Key, Entry>,
     bytes: usize,
     budget: usize,
     clock: u64,
@@ -178,41 +210,44 @@ impl Store {
     fn kept(&mut self, source: &str, modified: Option<SystemTime>) -> Option<sk::Image> {
         self.clock += 1;
         let clock = self.clock;
-        let entry = self.images.get_mut(source)?;
-        if entry.modified != modified {
+        let entry = self.images.get_mut(&key(source))?;
+        if entry.modified != modified || entry.source != source {
             return None;
         }
         entry.used = clock;
         Some(entry.image.clone())
     }
 
-    /// Keeps a decoded image, making room for it.
+    /// Keeps a decoded image, making room for it. Another source with the
+    /// same key gives way.
     fn keep(&mut self, source: &str, image: sk::Image, modified: Option<SystemTime>) {
         self.clock += 1;
-        let bytes = image_bytes(&image);
+        let bytes = image_bytes(&image) + source.len();
         let entry = Entry {
+            source: source.to_owned(),
             image,
             modified,
             bytes,
             used: self.clock,
         };
-        if let Some(old) = self.images.insert(source.to_owned(), entry) {
+        let key = key(source);
+        if let Some(old) = self.images.insert(key, entry) {
             self.bytes -= old.bytes;
         }
         self.bytes += bytes;
-        self.trim(Some(source));
+        self.trim(Some(key));
     }
 
     /// Forgets the least recently used images until the rest fit the
     /// budget, keeping `keep`.
-    fn trim(&mut self, keep: Option<&str>) {
+    fn trim(&mut self, keep: Option<Key>) {
         while self.bytes > self.budget {
             let oldest = self
                 .images
                 .iter()
-                .filter(|(source, _)| Some(source.as_str()) != keep)
+                .filter(|(key, _)| Some(**key) != keep)
                 .min_by_key(|(_, entry)| entry.used)
-                .map(|(source, _)| source.clone());
+                .map(|(key, _)| *key);
             let Some(oldest) = oldest else {
                 break;
             };
@@ -466,11 +501,12 @@ pub(crate) mod tests {
     #[test]
     fn images_are_kept_within_the_budget() {
         let loader = AssetLoader::default();
-        // 10 by 10 is 400 bytes, 533 with the smaller copies.
+        // 10 by 10 is 400 bytes, 533 with the smaller copies, and the
+        // source is kept too.
         let a = data_uri("image/png", &png(10, 10, |_, _| [1, 2, 3, 255]));
         let b = data_uri("image/png", &png(10, 10, |_, _| [4, 5, 6, 255]));
         let first = loader.load(&a).unwrap();
-        assert_eq!(loader.memory_used(), 533);
+        assert_eq!(loader.memory_used(), 533 + a.len());
         assert_eq!(
             loader.load(&a).unwrap().unique_id(),
             first.unique_id(),
@@ -478,10 +514,31 @@ pub(crate) mod tests {
         );
         let loader = loader.with_budget(600);
         loader.load(&b).unwrap();
-        assert_eq!(loader.memory_used(), 533, "the older image made room");
+        assert_eq!(
+            loader.memory_used(),
+            533 + b.len(),
+            "the older image made room"
+        );
         assert_ne!(loader.load(&a).unwrap().unique_id(), first.unique_id());
         loader.clear();
         assert_eq!(loader.memory_used(), 0);
+    }
+
+    #[test]
+    fn long_sources_that_differ_only_between_their_samples_are_told_apart() {
+        let loader = AssetLoader::default();
+        // The same length, start and end; the images inside differ.
+        let source = |width, height| {
+            let uri = data_uri("image/png", &png(width, height, |_, _| [9, 9, 9, 255]));
+            format!("{}{uri}{}", " ".repeat(20_000), " ".repeat(20_000))
+        };
+        let (wide, tall) = (source(4, 2), source(2, 4));
+        assert_eq!(wide.len(), tall.len());
+        assert_eq!(key(&wide), key(&tall), "the samples miss the middle");
+        assert_eq!(loader.natural_size(&wide), Ok((4, 2)));
+        assert_eq!(loader.natural_size(&tall), Ok((2, 4)));
+        assert_eq!(loader.natural_size(&wide), Ok((4, 2)));
+        assert_ne!(key(&wide), key(&wide.replacen(' ', "x", 1)));
     }
 
     #[test]
