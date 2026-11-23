@@ -14,9 +14,11 @@
 //! | [`progress`] | [`Progress`] reports and the [`CancelToken`] |
 //! | [`error`] | [`ExportError`]: why an export stopped |
 //! | [`ffmpeg`] | [`Ffmpeg`]: finding the program that writes WebM and ProRes |
+//! | [`available`] | [`available_formats`]: what can be written right now, and why not |
 
 #![warn(missing_docs)]
 
+pub mod available;
 pub mod error;
 pub mod ffmpeg;
 pub mod format;
@@ -30,6 +32,7 @@ pub mod progress;
 pub mod settings;
 pub mod timing;
 
+pub use available::{Availability, availability, availability_with, available_formats};
 pub use error::ExportError;
 pub use ffmpeg::Ffmpeg;
 pub use format::{Format, SizeLimits};

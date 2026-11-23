@@ -75,9 +75,12 @@ impl Ffmpeg {
 
     /// Whether this `ffmpeg` can write `format`, or why not.
     pub fn check(&self, format: Format) -> Result<(), String> {
-        let Some(encoder) = encoder_for(format) else {
-            return Err(format!("{format} is not written with ffmpeg"));
-        };
+        self.encoders()
+            .and_then(|encoders| encoders.check(&self.path, format))
+    }
+
+    /// The encoders this `ffmpeg` was built with.
+    pub(crate) fn encoders(&self) -> Result<Encoders, String> {
         let output = Command::new(&self.path)
             .args(["-hide_banner", "-encoders"])
             .stdin(Stdio::null())
@@ -89,17 +92,33 @@ impl Ffmpeg {
                     INSTALL_HINT
                 )
             })?;
-        let encoders = String::from_utf8_lossy(&output.stdout);
-        if encoders
-            .lines()
-            .any(|line| line.split_whitespace().nth(1) == Some(encoder))
-        {
+        let listing = String::from_utf8_lossy(&output.stdout);
+        Ok(Encoders(
+            listing
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(1))
+                .map(str::to_owned)
+                .collect(),
+        ))
+    }
+}
+
+/// The names of the encoders an `ffmpeg` has.
+pub(crate) struct Encoders(Vec<String>);
+
+impl Encoders {
+    /// Whether these encoders can write `format`, or why not.
+    pub(crate) fn check(&self, ffmpeg: &Path, format: Format) -> Result<(), String> {
+        let Some(encoder) = encoder_for(format) else {
+            return Err(format!("{format} is not written with ffmpeg"));
+        };
+        if self.0.iter().any(|name| name == encoder) {
             Ok(())
         } else {
             Err(format!(
                 "the ffmpeg at {} was built without the {encoder} encoder; install a full \
                  build of ffmpeg",
-                self.path.display()
+                ffmpeg.display()
             ))
         }
     }
