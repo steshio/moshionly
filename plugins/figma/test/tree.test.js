@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { convertSelection } = require('../code.js');
-const { page, frame, group, instance, section, rect, node } = require('../fixtures/figma.js');
+const { page, frame, group, instance, section, rect, node, solid } = require('../fixtures/figma.js');
 
 const convert = (selection) => convertSelection(selection, { fileKey: 'FILE' });
 const byName = (result, name) => result.nodes.find((layer) => layer.name === name);
@@ -211,30 +211,39 @@ test('an auto layout frame with its first layer on top keeps that stacking', asy
 });
 
 test('a top-level frame that does not clip gets a note when something sticks out of it', async () => {
-  const notesFor = async (clipsContent, children) => {
-    const board = frame({ name: 'Open', x: 100, y: 100, width: 400, height: 400, clipsContent }, children);
+  const notesFor = async (clipsContent, children, spec) => {
+    const board = frame(Object.assign({ name: 'Open', x: 100, y: 100, width: 400, height: 400, clipsContent }, spec), children);
     page(board);
     return (await convert([board])).notes.map((note) => note.message);
   };
-  const out = () => rect({ name: 'Out', x: 380, y: 20, width: 50, height: 50 });
+  const painted = (spec) => rect(Object.assign({ fills: [solid(0.2, 0.4, 0.9)] }, spec));
+  const out = () => painted({ name: 'Out', x: 380, y: 20, width: 50, height: 50 });
   const sticking = await notesFor(false, [out()]);
   assert.equal(sticking.length, 1);
   assert.match(sticking[0], /Clip content is off/);
   assert.deepEqual(await notesFor(true, [out()]), [], 'a frame that clips cuts it off in Figma too');
-  assert.deepEqual(await notesFor(false, [rect({ name: 'In', x: 10, y: 10, width: 380, height: 380 })]), []);
-  assert.deepEqual(await notesFor(false, [rect({ name: 'Edge', x: 0, y: 0, width: 400.3, height: 400 })]), [], 'a fraction of a pixel does not count');
+  assert.deepEqual(await notesFor(false, [painted({ name: 'In', x: 10, y: 10, width: 380, height: 380 })]), []);
+  assert.deepEqual(await notesFor(false, [painted({ name: 'Edge', x: 0, y: 0, width: 400.3, height: 400 })]), [], 'a fraction of a pixel does not count');
   assert.deepEqual(await notesFor(false, [Object.assign(out(), { visible: false })]), [], 'hidden layers show nowhere');
+  assert.deepEqual(await notesFor(false, [Object.assign(out(), { opacity: 0 })]), [], 'fully transparent layers show nowhere');
+  assert.deepEqual(await notesFor(false, [rect({ name: 'Empty', x: 380, y: 20, width: 50, height: 50 })]), [], 'a layer that paints nothing shows nowhere');
   assert.deepEqual(
     await notesFor(false, [frame({ name: 'Window', x: 300, y: 0, width: 100, height: 100 }, [out()])]),
     [],
     'a frame inside that clips cuts it off first',
   );
   assert.equal(
-    (await notesFor(false, [group({ name: 'Cluster', x: 300, y: 0, width: 100, height: 100 }, [rect({ name: 'Far', x: 90, y: 0, width: 50, height: 50 })])])).length,
+    (await notesFor(false, [group({ name: 'Cluster', x: 300, y: 0, width: 100, height: 100 }, [painted({ name: 'Far', x: 90, y: 0, width: 50, height: 50 })])])).length,
     1,
     'layers inside a group count',
   );
   // A shadow reaching past the edge, as Figma reports it in the render bounds.
-  const shadowed = rect({ name: 'Shadowed', x: 350, y: 10, width: 40, height: 40, absoluteRenderBounds: { x: 440, y: 105, width: 70, height: 60 } });
+  const shadowed = painted({ name: 'Shadowed', x: 350, y: 10, width: 40, height: 40, absoluteRenderBounds: { x: 440, y: 105, width: 70, height: 60 } });
   assert.equal((await notesFor(false, [shadowed])).length, 1);
+  // In a turned frame, Figma's upright bounds of a layer well inside it reach past the edge; the layer itself does not.
+  const turned = await notesFor(false, [painted({ name: 'Inset', x: 100, y: 100, width: 200, height: 200 })], { rotation: 45 });
+  assert.equal(turned.length, 1, 'only the note that the frame arrives upright');
+  assert.match(turned[0], /upright/);
+  const turnedOut = await notesFor(false, [out()], { rotation: 45 });
+  assert.equal(turnedOut.length, 2, 'a layer that does reach past a turned frame is still noted');
 });

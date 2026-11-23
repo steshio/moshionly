@@ -1000,32 +1000,65 @@ function frameStyleReasons(node) {
 /** How far past a frame's edge, in pixels, something must reach to count as sticking out. */
 const OVERFLOW_TOLERANCE = 0.5;
 
+/** Whether a fill or stroke list paints anything. Mixed values (text with several fills) count as painting. */
+function paintsSomething(paints) {
+  if (typeof paints === 'symbol') return true;
+  return Array.from(paints || []).some(isVisiblePaint);
+}
+
+/** Whether a node paints anything of its own, apart from its children. */
+function drawsItself(node) {
+  return paintsSomething(node.fills) || paintsSomething(node.strokes) || visibleEffects(node).length > 0;
+}
+
 /**
  * Whether Figma draws anything inside `frame` past its edges: a visible
- * layer, with its stroke and shadow when Figma reports them, reaching out
- * of the frame's box. Layers inside a frame that clips are only looked at
- * as far as that frame reaches.
+ * layer that paints something, with its stroke and shadow when Figma
+ * reports them, reaching out of the frame's box. Layers inside a frame
+ * that clips are only looked at as far as that frame reaches.
+ *
+ * Figma reports a layer's reach as a box upright on the page. In a turned
+ * frame that box, turned back, is larger than the layer, so there the
+ * layer's own corners are used instead, without its stroke or shadow.
  */
 function sticksOut(frame) {
   const toFrame = invert(absoluteOf(frame));
+  const upright =
+    (Math.abs(toFrame.b) < EPSILON && Math.abs(toFrame.c) < EPSILON) ||
+    (Math.abs(toFrame.a) < EPSILON && Math.abs(toFrame.d) < EPSILON);
   const width = numberOr(frame.width, 0);
   const height = numberOr(frame.height, 0);
-  const outside = (node) => {
+  const corners = (node) => {
+    if (!upright) {
+      const box = ownBox(node);
+      const m = absoluteOf(node);
+      return [
+        [0, 0],
+        [box.width, 0],
+        [0, box.height],
+        [box.width, box.height],
+      ].map(([x, y]) => applyMatrix(m, x, y));
+    }
     const bounds = renderBounds(node);
     return [
       [bounds.x, bounds.y],
       [bounds.x + bounds.width, bounds.y],
       [bounds.x, bounds.y + bounds.height],
       [bounds.x + bounds.width, bounds.y + bounds.height],
-    ].some((corner) => {
+    ];
+  };
+  const outside = (node) =>
+    corners(node).some((corner) => {
       const [x, y] = applyMatrix(toFrame, corner[0], corner[1]);
       const reach = Math.max(-x, -y, x - width, y - height);
       return reach > OVERFLOW_TOLERANCE;
     });
-  };
   const anyOut = (parent) =>
     Array.from(parent.children || []).some(
-      (child) => child.visible !== false && (outside(child) || (!child.clipsContent && anyOut(child))),
+      (child) =>
+        child.visible !== false &&
+        numberOr(child.opacity, 1) > 0 &&
+        ((drawsItself(child) && outside(child)) || (!child.clipsContent && anyOut(child))),
     );
   return anyOut(frame);
 }
@@ -1044,7 +1077,7 @@ async function convertArtboard(node, run) {
   if (node.clipsContent === false && sticksOut(node)) {
     run.note(
       node,
-      'Clip content is off in Figma, so what sticks out of this frame shows there; a Moshionly artboard cuts it off at the edge.',
+      'Clip content is off in Figma, so layers reaching past this frame’s edge can show there; a Moshionly artboard cuts them off at the edge.',
     );
   }
   const board = { id: run.designId(node), type: 'artboard', name: node.name || '' };
