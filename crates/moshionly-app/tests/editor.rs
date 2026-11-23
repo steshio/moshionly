@@ -949,6 +949,42 @@ fn saving_in_another_folder_takes_the_images_along() {
 }
 
 #[test]
+fn undo_after_saving_elsewhere_does_not_point_images_back() {
+    let folder = scratch("save-as-undo");
+    let _ = std::fs::remove_dir_all(&folder);
+    let original = project_with_an_image(&folder.join("a"));
+    // The new folder already has another picture by that name, so the
+    // copy is renamed and the layer pointed at it.
+    let copy = folder.join("b/copy.moshi");
+    std::fs::create_dir_all(folder.join("b/assets")).unwrap();
+    std::fs::write(folder.join("b/assets/hero.png"), b"another picture").unwrap();
+    let mut harness = harness_on(&original);
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(copy.clone()),
+    }));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    let renamed = source_in(harness.state().editor().document(), "photo");
+    assert_ne!(renamed, "assets/hero.png", "the name was taken");
+    assert_eq!(
+        std::fs::read(folder.join("b").join(&renamed)).unwrap(),
+        png()
+    );
+
+    // Repointing the image was part of saving: undo does not reach it.
+    assert_eq!(harness.state().editor().undo_label(), None);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(
+        source_in(harness.state().editor().document(), "photo"),
+        renamed
+    );
+    assert!(!harness.state().editor().has_unsaved_changes());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
 fn a_first_save_copies_images_into_the_project() {
     let folder = scratch("first-save-images");
     let _ = std::fs::remove_dir_all(&folder);

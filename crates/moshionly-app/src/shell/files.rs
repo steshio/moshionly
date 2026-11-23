@@ -205,6 +205,15 @@ impl Shell {
         });
         match result {
             Ok(()) => {
+                // Pointing the images at their copies was part of saving
+                // here, not an edit of the person's: undo must not reach
+                // it, or it would point them back at names that mean
+                // nothing, or another picture, next to the new file.
+                if gathered && self.editor.undo_label() == Some(format!("Undo {GATHERED}")) {
+                    self.editor
+                        .session()
+                        .write(|session| session.forget_last_step());
+                }
                 if let Some(path) = self.editor.session().path() {
                     self.settings.remember(&path);
                 }
