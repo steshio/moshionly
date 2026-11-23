@@ -7,6 +7,7 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod edit_commands;
 mod files;
 mod inspector;
 mod layers_panel;
@@ -93,6 +94,9 @@ pub struct Shell {
     text_edit: Option<TextEditing>,
     /// How files are chosen.
     dialogs: Box<dyn Dialogs>,
+    /// The last layers copied in this window, for a paste chosen from a
+    /// menu (a paste by keyboard brings the system clipboard's text).
+    clipboard: Option<String>,
     /// An action waiting for an answer about unsaved changes.
     pending: Option<FileAction>,
     /// The window may close: the person said so.
@@ -178,6 +182,7 @@ impl Shell {
             pen: None,
             text_edit: None,
             dialogs: Box::new(NoDialogs),
+            clipboard: None,
             pending: None,
             closing: false,
             chat_draft: String::new(),
@@ -622,7 +627,7 @@ impl Shell {
     }
 
     /// Applies edits as one undo step, or says in a toast why not.
-    fn apply_or_toast(&mut self, summary: &str, edits: &[moshionly_core::Edit]) -> bool {
+    pub(super) fn apply_or_toast(&mut self, summary: &str, edits: &[moshionly_core::Edit]) -> bool {
         match self.editor.apply(summary, edits) {
             Ok(changed) => changed,
             Err(error) => {
@@ -645,6 +650,7 @@ impl Shell {
         for id in [CommandId::Delete, CommandId::Deselect] {
             self.commands.set_enabled(id, selected);
         }
+        edit_commands::enable_edit_commands(&mut self.commands, &self.editor);
         let has_artboards = !self.editor.document().artboards().is_empty();
         self.commands
             .set_enabled(CommandId::SelectAll, has_artboards);
@@ -763,6 +769,7 @@ impl Shell {
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
             CommandId::ImportImage => self.import_image_dialog(),
+            other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),
             CommandId::OpenProject => self.request(FileAction::Open(None)),
             CommandId::Save => {
@@ -812,7 +819,7 @@ impl Shell {
     }
 
     /// Removes the selected layers.
-    fn delete_selection(&mut self) {
+    pub(super) fn delete_selection(&mut self) {
         let ids = self.editor.selection.ids().to_vec();
         if ids.is_empty() {
             return;

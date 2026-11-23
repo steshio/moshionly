@@ -489,3 +489,81 @@ fn a_broken_file_is_refused_in_plain_words() {
     assert!(!harness.state().settings().recent.contains(&broken));
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn layers_copy_paste_duplicate_and_group() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the card went on the clipboard");
+    assert!(copied.contains("\"moshionly\":\"clipboard\""));
+    harness.run();
+
+    let groups = |harness: &Harness<'_, Shell>| layers_of(harness, moshionly_core::NodeType::Group);
+    harness.event(egui::Event::Paste(copied));
+    harness.run();
+    assert_eq!(groups(&harness).len(), 2);
+    let pasted = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    assert_ne!(pasted, NodeId::from("card"));
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 4, "a group around the duplicate");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+
+    // Text that is not ours is not pasted.
+    harness.event(egui::Event::Paste("hello".to_owned()));
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+}
+
+#[test]
+fn layers_move_in_the_stacking_order() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let order = |harness: &Harness<'_, Shell>| -> Vec<String> {
+        harness
+            .state()
+            .editor()
+            .document()
+            .children(&NodeId::from("card"), moshionly_core::Family::Layer)
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    assert_eq!(order(&harness), ["accent", "title", "raised", "dot"]);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::CloseBracket);
+    harness.run();
+    assert_eq!(order(&harness), ["accent", "raised", "title", "dot"]);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::OpenBracket);
+    harness.run();
+    assert_eq!(order(&harness), ["title", "accent", "raised", "dot"]);
+}

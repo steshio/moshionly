@@ -17,7 +17,6 @@ name = "moshionly"
 path = "src/main.rs"
 
 [dependencies]
-arboard = { version = "3.7", default-features = false }
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "clipboard",
