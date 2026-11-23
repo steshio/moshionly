@@ -439,7 +439,8 @@ fn shell() {
     }
 }
 
-/// The window with the chat panel open and the Animate tab showing.
+/// The window with the chat panel open and the Animate tab showing the
+/// card in the middle of its animation.
 #[test]
 fn shell_with_chat() {
     if !can_render() {
@@ -450,6 +451,12 @@ fn shell_with_chat() {
         let mut shell = demo_shell();
         shell.panels_mut().chat_open = true;
         shell.inspector_mut().tab = InspectorTab::Animate;
+        let editor = shell.editor_mut();
+        editor
+            .selection
+            .select(moshionly_core::NodeId::from("card"));
+        // The amount is counting up and the dot popping in.
+        editor.set_playhead(1700.0);
         let (path, image) = snapshot("shell-chat", size, variant, move |ui| {
             shell.show(ui);
         });
@@ -533,7 +540,7 @@ fn viewport() {
     }
 }
 
-/// The timeline on its own, with the sample scene's actions.
+/// The timeline on its own, with the demo project's actions.
 #[test]
 fn timeline() {
     if !can_render() {
