@@ -5,6 +5,7 @@ use skia_safe as sk;
 
 use crate::draw::Painter;
 use crate::error::{RenderError, RenderWarning};
+use crate::fonts::FontLibrary;
 use crate::frame::{BYTES_PER_PIXEL, Frame};
 use crate::options::{Background, RenderOptions};
 
@@ -13,13 +14,24 @@ use crate::options::{Background, RenderOptions};
 /// A renderer keeps what is worth keeping between frames, so make one and
 /// use it for every frame. It can be created on one thread and used on
 /// another, and shared between threads.
-#[derive(Debug, Default)]
-pub struct Renderer {}
+#[derive(Debug, Clone)]
+pub struct Renderer {
+    fonts: FontLibrary,
+}
 
 impl Renderer {
-    /// A renderer.
-    pub fn new() -> Self {
-        Self::default()
+    /// A renderer that draws text with `fonts`.
+    ///
+    /// Evaluate scenes with the same library as the measurer (it is one),
+    /// so that text is split where it is drawn.
+    pub fn new(fonts: FontLibrary) -> Self {
+        Self { fonts }
+    }
+
+    /// The fonts text is drawn with. They are also the text measurer to
+    /// evaluate scenes with.
+    pub fn fonts(&self) -> &FontLibrary {
+        &self.fonts
     }
 
     /// Renders a scene into a new frame.
@@ -69,7 +81,7 @@ impl Renderer {
         canvas: &sk::Canvas,
         background: Background,
     ) -> Vec<RenderWarning> {
-        let mut painter = Painter::new(canvas);
+        let mut painter = Painter::new(canvas, &self.fonts);
         painter.scene(scene, background);
         painter.into_warnings()
     }
@@ -78,6 +90,10 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn renderer() -> Renderer {
+        Renderer::new(FontLibrary::bundled())
+    }
     use moshionly_core::model::{BlendMode, GradientStop, Shadow};
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
@@ -95,7 +111,7 @@ mod tests {
 
     #[test]
     fn the_background_follows_the_options() {
-        let renderer = Renderer::new();
+        let renderer = renderer();
         let blue = Color::rgb(0, 0, 255);
         let filled = scene(Some(ScenePaint::solid(blue)));
         let options = RenderOptions::new();
@@ -129,7 +145,7 @@ mod tests {
 
     #[test]
     fn scale_and_region_choose_the_pixels() {
-        let renderer = Renderer::new();
+        let renderer = renderer();
         // Black on the left edge, white on the right edge.
         let gradient = scene(Some(ScenePaint::LinearGradient {
             start: Point::new(0.0, 0.0),
@@ -168,7 +184,7 @@ mod tests {
 
     #[test]
     fn a_callers_canvas_is_drawn_on_and_left_as_it_was() {
-        let renderer = Renderer::new();
+        let renderer = renderer();
         let filled = scene(Some(ScenePaint::solid(Color::rgb(255, 0, 0))));
         let mut surface = sk::surfaces::raster_n32_premul((100, 100)).unwrap();
         let canvas = surface.canvas();
@@ -213,7 +229,7 @@ mod tests {
 
     #[test]
     fn nodes_are_drawn_back_to_front_through_nested_transforms() {
-        let renderer = Renderer::new();
+        let renderer = renderer();
         let red = Color::rgb(255, 0, 0);
         let green = Color::rgb(0, 255, 0);
         // A group at (10, 0), scaled 2, holding a 5 by 5 square at (2, 2):
@@ -252,7 +268,7 @@ mod tests {
 
     #[test]
     fn opacity_fades_a_node_as_a_whole() {
-        let renderer = Renderer::new();
+        let renderer = renderer();
         let black = Color::BLACK;
         // Two overlapping squares in a half-transparent group: the overlap
         // is no darker than the rest.
@@ -293,9 +309,7 @@ mod tests {
     fn draw(nodes: Vec<SceneNode>) -> Frame {
         let mut scene = scene(None);
         scene.nodes = nodes;
-        Renderer::new()
-            .render(&scene, &RenderOptions::new())
-            .unwrap()
+        renderer().render(&scene, &RenderOptions::new()).unwrap()
     }
 
     fn group(children: Vec<SceneNode>) -> SceneNode {
@@ -419,7 +433,7 @@ mod tests {
         fn sendable<T: Send + Sync>() {}
         sendable::<Renderer>();
         sendable::<Frame>();
-        let renderer = Renderer::new();
+        let renderer = renderer();
         let scene = scene(Some(ScenePaint::solid(Color::WHITE)));
         let frame = std::thread::spawn(move || renderer.render(&scene, &RenderOptions::new()))
             .join()

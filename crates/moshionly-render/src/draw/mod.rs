@@ -8,27 +8,31 @@ mod effects;
 mod geometry;
 mod paint;
 mod stroke;
+mod text;
 
-use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint};
+use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint, TextContent};
 use moshionly_core::{Color, Rect};
 use skia_safe as sk;
 
 use crate::convert;
 use crate::error::RenderWarning;
+use crate::fonts::FontLibrary;
 use crate::options::Background;
 
 /// Draws scenes onto one canvas and collects what went wrong on the way.
 pub(crate) struct Painter<'a> {
     canvas: &'a sk::Canvas,
+    fonts: &'a FontLibrary,
     warnings: Vec<RenderWarning>,
 }
 
 impl<'a> Painter<'a> {
-    /// A painter for `canvas`. The canvas's current transform is where the
-    /// artboard's top-left corner goes.
-    pub(crate) fn new(canvas: &'a sk::Canvas) -> Self {
+    /// A painter for `canvas`, drawing text with `fonts`. The canvas's
+    /// current transform is where the artboard's top-left corner goes.
+    pub(crate) fn new(canvas: &'a sk::Canvas, fonts: &'a FontLibrary) -> Self {
         Self {
             canvas,
+            fonts,
             warnings: Vec::new(),
         }
     }
@@ -166,8 +170,30 @@ impl<'a> Painter<'a> {
                     }
                 }
             }
-            // TODO: text and images.
-            Content::Text(_) | Content::Image { .. } => {}
+            Content::Text(content) => self.text(node, content, opacity),
+            // TODO: images.
+            Content::Image { .. } => {}
+        }
+    }
+
+    fn text(&mut self, node: &SceneNode, content: &TextContent, opacity: f32) {
+        let family = &content.style.font.family;
+        if !family.trim().is_empty() && !self.fonts.has_family(family) {
+            self.warn(RenderWarning::MissingFont {
+                node: node.id.clone(),
+                family: family.clone(),
+            });
+        }
+        let block = self
+            .fonts
+            .layout(&content.text, &content.style, content.wrap_width);
+        text::draw(self.canvas, content, &block, opacity);
+    }
+
+    /// Notes a warning once per frame.
+    fn warn(&mut self, warning: RenderWarning) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
         }
     }
 
