@@ -1,0 +1,16 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Clips",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Clips","width":300,"height":170,"fill":"#FFFFFF"},
+    {"id":"clipped","parent":"board","index":"a0","type":"group","name":"Clipped","x":20,"y":25,"width":120,"height":120,"clip":true,"corner_radius":24,"fill":"#DFE6E9",
+     "stroke":{"paint":"#2D3436","width":3}},
+    {"id":"tile","parent":"clipped","index":"a0","type":"rect","name":"Tile","x":60,"y":-20,"width":100,"height":100,"rotation":20,"fill":"#0984E3"},
+    {"id":"dot","parent":"clipped","index":"a1","type":"ellipse","name":"Dot","x":-20,"y":70,"width":80,"height":80,"fill":"#E84393"},
+    {"id":"loose","parent":"board","index":"a1","type":"group","name":"Not clipped","x":160,"y":25,"width":120,"height":120,"corner_radius":24,"fill":"#DFE6E9",
+     "stroke":{"paint":"#2D3436","width":3}},
+    {"id":"tile2","parent":"loose","index":"a0","type":"rect","name":"Tile","x":60,"y":-20,"width":100,"height":100,"rotation":20,"fill":"#0984E3"},
+    {"id":"dot2","parent":"loose","index":"a1","type":"ellipse","name":"Dot","x":-20,"y":70,"width":80,"height":80,"fill":"#E84393"}
+  ]
+}

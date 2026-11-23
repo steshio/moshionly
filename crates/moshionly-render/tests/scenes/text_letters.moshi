@@ -1,0 +1,18 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Text animation",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Text animation","width":320,"height":170,"duration":2000,"fill":"#FFFFFF"},
+    {"id":"rise","parent":"board","index":"a0","type":"text","name":"Rise","x":20,"y":16,"content":"Letters rise","font_size":32,"font":{"weight":600},"fill":"#2D3436"},
+    {"id":"grow","parent":"board","index":"a1","type":"text","name":"Grow","x":20,"y":70,"content":"Words grow in","font_size":28,
+     "fill":{"type":"linear_gradient","start":[0,0.5],"end":[1,0.5],"stops":[{"offset":0,"color":"#6C5CE7"},{"offset":1,"color":"#E84393"}]}},
+    {"id":"focus","parent":"board","index":"a2","type":"text","name":"Focus","x":20,"y":120,"content":"Into focus","font_size":28,"fill":"#0984E3"},
+    {"id":"risein","parent":"board","index":"a3","type":"text_in","name":"Rise in","target":"rise","start":0,"end":1000,"easing":{"type":"linear"},
+     "split":"letters","effect":"slide_up","distance":80,"stagger":60},
+    {"id":"growin","parent":"board","index":"a4","type":"text_in","name":"Grow in","target":"grow","start":0,"end":1000,"easing":{"type":"linear"},
+     "split":"words","effect":"scale","scale":0,"stagger":200},
+    {"id":"focusin","parent":"board","index":"a5","type":"text_in","name":"Focus in","target":"focus","start":0,"end":1000,"easing":{"type":"linear"},
+     "split":"letters","effect":"blur","blur":12,"stagger":50}
+  ]
+}

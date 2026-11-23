@@ -1,0 +1,12 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Stars",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Stars","width":320,"height":120,"fill":"#FFFFFF"},
+    {"id":"five","parent":"board","index":"a0","type":"star","name":"Five points","x":16,"y":16,"width":88,"height":88,"fill":"#FDCB6E",
+     "stroke":{"paint":"#E17055","width":3,"join":"round"}},
+    {"id":"eight","parent":"board","index":"a1","type":"star","name":"Eight points, turned","x":116,"y":16,"width":88,"height":88,"points":8,"inner_radius":0.7,"rotation":15,"fill":"#74B9FF"},
+    {"id":"hexagon","parent":"board","index":"a2","type":"star","name":"Hexagon","x":216,"y":16,"width":88,"height":88,"points":3,"inner_radius":1,"fill":"#A29BFE"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Masks",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Masks","width":300,"height":160,"fill":"#F4F5F7"},
+    {"id":"round","parent":"board","index":"a0","type":"mask_group","name":"Round mask","x":20,"y":20,"width":120,"height":120},
+    {"id":"circle","parent":"round","index":"a0","type":"ellipse","name":"Mask","width":120,"height":120,"fill":"#000000"},
+    {"id":"colours","parent":"round","index":"a1","type":"rect","name":"Colours","width":120,"height":120,
+     "fill":{"type":"linear_gradient","start":[0,0],"end":[1,1],"stops":[{"offset":0,"color":"#6C5CE7"},{"offset":1,"color":"#00CEC9"}]}},
+    {"id":"band","parent":"round","index":"a2","type":"rect","name":"Band","y":48,"width":160,"height":24,"rotation":-20,"fill":"#FFFFFF"},
+    {"id":"soft","parent":"board","index":"a1","type":"mask_group","name":"Soft mask","x":160,"y":20,"width":120,"height":120},
+    {"id":"ramp","parent":"soft","index":"a0","type":"rect","name":"Mask","width":120,"height":120,
+     "fill":{"type":"linear_gradient","start":[0,0.5],"end":[1,0.5],"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#00000000"}]}},
+    {"id":"red","parent":"soft","index":"a1","type":"rect","name":"Red","width":120,"height":120,"fill":"#E17055"},
+    {"id":"sun","parent":"soft","index":"a2","type":"star","name":"Sun","x":20,"y":20,"width":80,"height":80,"points":12,"inner_radius":0.75,"fill":"#FDCB6E"}
+  ]
+}

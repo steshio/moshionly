@@ -1,0 +1,14 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Images",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Images","width":440,"height":132,"fill":"#FFFFFF"},
+    {"id":"cover","parent":"board","index":"a0","type":"image","name":"Cover","x":16,"y":16,"width":100,"height":100,"source":"photo.png","fit":"cover","corner_radius":12,
+     "stroke":{"paint":"#2D3436","width":2,"position":"inside"}},
+    {"id":"backdrop","parent":"board","index":"a1","type":"rect","name":"Backdrop","x":124,"y":16,"width":100,"height":100,"fill":"#DFE6E9"},
+    {"id":"contain","parent":"board","index":"a2","type":"image","name":"Contain","x":124,"y":16,"width":100,"height":100,"source":"photo.png","fit":"contain"},
+    {"id":"stretch","parent":"board","index":"a3","type":"image","name":"Stretch","x":232,"y":16,"width":100,"height":100,"source":"photo.png","fit":"stretch"},
+    {"id":"missing","parent":"board","index":"a4","type":"image","name":"Missing","x":340,"y":16,"width":84,"height":100,"source":"missing.png"}
+  ]
+}

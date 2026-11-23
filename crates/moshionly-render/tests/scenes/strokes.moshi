@@ -1,0 +1,20 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Strokes",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Strokes","width":320,"height":200,"fill":"#F4F5F7"},
+    {"id":"inside","parent":"board","index":"a0","type":"rect","name":"Inside","x":24,"y":24,"width":72,"height":72,"corner_radius":16,"fill":"#0D99FF66",
+     "stroke":{"paint":"#1E272E","width":10,"position":"inside"}},
+    {"id":"center","parent":"board","index":"a1","type":"rect","name":"Centre","x":124,"y":24,"width":72,"height":72,"fill":"#0D99FF66",
+     "stroke":{"paint":"#1E272E","width":10,"position":"center"}},
+    {"id":"outside","parent":"board","index":"a2","type":"rect","name":"Outside","x":224,"y":24,"width":72,"height":72,"fill":"#0D99FF66",
+     "stroke":{"paint":"#1E272E","width":10,"position":"outside"}},
+    {"id":"round","parent":"board","index":"a3","type":"path","name":"Round caps and joins","x":24,"y":124,"width":120,"height":52,
+     "path":{"subpaths":[{"anchors":[{"point":[0,1]},{"point":[0.25,0]},{"point":[0.5,1]},{"point":[0.75,0]},{"point":[1,1]}]}]},
+     "stroke":{"paint":"#E17055","width":8,"cap":"round","join":"round"}},
+    {"id":"sharp","parent":"board","index":"a4","type":"path","name":"Square caps, mitred and bevelled","x":176,"y":124,"width":120,"height":52,
+     "path":{"subpaths":[{"anchors":[{"point":[0,1]},{"point":[0.25,0]},{"point":[0.5,1]},{"point":[0.75,0]},{"point":[1,1]}]}]},
+     "stroke":{"paint":"#6C5CE7","width":8,"cap":"square","join":"bevel"}}
+  ]
+}

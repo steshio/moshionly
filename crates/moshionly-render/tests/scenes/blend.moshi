@@ -1,0 +1,329 @@
+{
+ "format": "moshionly",
+ "version": 1,
+ "name": "Blend modes",
+ "nodes": [
+  {
+   "id": "board",
+   "parent": null,
+   "index": "a0",
+   "type": "artboard",
+   "name": "Blend modes",
+   "width": 320,
+   "height": 180,
+   "fill": "#FFFFFF"
+  },
+  {
+   "id": "stripe0",
+   "parent": "board",
+   "index": "a0",
+   "type": "rect",
+   "name": "Stripe 1",
+   "x": 0,
+   "y": 0,
+   "width": 80,
+   "height": 180,
+   "fill": "#E17055"
+  },
+  {
+   "id": "stripe1",
+   "parent": "board",
+   "index": "a1",
+   "type": "rect",
+   "name": "Stripe 2",
+   "x": 80,
+   "y": 0,
+   "width": 80,
+   "height": 180,
+   "fill": "#00B894"
+  },
+  {
+   "id": "stripe2",
+   "parent": "board",
+   "index": "a2",
+   "type": "rect",
+   "name": "Stripe 3",
+   "x": 160,
+   "y": 0,
+   "width": 80,
+   "height": 180,
+   "fill": "#0984E3"
+  },
+  {
+   "id": "stripe3",
+   "parent": "board",
+   "index": "a3",
+   "type": "rect",
+   "name": "Stripe 4",
+   "x": 240,
+   "y": 0,
+   "width": 80,
+   "height": 180,
+   "fill": "#2D3436"
+  },
+  {
+   "id": "multiply",
+   "parent": "board",
+   "index": "a4",
+   "type": "ellipse",
+   "name": "multiply",
+   "x": 10,
+   "y": 20,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "multiply"
+  },
+  {
+   "id": "screen",
+   "parent": "board",
+   "index": "a5",
+   "type": "ellipse",
+   "name": "screen",
+   "x": 90,
+   "y": 20,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "screen"
+  },
+  {
+   "id": "overlay",
+   "parent": "board",
+   "index": "a6",
+   "type": "ellipse",
+   "name": "overlay",
+   "x": 170,
+   "y": 20,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "overlay"
+  },
+  {
+   "id": "darken",
+   "parent": "board",
+   "index": "a7",
+   "type": "ellipse",
+   "name": "darken",
+   "x": 250,
+   "y": 20,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "darken"
+  },
+  {
+   "id": "lighten",
+   "parent": "board",
+   "index": "a8",
+   "type": "ellipse",
+   "name": "lighten",
+   "x": 10,
+   "y": 100,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "lighten"
+  },
+  {
+   "id": "difference",
+   "parent": "board",
+   "index": "a9",
+   "type": "ellipse",
+   "name": "difference",
+   "x": 90,
+   "y": 100,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "difference"
+  },
+  {
+   "id": "color",
+   "parent": "board",
+   "index": "aA",
+   "type": "ellipse",
+   "name": "color",
+   "x": 170,
+   "y": 100,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "color"
+  },
+  {
+   "id": "luminosity",
+   "parent": "board",
+   "index": "aB",
+   "type": "ellipse",
+   "name": "luminosity",
+   "x": 250,
+   "y": 100,
+   "width": 60,
+   "height": 60,
+   "fill": {
+    "type": "linear_gradient",
+    "start": [
+     0,
+     0.5
+    ],
+    "end": [
+     1,
+     0.5
+    ],
+    "stops": [
+     {
+      "offset": 0,
+      "color": "#FDCB6E"
+     },
+     {
+      "offset": 1,
+      "color": "#A29BFE"
+     }
+    ]
+   },
+   "blend_mode": "luminosity"
+  }
+ ]
+}
