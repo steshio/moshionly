@@ -143,7 +143,10 @@ fn a_fade_added_in_the_animate_tab_is_edited_on_the_timeline() {
     let (fade, ty, (start, end)) = actions[0].clone();
     assert_eq!(ty, NodeType::FadeIn);
     assert_eq!((start, end), (0.0, 500.0), "at the playhead, half a second");
-    assert_eq!(harness.state().editor().actions(), [fade.clone()]);
+    assert_eq!(
+        harness.state().editor().actions(),
+        std::slice::from_ref(&fade)
+    );
     // It is on the timeline, under its layer, and selected there too.
     let artboard = harness.state().editor().artboard().unwrap().clone();
     let groups = timeline_groups(
@@ -359,6 +362,35 @@ impl moshionly_app::dialogs::Dialogs for SaveTo {
     }
 }
 
+/// Types a colour into the first colour field of the Design tab: the fill.
+fn set_fill(harness: &mut Harness<'_, Shell>, hex: &str) {
+    let field = || {
+        harness
+            .get_all_by_label("Hex colour")
+            .next()
+            .expect("a fill")
+    };
+    field().click_accesskit();
+    harness.run();
+    harness
+        .get_all_by_label("Hex colour")
+        .next()
+        .expect("a fill")
+        .type_text(hex);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+}
+
+/// Switches the inspector to `tab` with the M key.
+fn switch_to(harness: &mut Harness<'_, Shell>, tab: InspectorTab) {
+    if harness.state().inspector_tab() != tab {
+        harness.key_press(Key::M);
+        harness.run();
+    }
+    assert_eq!(harness.state().inspector_tab(), tab);
+}
+
 /// The one selected layer.
 fn selected(harness: &Harness<'_, Shell>) -> NodeId {
     harness
@@ -378,7 +410,7 @@ fn a_short_animation_is_made_from_scratch_and_saved() {
         .state_mut()
         .set_dialogs(Box::new(SaveTo(file.clone())));
 
-    // A card: a large rectangle, which slides in.
+    // A card: a large dark rectangle with round corners, which slides in.
     harness.key_press(Key::R);
     harness.run();
     let (from, to) = (
@@ -388,11 +420,11 @@ fn a_short_animation_is_made_from_scratch_and_saved() {
     drag(&mut harness, from, to);
     let card = selected(&harness);
     type_into(&mut harness, "Corner radius", "40");
-    harness.key_press(Key::M);
-    harness.run();
+    set_fill(&mut harness, "1E1E2E");
+    switch_to(&mut harness, InspectorTab::Animate);
     add_action(&mut harness, "Slide in");
 
-    // A title, which comes in letter by letter.
+    // A title in large white letters, which come in one by one.
     harness.key_press(Key::T);
     harness.run();
     let at = screen(&harness, pos2(220.0, 380.0));
@@ -402,10 +434,14 @@ fn a_short_animation_is_made_from_scratch_and_saved() {
     harness.key_press(Key::Escape);
     harness.run();
     let title = selected(&harness);
+    switch_to(&mut harness, InspectorTab::Design);
+    type_into(&mut harness, "Font size", "96");
+    set_fill(&mut harness, "FFFFFF");
+    switch_to(&mut harness, InspectorTab::Animate);
     add_action(&mut harness, "Text in");
     type_into(&mut harness, "Start", "0.4");
 
-    // A button, which grows in last.
+    // A blue button, which grows in last.
     harness.key_press(Key::R);
     harness.run();
     let (from, to) = (
@@ -414,6 +450,10 @@ fn a_short_animation_is_made_from_scratch_and_saved() {
     );
     drag(&mut harness, from, to);
     let button = selected(&harness);
+    switch_to(&mut harness, InspectorTab::Design);
+    type_into(&mut harness, "Corner radius", "40");
+    set_fill(&mut harness, "0D99FF");
+    switch_to(&mut harness, InspectorTab::Animate);
     add_action(&mut harness, "Grow in");
     type_into(&mut harness, "Start", "1.2");
 
@@ -436,5 +476,12 @@ fn a_short_animation_is_made_from_scratch_and_saved() {
         panic!("not a text animation");
     };
     assert_eq!(text.split, moshionly_core::model::TextSplit::Letters);
+    let fill = |layer: &NodeId| saved.get(layer).and_then(|node| node.data.fill().cloned());
+    assert_eq!(
+        fill(&button),
+        Some(moshionly_core::model::Paint::Solid(
+            moshionly_core::Color::rgb(0x0D, 0x99, 0xFF)
+        ))
+    );
     println!("saved {}", file.display());
 }
