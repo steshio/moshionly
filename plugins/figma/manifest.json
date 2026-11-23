@@ -1,0 +1,14 @@
+{
+  "name": "Moshionly",
+  "id": "moshionly-figma-plugin",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "enablePrivatePluginApi": true,
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:47821", "http://127.0.0.1:47821"],
+    "reasoning": "Sends the selected design to the Moshionly desktop app, which listens only on this computer, on port 47821."
+  }
+}
