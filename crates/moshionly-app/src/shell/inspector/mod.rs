@@ -58,6 +58,13 @@ pub struct InspectorState {
     stagger: f64,
 }
 
+impl InspectorState {
+    /// Milliseconds between actions spaced out one after another.
+    pub fn stagger(&self) -> f64 {
+        self.stagger
+    }
+}
+
 impl Default for InspectorState {
     fn default() -> Self {
         Self {

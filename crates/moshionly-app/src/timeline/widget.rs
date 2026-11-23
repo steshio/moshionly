@@ -9,7 +9,7 @@ use super::{
     edit::{self, Original},
     header,
     layout::{self, LABELS_MIN, TRACK_PAD, TRACKS_MIN, TimelineLayout},
-    model::{self, Edge, Group, Row, TimelineEvent},
+    model::{self, BarCommand, Edge, Group, Row, TimelineEvent},
     scale::{self, clamp_zoom, scroll_after_zoom},
     snap::Snapper,
     state::{Drag, TimelineState},
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     key::Key,
     theme::{Theme, icons},
-    widgets::{Grow, ListRow, row_toggle, splitter},
+    widgets::{Grow, ListRow, MenuItem, context_menu, menu_separator, row_toggle, splitter},
 };
 
 /// How near a snapping target must be to attract, in points.
@@ -375,6 +375,16 @@ impl<'a> Timeline<'a> {
                             key: bar.key.clone(),
                         });
                     }
+                    // A right click works on the selection, which takes in
+                    // the bar first.
+                    if let Some(response) = response.as_ref().filter(|_| !group.locked) {
+                        if response.secondary_clicked() && !selected {
+                            events.push(TimelineEvent::SelectionChanged {
+                                bars: vec![bar.key.clone()],
+                            });
+                        }
+                        bar_menu(response, &mut events);
+                    }
                     if response.is_some_and(|r| r.drag_started()) && state.drag.is_none() {
                         // Dragging a bar that is not selected selects it first.
                         let moving = if selected {
@@ -615,6 +625,35 @@ fn originals_of(groups: &[Group], keys: &[Key]) -> Vec<Original> {
         .collect()
 }
 
+/// The context menu of a bar: what can be done with the selected bars.
+fn bar_menu(response: &egui::Response, events: &mut Vec<TimelineEvent>) {
+    context_menu(response, |ui| {
+        for command in BarCommand::ALL {
+            let mut item = MenuItem::new(command.label()).danger(command == BarCommand::Delete);
+            if let Some(icon) = command_icon(command) {
+                item = item.icon(icon);
+            }
+            if command == BarCommand::Delete || command == BarCommand::Stagger {
+                menu_separator(ui);
+            }
+            if ui.add(item).clicked() {
+                events.push(TimelineEvent::Command { command });
+            }
+        }
+    });
+}
+
+/// The icon of a context menu command.
+fn command_icon(command: BarCommand) -> Option<&'static str> {
+    match command {
+        BarCommand::Duplicate => Some(icons::COPY),
+        BarCommand::Delete => Some(icons::TRASH),
+        BarCommand::Group => Some(icons::FOLDER_SIMPLE),
+        BarCommand::Ungroup => None,
+        BarCommand::Stagger => Some(icons::ROWS),
+    }
+}
+
 /// The strip at one end of a bar that resizes it when dragged. Part of it
 /// hangs outside the bar, and inside it takes at most a third, so even a
 /// short bar keeps a middle to move it by.
@@ -699,6 +738,10 @@ fn group_label(
     let (mut hidden, mut locked) = (group.hidden, group.locked);
     let (mut hide_clicked, mut lock_clicked) = (false, false);
     let shown = row.show(&mut child, |ui, hovered| {
+        // A folder is not a layer: there is nothing to hide or lock.
+        if group.folder {
+            return;
+        }
         hide_clicked = row_toggle(ui, &mut hidden, icons::EYE_SLASH, icons::EYE, hovered);
         lock_clicked = row_toggle(
             ui,

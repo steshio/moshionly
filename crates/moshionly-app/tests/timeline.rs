@@ -61,6 +61,7 @@ fn group(key: &str, bars: Vec<Bar>) -> Group {
         collapsed: false,
         hidden: false,
         locked: false,
+        folder: false,
         bars,
     }
 }

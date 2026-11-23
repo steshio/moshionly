@@ -38,11 +38,18 @@ use crate::{
     canvas::CanvasRenderer,
     commands::{CommandId, CommandRegistry, Palette},
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
-    editor::{Editor, pen::Pen, text::TextEditing, timeline::timeline_groups, tree::TreeState},
+    editor::{
+        Editor,
+        actions::ActionError,
+        pen::Pen,
+        text::TextEditing,
+        timeline::{is_folder, timeline_groups},
+        tree::TreeState,
+    },
     key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
-    timeline::{Timeline, TimelineEvent, TimelineState},
+    timeline::{BarCommand, Timeline, TimelineEvent, TimelineState},
     viewport::Camera,
     widgets::{Grow, Toast, Toasts, splitter},
 };
@@ -84,8 +91,8 @@ pub struct Shell {
     list_drag: Option<Vec<NodeId>>,
     /// The timeline groups whose rows are folded away.
     collapsed_groups: HashSet<NodeId>,
-    /// The selected timeline bars.
-    selected_actions: Vec<Key>,
+    /// A drag on the timeline holds an undo step open.
+    timeline_edit: bool,
     /// The drag in progress on the canvas.
     drag: Option<CanvasDrag>,
     /// Snapping guides to draw while dragging.
@@ -189,7 +196,7 @@ impl Shell {
             renaming: None,
             list_drag: None,
             collapsed_groups: HashSet::new(),
-            selected_actions: Vec::new(),
+            timeline_edit: false,
             drag: None,
             guides: Vec::new(),
             pointer: None,
@@ -576,8 +583,6 @@ impl Shell {
         self.pictures.retain(&document);
         self.tree.retain(&document);
         self.collapsed_groups.retain(|id| document.contains(id));
-        self.selected_actions
-            .retain(|key| document.contains(&NodeId::from(key.as_str())));
     }
 
     /// When the selection changes, its rows come into view in the layer
@@ -591,6 +596,22 @@ impl Shell {
         let document = std::sync::Arc::clone(self.editor.document());
         for id in &selection {
             self.tree.reveal(&document, id);
+        }
+        // Actions stay selected only while the layers they animate are.
+        let kept: Vec<NodeId> = self
+            .editor
+            .actions()
+            .iter()
+            .filter(|action| {
+                document
+                    .get(action)
+                    .and_then(|node| node.target())
+                    .is_some_and(|target| selection.contains(target))
+            })
+            .cloned()
+            .collect();
+        if kept.len() != self.editor.actions().len() {
+            self.editor.set_actions(kept);
         }
         self.reveal_row = selection.first().cloned();
         if let Some(first) = selection.first() {
@@ -618,9 +639,15 @@ impl Shell {
             .selection
             .single()
             .map(|id| Key::new(id.as_str()));
+        let selected_bars: Vec<Key> = self
+            .editor
+            .actions()
+            .iter()
+            .map(|id| Key::new(id.as_str()))
+            .collect();
         let timeline = parts::panel(ui, "timeline", layout.timeline, c.surface, |ui| {
             Timeline::new(&mut self.timeline, &groups)
-                .selection(&self.selected_actions)
+                .selection(&selected_bars)
                 .selected_group(selected_layer.as_ref())
                 .playhead(self.editor.playhead())
                 .duration(duration)
@@ -648,19 +675,31 @@ impl Shell {
             TimelineEvent::LoopToggled { looping } => self.looping = looping,
             TimelineEvent::SnappingToggled { snapping } => self.snapping = snapping,
             TimelineEvent::JumpedToStart => self.editor.set_playhead(0.0),
+            TimelineEvent::JumpedToEnd => self.jump_to_end(),
             TimelineEvent::BarActivated { .. } => self.inspector.tab = InspectorTab::Animate,
             TimelineEvent::SelectionChanged { bars } => {
-                // Selecting an action selects the layer it animates.
-                let target = bars.first().and_then(|key| {
-                    let document = self.editor.document();
-                    document.get(&node(key))?.target().cloned()
-                });
-                self.selected_actions = bars;
-                if let Some(target) = target {
-                    self.editor.selection.select(target);
+                // Selecting actions selects the layers they animate, and
+                // shows their settings.
+                self.editor.set_actions(bars.iter().map(node));
+                self.editor.select_targets();
+                if !bars.is_empty() {
+                    self.inspector.tab = InspectorTab::Animate;
                 }
             }
-            TimelineEvent::GroupClicked { key } => self.editor.selection.select(node(&key)),
+            TimelineEvent::GroupClicked { key } => {
+                let document = std::sync::Arc::clone(self.editor.document());
+                if is_folder(&document, &key) {
+                    // A folder stands for the actions in it.
+                    let inside = document
+                        .walk(&node(&key), moshionly_core::Family::Animation)
+                        .map(|(_, action)| action.id.clone());
+                    self.editor.set_actions(inside);
+                    self.editor.select_targets();
+                    self.inspector.tab = InspectorTab::Animate;
+                } else {
+                    self.editor.selection.select(node(&key));
+                }
+            }
             TimelineEvent::GroupCollapsed { key, collapsed } => {
                 if collapsed {
                     self.collapsed_groups.insert(node(&key));
@@ -682,13 +721,82 @@ impl Shell {
                     &[moshionly_core::Edit::set(node(&key), "locked", locked)],
                 );
             }
-            // TODO: editing bars and the scene's length is the next task
-            // (the editable timeline and the Animate tab).
-            TimelineEvent::BarMoved { .. }
-            | TimelineEvent::BarResized { .. }
-            | TimelineEvent::DurationChanged { .. }
-            | TimelineEvent::EditFinished => {}
+            TimelineEvent::BarMoved { key, start, end } => {
+                self.timeline_drag("Move action", |editor| {
+                    editor.retime_actions("Move action", &[(node(&key), start, end)])
+                });
+            }
+            TimelineEvent::BarResized {
+                key, start, end, ..
+            } => {
+                self.timeline_drag("Change action length", |editor| {
+                    editor.retime_actions("Change action length", &[(node(&key), start, end)])
+                });
+            }
+            TimelineEvent::DurationChanged { duration } => {
+                let Some(artboard) = self.editor.artboard().cloned() else {
+                    return;
+                };
+                self.timeline_drag("Change scene length", |editor| {
+                    Ok(editor.set_scene_length(&artboard, duration)?)
+                });
+            }
+            TimelineEvent::EditFinished => self.end_timeline_drag(),
+            TimelineEvent::Command { command } => self.action_command(command),
         }
+    }
+
+    /// One step of a drag on the timeline. The first step opens an undo
+    /// step that the end of the drag closes.
+    fn timeline_drag(
+        &mut self,
+        summary: &str,
+        step: impl FnOnce(&mut Editor) -> Result<bool, ActionError>,
+    ) {
+        if !self.timeline_edit || !self.editor.in_gesture() {
+            self.end_canvas_drag();
+            self.editor.begin_gesture(summary);
+            self.timeline_edit = true;
+        }
+        if let Err(error) = step(&mut self.editor) {
+            self.toasts.push(Toast::error(error.to_string()));
+        }
+    }
+
+    /// Closes the undo step of a drag on the timeline, before something
+    /// else changes the document.
+    fn end_timeline_drag(&mut self) {
+        if std::mem::take(&mut self.timeline_edit) && self.editor.in_gesture() {
+            self.editor.commit_gesture();
+        }
+    }
+
+    /// Carries out a command on the selected actions.
+    fn action_command(&mut self, command: BarCommand) {
+        let result = match command {
+            BarCommand::Duplicate => self.editor.duplicate_actions().map(drop),
+            BarCommand::Delete => self.editor.delete_actions().map(drop),
+            BarCommand::Group => self.editor.group_actions().map(drop),
+            BarCommand::Ungroup => self.editor.ungroup_actions().map(drop),
+            BarCommand::Stagger => {
+                let delay = self.inspector.stagger();
+                self.editor.stagger_actions(delay).map(drop)
+            }
+        };
+        if let Err(error) = result {
+            self.toasts.push(Toast::error(error.to_string()));
+        }
+    }
+
+    /// Moves the playhead to the end of the current scene.
+    fn jump_to_end(&mut self) {
+        let end = self
+            .editor
+            .artboard()
+            .and_then(|id| moshionly_core::eval::duration_of(self.editor.document(), id))
+            .unwrap_or(0.0);
+        self.editor.set_playhead(end);
+        self.playing = false;
     }
 
     /// Applies edits as one undo step, or says in a toast why not.
@@ -801,6 +909,7 @@ impl Shell {
         // touches the document: a command that does ends the drag first.
         if ends_a_canvas_drag(id) {
             self.end_canvas_drag();
+            self.end_timeline_drag();
         }
         match id {
             CommandId::ToggleChat => {
@@ -812,6 +921,18 @@ impl Shell {
             CommandId::CommandPalette => self.palette.toggle(),
             CommandId::Undo => self.undo_or_redo(true),
             CommandId::Redo => self.undo_or_redo(false),
+            CommandId::Delete if !self.editor.actions().is_empty() => {
+                self.action_command(BarCommand::Delete);
+            }
+            CommandId::Duplicate if !self.editor.actions().is_empty() => {
+                self.action_command(BarCommand::Duplicate);
+            }
+            CommandId::Group if !self.editor.actions().is_empty() => {
+                self.action_command(BarCommand::Group);
+            }
+            CommandId::Ungroup if !self.editor.actions().is_empty() => {
+                self.action_command(BarCommand::Ungroup);
+            }
             CommandId::Delete => self.delete_selection(),
             CommandId::SelectAll => {
                 let document = std::sync::Arc::clone(self.editor.document());
@@ -824,7 +945,7 @@ impl Shell {
             }
             CommandId::Deselect => {
                 self.editor.selection.clear();
-                self.selected_actions.clear();
+                self.editor.set_actions([]);
             }
             CommandId::PlayPause => self.set_playing(!self.playing),
             CommandId::JumpToStart => self.editor.set_playhead(0.0),
