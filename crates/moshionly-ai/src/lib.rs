@@ -23,6 +23,7 @@ mod cli;
 mod error;
 mod event;
 mod http;
+mod keys;
 mod paths;
 mod provider;
 pub mod redact;
@@ -40,6 +41,7 @@ pub use cli::cursor_agent::{CURSOR_AGENT_ID, CursorAgent, CursorAgentOptions};
 pub use cli::gemini::{GEMINI_CLI_ID, GeminiCli, GeminiCliOptions};
 pub use error::{AiError, ErrorKind};
 pub use event::{ChatEvent, EventReceiver, EventSender, StopReason, event_channel};
+pub use keys::{KEYCHAIN_SERVICE, KeyStore, KeyStoreError, KeychainStore, MemoryKeyStore};
 pub use paths::{config_dir, default_working_dir};
 pub use provider::{
     Capabilities, ChatProvider, ModelInfo, ProviderInfo, ProviderKind, Readiness, ReadyState,
