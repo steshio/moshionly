@@ -80,8 +80,16 @@ pub(crate) fn write_new(
     unreachable!("the names never run out")
 }
 
-/// The paths that writers in this process hold while they write.
+/// The paths that writers in this process hold while they write, by
+/// [`held_key`].
 static HELD: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// How a path is held: in lower case, because the file systems macOS and
+/// Windows use by default treat `Scene.mp4` and `scene.mp4` as one file. On
+/// a file system that tells them apart this only holds a little more.
+fn held_key(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().to_lowercase())
+}
 
 fn held() -> MutexGuard<'static, BTreeSet<PathBuf>> {
     HELD.lock().unwrap_or_else(PoisonError::into_inner)
@@ -91,18 +99,29 @@ fn held() -> MutexGuard<'static, BTreeSet<PathBuf>> {
 /// write its file. No other reservation gets it until this one is dropped,
 /// when the file is either there or was never made.
 #[derive(Debug)]
-pub(crate) struct Reserved(PathBuf);
+pub(crate) struct Reserved {
+    path: PathBuf,
+    key: PathBuf,
+}
 
 impl Reserved {
+    /// Holds `path`, which the caller has checked is free, while `held` is
+    /// locked.
+    fn hold(held: &mut BTreeSet<PathBuf>, path: PathBuf) -> Self {
+        let key = held_key(&path);
+        held.insert(key.clone());
+        Self { path, key }
+    }
+
     /// The path that is held.
     pub fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        held().remove(&self.0);
+        held().remove(&self.key);
     }
 }
 
@@ -111,21 +130,19 @@ impl Drop for Reserved {
 pub(crate) fn reserve_free(folder: &Path, stem: &str, extension: Option<&str>) -> Reserved {
     let mut held = held();
     let path = candidates(folder, stem, extension)
-        .find(|path| !path.exists() && !held.contains(path))
+        .find(|path| !path.exists() && !held.contains(&held_key(path)))
         .expect("the names never run out");
-    held.insert(path.clone());
-    Reserved(path)
+    Reserved::hold(&mut held, path)
 }
 
 /// Holds `path` itself, unless something is there or another writer holds
 /// it.
 pub(crate) fn reserve(path: PathBuf) -> Option<Reserved> {
     let mut held = held();
-    if path.exists() || held.contains(&path) {
+    if path.exists() || held.contains(&held_key(&path)) {
         return None;
     }
-    held.insert(path.clone());
-    Some(Reserved(path))
+    Some(Reserved::hold(&mut held, path))
 }
 
 /// The name of a file without its extension, and its extension in lower
@@ -200,6 +217,21 @@ mod tests {
         assert!(reserve(folder.join("Scene.mp4")).is_none());
         drop(first);
         assert!(reserve(folder.join("Scene.mp4")).is_some());
+    }
+
+    #[test]
+    fn names_that_differ_only_in_case_are_held_as_one() {
+        let dir = TempDir::new("files-case");
+        let folder = dir.path();
+        let first = reserve_free(folder, "Scene", Some("mp4"));
+        assert_eq!(first.path(), folder.join("Scene.mp4"));
+        assert!(reserve(folder.join("scene.mp4")).is_none());
+        assert_eq!(
+            reserve_free(folder, "scene", Some("mp4")).path(),
+            folder.join("scene 2.mp4")
+        );
+        drop(first);
+        assert!(reserve(folder.join("scene.mp4")).is_some());
     }
 
     #[test]
