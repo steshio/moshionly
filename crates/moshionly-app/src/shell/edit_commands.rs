@@ -110,9 +110,17 @@ impl Shell {
     /// Puts the selected layers in a new group and selects it.
     fn group(&mut self) {
         let ids = self.editor.selection.ids().to_vec();
-        match build::group(self.editor.document(), &ids, GroupKind::Group) {
+        // Text that hugs its words is given the box it is drawn in first,
+        // in the same step, so that the group is made around the words.
+        let settle = self.editor.settle_edits(&ids, false);
+        let mut working = (**self.editor.document()).clone();
+        if let Err(error) = working.apply(&settle) {
+            self.toasts.push(Toast::error(error.problem.to_string()));
+            return;
+        }
+        match build::group(&working, &ids, GroupKind::Group) {
             Ok((group, edits)) => {
-                if self.apply_or_toast("Group", &edits) {
+                if self.apply_or_toast("Group", &[settle, edits].concat()) {
                     self.editor.selection.select(group);
                 }
             }

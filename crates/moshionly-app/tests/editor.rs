@@ -1301,3 +1301,37 @@ fn a_fixed_size_chosen_for_text_is_the_size_it_had() {
         Some("Undo Change resizing")
     );
 }
+
+#[test]
+fn a_group_made_around_text_encloses_the_words() {
+    let mut harness = harness();
+    let title = drawn(&mut harness, "title");
+    let raised = drawn(&mut harness, "raised");
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let group = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .expect("the new group is selected");
+    let around = drawn(&mut harness, group.as_str());
+    let words = title.union(raised);
+    assert!(
+        around.expand(0.5).contains_rect(words),
+        "{around:?} around {words:?}"
+    );
+    // The words did not move, and it is one step.
+    assert!((drawn(&mut harness, "title").min - title.min).length() < 0.5);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Group")
+    );
+}
