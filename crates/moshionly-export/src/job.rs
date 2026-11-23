@@ -7,6 +7,7 @@ use moshionly_core::{Document, NodeId};
 use moshionly_render::{AssetLoader, FontLibrary, RenderWarning, Renderer};
 
 use crate::error::ExportError;
+use crate::ffmpeg::{self, Ffmpeg, INSTALL_HINT};
 use crate::format::Format;
 use crate::frames::FrameSource;
 use crate::gif;
@@ -56,6 +57,9 @@ pub struct ExportJob {
     /// What draws the frames. `None` draws with the bundled and installed
     /// fonts, and finds images next to the project file.
     pub renderer: Option<Renderer>,
+    /// The `ffmpeg` that writes WebM and ProRes. `None` looks for one on
+    /// `PATH` and in the usual install places.
+    pub ffmpeg: Option<Ffmpeg>,
 }
 
 /// A finished export.
@@ -97,6 +101,7 @@ impl ExportJob {
             settings: Settings::default(),
             destination: destination.into(),
             renderer: None,
+            ffmpeg: None,
         }
     }
 
@@ -117,6 +122,12 @@ impl ExportJob {
     /// already decoded.
     pub fn with_renderer(mut self, renderer: Renderer) -> Self {
         self.renderer = Some(renderer);
+        self
+    }
+
+    /// The same job, writing WebM and ProRes with `ffmpeg`.
+    pub fn with_ffmpeg(mut self, ffmpeg: Ffmpeg) -> Self {
+        self.ffmpeg = Some(ffmpeg);
         self
     }
 
@@ -148,6 +159,7 @@ impl ExportJob {
                 AssetLoader::new(self.project_file.clone()),
             )
         });
+        let ffmpeg = self.ffmpeg_for(plan.format)?;
         let output = Output::create(&self.destination, plan.format.writes_folder())?;
         let mut cx = Context {
             plan: &plan,
@@ -159,7 +171,7 @@ impl ExportJob {
             reporter: Reporter::new(&mut progress, cancel, plan.frame_count()),
         };
         cx.reporter.report(Phase::Preparing, 0);
-        write(&mut cx, output.path())?;
+        write(&mut cx, output.path(), ffmpeg.as_ref())?;
         cx.reporter.check()?;
         cx.reporter.report(Phase::Finishing, plan.frame_count());
         let warnings = std::mem::take(&mut cx.reporter.warnings);
@@ -178,6 +190,26 @@ impl ExportJob {
     }
 }
 
+impl ExportJob {
+    /// The `ffmpeg` to write `format` with, checked to be able to, or
+    /// `None` for formats that do not need it.
+    fn ffmpeg_for(&self, format: Format) -> Result<Option<Ffmpeg>, ExportError> {
+        if !format.needs_ffmpeg() {
+            return Ok(None);
+        }
+        let ffmpeg = self.ffmpeg.clone().or_else(Ffmpeg::locate).ok_or_else(|| {
+            ExportError::FfmpegMissing {
+                format,
+                reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
+            }
+        })?;
+        ffmpeg
+            .check(format)
+            .map_err(|reason| ExportError::FfmpegMissing { format, reason })?;
+        Ok(Some(ffmpeg))
+    }
+}
+
 /// Writes the export to `path`, the temporary file or folder.
 ///
 /// Every format plugs in here. A raster format renders frames from
@@ -185,13 +217,19 @@ impl ExportJob {
 /// instead of pixels (Lottie, to come in `src/lottie/`) evaluates scenes
 /// at the plan's moments and writes its file, reporting progress the same
 /// way.
-fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
+fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: Option<&Ffmpeg>) -> Result<(), ExportError> {
     match cx.plan.format {
         Format::Png => png::write_still(cx, path),
         Format::PngSequence => png::write_sequence(cx, path),
         Format::Gif => gif::write(cx, path),
         Format::Mp4 => mp4::write(cx, path),
-        format @ (Format::WebM | Format::ProRes) => Err(ExportError::NotWritten(format)),
+        Format::WebM | Format::ProRes => match ffmpeg {
+            Some(ffmpeg) => ffmpeg::write(cx, path, ffmpeg),
+            None => Err(ExportError::FfmpegMissing {
+                format: cx.plan.format,
+                reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
+            }),
+        },
     }
 }
 

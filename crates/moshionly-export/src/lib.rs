@@ -13,10 +13,12 @@
 //! | [`job`] | [`ExportJob`]: what to export and where; [`ExportJob::run`] does it |
 //! | [`progress`] | [`Progress`] reports and the [`CancelToken`] |
 //! | [`error`] | [`ExportError`]: why an export stopped |
+//! | [`ffmpeg`] | [`Ffmpeg`]: finding the program that writes WebM and ProRes |
 
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod ffmpeg;
 pub mod format;
 mod frames;
 mod gif;
@@ -29,6 +31,7 @@ pub mod settings;
 pub mod timing;
 
 pub use error::ExportError;
+pub use ffmpeg::Ffmpeg;
 pub use format::{Format, SizeLimits};
 pub use job::{ExportJob, Exported};
 pub use progress::{CancelToken, Phase, Progress};

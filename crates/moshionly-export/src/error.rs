@@ -84,9 +84,6 @@ pub enum ExportError {
     /// The GIF encoder failed.
     #[error("the GIF could not be encoded: {0}")]
     Gif(String),
-    /// This build cannot write the format yet.
-    #[error("{0} export is not available yet")]
-    NotWritten(Format),
 }
 
 impl ExportError {
