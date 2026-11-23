@@ -292,3 +292,27 @@ test('a design waiting for “Copy now” is dropped when the selection or the m
   await panel.receive({ type: 'mode', mode: 'new_artboards' });
   assertDropped('after the plugin changed the mode');
 });
+
+test('a design read while the selection or the mode changed is not offered for copying', async () => {
+  const panel = loadPanel();
+  const selection = (name) => ({ type: 'selection', summary: { count: 1, names: [name], more: 0, empty: false, sections: 0 } });
+  const converted = { type: 'converted', purpose: 'copy', json: '{"nodes":[]}', layers: 1, notes: [{ layer_name: 'A', message: 'A note.' }] };
+
+  await panel.receive(selection('Frame A'));
+  await panel.copy.fire('click');
+  await panel.receive(selection('Frame B'));
+  await panel.receive(converted);
+  assert.equal(panel.copy.textContent, 'Copy', 'Frame A’s design is not waiting next to Frame B');
+  assert.equal(panel.notes.hidden, true);
+  assert.match(panel.status.textContent, /changed while the design was being read/);
+
+  await panel.copy.fire('click');
+  panel.radios[1].checked = true;
+  await panel.radios[1].fire('change');
+  await panel.receive(converted);
+  assert.equal(panel.copy.textContent, 'Copy', 'a design made for the old mode is not waiting either');
+
+  await panel.copy.fire('click');
+  await panel.receive(converted);
+  assert.equal(panel.copy.textContent, 'Copy now', 'with nothing changed, the design waits as before');
+});

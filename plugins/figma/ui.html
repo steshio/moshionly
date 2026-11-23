@@ -243,7 +243,9 @@
     notesList: document.getElementById('notes-list'),
   };
 
-  const state = { empty: true, busy: false, readyToCopy: null };
+  // `changes` counts selection and mode changes; `startedAt` is its value
+  // when the design being read was asked for.
+  const state = { empty: true, busy: false, readyToCopy: null, changes: 0, startedAt: 0 };
 
   function post(message) {
     parent.postMessage({ pluginMessage: message }, '*');
@@ -299,6 +301,7 @@
   function begin(purpose) {
     state.busy = true;
     state.readyToCopy = null;
+    state.startedAt = state.changes;
     refreshButtons();
     showNotes(null);
     showProgress(0);
@@ -314,10 +317,12 @@
   }
 
   /**
-   * Drops a design waiting for "Copy now", with its notes and status, once
-   * the selection or the mode has changed: it no longer matches them.
+   * Called when the selection or the mode has changed. Drops a design
+   * waiting for "Copy now", with its notes and status, since it no longer
+   * matches them, and marks a design still being read as out of date.
    */
   function discardPrepared() {
+    state.changes += 1;
     if (!state.readyToCopy) return;
     state.readyToCopy = null;
     showNotes(null);
@@ -339,6 +344,13 @@
     const size = MoshionlyDelivery.byteLength(message.json);
     const label =
       (message.layers === 1 ? '1 layer' : message.layers + ' layers') + ', ' + MoshionlyDelivery.describeSize(size);
+    if (message.purpose === 'copy' && state.changes !== state.startedAt) {
+      // The copy may not reach the clipboard and wait for "Copy now", next
+      // to a selection or mode it was not made from.
+      showNotes(null);
+      finish('The selection or the mode changed while the design was being read. Click Copy to copy what is selected now.');
+      return;
+    }
     showNotes(message.notes);
     if (message.purpose === 'copy') {
       state.readyToCopy = { json: message.json, label };
