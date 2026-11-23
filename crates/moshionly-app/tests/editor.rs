@@ -1096,3 +1096,44 @@ fn escape_stops_dragging_a_row() {
     );
     assert_eq!(selection(&harness), ["dot"], "Escape did not deselect");
 }
+
+#[test]
+fn ungrouping_nested_groups_selects_only_what_is_left() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("card"));
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let inner = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let outer = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([outer.clone(), inner.clone()]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+    harness.run();
+    let editor = harness.state().editor();
+    assert!(!editor.document().contains(&inner));
+    assert!(!editor.document().contains(&outer));
+    assert_eq!(selection(&harness), ["card"]);
+}

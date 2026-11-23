@@ -146,7 +146,12 @@ impl Shell {
             }
         }
         if self.apply_or_toast("Ungroup", &edits) {
-            self.editor.selection.set(freed);
+            // A group freed from a selected group may itself have been
+            // dissolved: select only what is left.
+            let document = std::sync::Arc::clone(self.editor.document());
+            self.editor
+                .selection
+                .set(freed.into_iter().filter(|id| document.contains(id)));
         }
     }
 
