@@ -170,6 +170,8 @@ impl ExportJob {
                 renderer: &renderer,
             },
             reporter: Reporter::new(&mut progress, cancel, plan.frame_count()),
+            project_file: self.project_file.as_deref(),
+            destination: output.destination(),
         };
         cx.reporter.report(Phase::Preparing, 0);
         let images = write(&mut cx, output.path(), ffmpeg.as_ref())?;
@@ -250,6 +252,10 @@ pub(crate) struct Context<'a> {
     pub source: FrameSource<'a>,
     /// Where progress, warnings and cancellation go.
     pub reporter: Reporter<'a>,
+    /// The project file, which images are found next to.
+    pub project_file: Option<&'a Path>,
+    /// Where the export ends up, for files that go beside it.
+    pub destination: &'a Path,
 }
 
 /// Reports progress, gathers warnings and watches for cancellation.

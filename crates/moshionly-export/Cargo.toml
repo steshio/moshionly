@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 # The quantizer that comes with `gif` is left out; `src/gif/palette.rs` chooses colours.
 gif = { version = "0.14", default-features = false, features = ["raii_no_panic", "std"] }
+# Reads pictures for Lottie files; the same formats the renderer reads.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
 # Builds OpenH264 from source (BSD-2-Clause). See the README about patents.
@@ -25,4 +27,3 @@ thiserror = "2"
 gif = "0.14"
 # Reads written MP4 files back in tests.
 mp4 = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }

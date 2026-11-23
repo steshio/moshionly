@@ -160,7 +160,7 @@ pub(crate) struct Transform {
     pub anchor: Animated,
     /// Where the anchor goes in the parent.
     pub position: Position,
-    /// Scale in percent, the same both ways: one component.
+    /// Scale in percent: one component for the same both ways, or two.
     pub scale: Animated,
     /// Clockwise rotation in degrees.
     pub rotation: Animated,
@@ -231,9 +231,12 @@ impl Transform {
     }
 }
 
-/// A uniform scale as Lottie's `[x, y]`.
+/// A scale as Lottie's `[x, y]`: a uniform one is the same both ways.
 fn map_scale(scale: &Animated) -> Animated {
-    map(scale, |value| vec![value[0], value[0]])
+    map(scale, |value| match value {
+        [both] => vec![*both, *both],
+        _ => value.to_vec(),
+    })
 }
 
 #[cfg(test)]

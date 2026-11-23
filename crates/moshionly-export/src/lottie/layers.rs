@@ -16,7 +16,8 @@ use serde_json::{Map, Value};
 use crate::error::ExportError;
 
 use super::fit::{Animated, Hints};
-use super::groups::Masks;
+use super::groups::{Masks, Place};
+use super::images::Images;
 use super::json::{num, object, places};
 use super::paint::{self, Notes, Role, Source};
 use super::props::{Position, Transform, array, property};
@@ -59,6 +60,8 @@ pub(crate) struct Converter<'a> {
     pub assets: Vec<Value>,
     /// Draws text, for its outlines.
     pub renderer: &'a Renderer,
+    /// The pictures of image layers.
+    pub images: Images,
     /// Reports each converted layer.
     progress: Progress<'a>,
 }
@@ -66,7 +69,12 @@ pub(crate) struct Converter<'a> {
 impl<'a> Converter<'a> {
     /// A converter reading `timeline`, drawing text with `renderer`, and
     /// calling `progress` after each layer.
-    pub fn new(timeline: Timeline<'a>, renderer: &'a Renderer, progress: Progress<'a>) -> Self {
+    pub fn new(
+        timeline: Timeline<'a>,
+        renderer: &'a Renderer,
+        images: Images,
+        progress: Progress<'a>,
+    ) -> Self {
         let frames = timeline.clock.frames;
         Self {
             timeline,
@@ -74,8 +82,14 @@ impl<'a> Converter<'a> {
             survey: (0..=frames).map(|frame| frame as f64).collect(),
             assets: Vec::new(),
             renderer,
+            images,
             progress,
         }
+    }
+
+    /// What could not be exported exactly, and the pictures written.
+    pub fn finish(self) -> (Warnings, Images) {
+        (self.warnings, self.images)
     }
 
     fn document(&self) -> &'a Document {
@@ -121,7 +135,7 @@ impl<'a> Converter<'a> {
                 let index = comp.index();
                 let mut layer = self.layer(node, 4, index, parent_index, &transform);
                 layer.insert("shapes".into(), Value::Array(shapes));
-                self.add_masks(node, &mut layer, [0.0, 0.0], Masks::REVEAL);
+                self.add_masks(node, &mut layer, &|_| Place::default(), Masks::REVEAL);
                 comp.layers.push(Value::Object(layer));
             }
             NodeData::Group(group) => {
@@ -129,12 +143,9 @@ impl<'a> Converter<'a> {
             }
             NodeData::MaskGroup(_) => self.add_mask_group(node, comp, parent_index, offset)?,
             NodeData::Text(text) => self.add_text(node, text, comp, parent_index, offset)?,
-            // TODO: images are converted in the step that follows; until
-            // then they are left out.
-            _ => self.warnings.layer(
-                node,
-                "is left out: this kind of layer is not exported to Lottie yet.",
-            ),
+            NodeData::Image(image) => self.add_image(node, image, comp, parent_index, offset)?,
+            // Artboards are never inside other layers.
+            _ => {}
         }
         (self.progress)()
     }
@@ -279,7 +290,7 @@ impl<'a> Converter<'a> {
         let id = &node.id;
         let timeline = self.timeline;
         Some(match &node.data {
-            NodeData::Rect(_) | NodeData::Group(_) => {
+            NodeData::Rect(_) | NodeData::Group(_) | NodeData::Image(_) => {
                 let uniform = self.survey.iter().all(|frame| {
                     let radii = timeline.radii(id, *frame);
                     radii.iter().all(|radius| *radius == radii[0])

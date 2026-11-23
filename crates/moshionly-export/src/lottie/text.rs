@@ -303,7 +303,12 @@ impl<'a> Converter<'a> {
         let index = comp.index();
         let mut layer = self.layer(node, 4, index, parent_index, &transform);
         layer.insert("shapes".into(), Value::Array(shapes));
-        self.add_masks(node, &mut layer, [0.0, 0.0], super::groups::Masks::REVEAL);
+        self.add_masks(
+            node,
+            &mut layer,
+            &|_| super::groups::Place::default(),
+            super::groups::Masks::REVEAL,
+        );
         comp.layers.push(Value::Object(layer));
     }
 
@@ -645,7 +650,12 @@ impl<'a> Converter<'a> {
         let transform = super::groups::anchored(transform, origin);
         let index = comp.index();
         let mut layer = self.composition_layer(node, &asset, area, &transform, index, parent_index);
-        self.add_masks(node, &mut layer, origin, super::groups::Masks::REVEAL);
+        self.add_masks(
+            node,
+            &mut layer,
+            &|_| super::groups::Place::moved(origin),
+            super::groups::Masks::REVEAL,
+        );
         comp.layers.push(Value::Object(layer));
         Ok(())
     }

@@ -19,6 +19,7 @@
 mod clock;
 mod fit;
 mod groups;
+mod images;
 mod json;
 mod layers;
 mod paint;
@@ -43,6 +44,7 @@ use crate::job::Context;
 use crate::progress::Phase;
 use clock::Clock;
 use fit::Animated;
+use images::Images;
 use json::{num, object, places};
 use layers::{Comp, Converter};
 use props::Transform;
@@ -65,16 +67,7 @@ pub enum LottieImages {
     Files,
 }
 
-/// Image files written beside a Lottie file, moved into place after it.
-#[derive(Debug, Default)]
-pub(crate) struct ImageFiles {}
-
-impl ImageFiles {
-    /// Moves the image files into place.
-    pub(crate) fn commit(self) -> Result<(), ExportError> {
-        Ok(())
-    }
-}
+pub(crate) use images::ImageFiles;
 
 /// Writes the plan's artboard as a Lottie file at `path`.
 pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFiles>, ExportError> {
@@ -104,14 +97,15 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         .max(1) as u64;
     let frames = cx.plan.frame_count();
     let mut converted = 0;
-    let warnings = {
+    let (warnings, images) = {
         let reporter = &mut cx.reporter;
         let progress = Box::new(move || {
             converted += 1;
             reporter.report(Phase::Rendering, frames * converted.min(total) / total);
             reporter.check()
         });
-        let mut converter = Converter::new(timeline, cx.source.renderer, progress);
+        let images = Images::new(cx.plan.lottie_images, cx.destination, cx.project_file);
+        let mut converter = Converter::new(timeline, cx.source.renderer, images, progress);
         let mut comp = Comp::default();
 
         // A size other than the artboard's own scales everything from one
@@ -165,12 +159,12 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
             message: error.to_string(),
         })?;
         fs::write(path, text).map_err(|error| ExportError::io("written", path, error))?;
-        std::mem::take(&mut converter.warnings)
+        converter.finish()
     };
     for warning in warnings.into_vec() {
         cx.reporter.note(warning);
     }
     cx.reporter.check()?;
     cx.reporter.report(Phase::Encoding, cx.plan.frame_count());
-    Ok(None)
+    Ok(images.into_files())
 }

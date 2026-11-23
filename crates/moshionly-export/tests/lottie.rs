@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use moshionly_core::eval::{Property, PropertyValue, value_at};
 use moshionly_core::{Document, Easing, NodeId, ease, io};
-use moshionly_export::{ExportJob, Exported, Format, FrameRate, Settings};
+use moshionly_export::{ExportJob, Exported, Format, FrameRate, LottieImages, Settings};
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
 use serde_json::Value;
 
@@ -521,4 +521,95 @@ fn text_becomes_outlines_moved_piece_by_piece() {
     );
     // The file stays small.
     assert!(exported.bytes < 200_000, "{} bytes", exported.bytes);
+}
+
+/// A small PNG as a `data:` URI.
+fn png_uri(width: u32, height: u32) -> String {
+    let picture = image::RgbaImage::from_pixel(width, height, image::Rgba([13, 153, 255, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    picture
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    io::data_uri("image/png", &bytes.into_inner())
+}
+
+fn image_document() -> Arc<Document> {
+    let nodes = format!(
+        r##",{{"id":"pic","parent":"board","index":"a0","type":"image","name":"Photo",
+            "x":10,"y":10,"width":200,"height":100,"fit":"cover","corner_radius":12,
+            "source":"{}"}}
+        ,{{"id":"gone","parent":"board","index":"a1","type":"image","name":"Missing",
+            "source":"nowhere/missing.png"}}"##,
+        png_uri(40, 30)
+    );
+    document(1000.0, &nodes)
+}
+
+#[test]
+fn images_are_embedded_and_fitted_to_their_box() {
+    let (lottie, exported) = export_document(image_document(), Settings::default());
+    let photo = layer(&lottie["layers"], "Photo");
+    assert_eq!(photo["ty"], 2);
+    let asset = asset(&lottie, &photo["refId"]);
+    assert_eq!(
+        (asset["w"].clone(), asset["h"].clone()),
+        (40.into(), 30.into())
+    );
+    assert_eq!(asset["e"], 1);
+    assert!(
+        asset["p"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    // Covering a 200 by 100 box, a 40 by 30 picture is scaled 5 times
+    // and cut to the box's rounded corners.
+    assert_eq!(photo["ks"]["s"]["k"], serde_json::json!([500, 500]));
+    assert_eq!(photo["hasMask"], true);
+    // A picture that cannot be found is left out, and said so.
+    assert!(
+        lottie["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|layer| layer["nm"] != "Missing")
+    );
+    assert_eq!(exported.warnings.len(), 1, "{:?}", exported.warnings);
+    assert!(exported.warnings[0].starts_with("\"Missing\" is left out"));
+}
+
+#[test]
+fn images_can_go_beside_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("launch.json");
+    let document = image_document();
+    let artboard = document.artboards()[0].clone();
+    let settings = Settings::default().with_lottie_images(LottieImages::Files);
+    let job = ExportJob::new(document, artboard, Format::Lottie, &destination)
+        .with_settings(settings)
+        .with_renderer(Renderer::new(
+            FontLibrary::bundled(),
+            AssetLoader::default(),
+        ));
+    let (result, _) = common::run(&job);
+    result.unwrap();
+    let lottie: Value = serde_json::from_str(&fs::read_to_string(&destination).unwrap()).unwrap();
+    let asset = &lottie["assets"][0];
+    assert_eq!(
+        (asset["u"].as_str(), asset["e"].as_i64()),
+        (Some("launch_images/"), Some(0))
+    );
+    let file = dir
+        .path()
+        .join("launch_images")
+        .join(asset["p"].as_str().unwrap());
+    assert!(fs::read(&file).unwrap().starts_with(b"\x89PNG"));
+    assert_eq!(
+        common::names_in(&dir.path().join("launch_images")),
+        ["image_0.png"]
+    );
+    assert_eq!(
+        common::names_in(dir.path()),
+        ["launch.json", "launch_images"]
+    );
 }

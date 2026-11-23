@@ -92,13 +92,47 @@ impl Area {
     }
 }
 
-/// A contour moved by `offset`.
-fn moved(mut contour: Contour, offset: [f64; 2]) -> Contour {
-    for vertex in &mut contour.vertices {
-        vertex[0] += offset[0];
-        vertex[1] += offset[1];
+/// How a layer's own space sits in the space its masks are drawn in: a
+/// point `p` of the layer is at `p * scale + offset` there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Place {
+    /// Scale each way.
+    pub scale: [f64; 2],
+    /// Shift after scaling.
+    pub offset: [f64; 2],
+}
+
+impl Default for Place {
+    fn default() -> Self {
+        Self {
+            scale: [1.0, 1.0],
+            offset: [0.0, 0.0],
+        }
     }
-    contour
+}
+
+impl Place {
+    /// The layer moved by `offset`.
+    pub fn moved(offset: [f64; 2]) -> Self {
+        Self {
+            offset,
+            ..Self::default()
+        }
+    }
+
+    /// `contour` placed: points scaled and shifted, handles scaled.
+    fn apply(&self, mut contour: Contour) -> Contour {
+        for vertex in &mut contour.vertices {
+            *vertex = [
+                vertex[0] * self.scale[0] + self.offset[0],
+                vertex[1] * self.scale[1] + self.offset[1],
+            ];
+        }
+        for handle in contour.ins.iter_mut().chain(&mut contour.outs) {
+            *handle = [handle[0] * self.scale[0], handle[1] * self.scale[1]];
+        }
+        contour
+    }
 }
 
 /// A rectangle from its edges, as a contour of four points, also when it
@@ -161,7 +195,7 @@ impl Converter<'_> {
                     None,
                 );
                 layer.remove("bm");
-                this.add_masks(node, &mut layer, origin, Masks::CLIP);
+                this.add_masks(node, &mut layer, &|_| Place::moved(origin), Masks::CLIP);
                 inner.layers.push(Value::Object(layer));
             } else {
                 this.add_children(&node.id, inner, None, origin)?;
@@ -176,7 +210,7 @@ impl Converter<'_> {
             clip: clip && !clip_children_apart,
             reveal: true,
         };
-        self.add_masks(node, &mut layer, origin, masks);
+        self.add_masks(node, &mut layer, &|_| Place::moved(origin), masks);
         comp.layers.push(Value::Object(layer));
         Ok(())
     }
@@ -228,7 +262,7 @@ impl Converter<'_> {
         let transform = anchored(transform, origin);
         let index = comp.index();
         let mut layer = self.composition_layer(node, &asset, area, &transform, index, parent_index);
-        self.add_masks(node, &mut layer, origin, Masks::REVEAL);
+        self.add_masks(node, &mut layer, &|_| Place::moved(origin), Masks::REVEAL);
         comp.layers.push(Value::Object(layer));
         Ok(())
     }
@@ -398,22 +432,22 @@ impl Converter<'_> {
         comp.layers.push(Value::Object(layer));
     }
 
-    /// Adds the masks a layer needs: its group's clip, and what reveal
-    /// animations leave showing. Masks are in the layer's own space,
-    /// moved by `origin`.
+    /// Adds the masks a layer needs: its box's clip, and what reveal
+    /// animations leave showing. Masks are drawn in the node's own space
+    /// put in its Lottie layer's space by `place` at each frame.
     pub fn add_masks(
         &self,
         node: &Node,
         layer: &mut Map<String, Value>,
-        origin: [f64; 2],
+        place: &dyn Fn(f64) -> Place,
         masks: Masks,
     ) {
         let mut list = Vec::new();
         if masks.clip {
-            list.push(self.clip_mask(node, origin));
+            list.push(self.clip_mask(node, place));
         }
         if masks.reveal && self.has_reveal(&node.id) {
-            list.push(self.reveal_mask(node, origin));
+            list.push(self.reveal_mask(node, place));
         }
         if list.is_empty() {
             return;
@@ -430,16 +464,17 @@ impl Converter<'_> {
         layer.insert("masksProperties".into(), Value::Array(list));
     }
 
-    /// A mask of a group's rounded box.
-    fn clip_mask(&self, node: &Node, origin: [f64; 2]) -> Value {
+    /// A mask of a layer's rounded box.
+    fn clip_mask(&self, node: &Node, place: &dyn Fn(f64) -> Place) -> Value {
         let id = &node.id;
         let timeline = self.timeline;
         let contour = |frame: f64| {
             let (width, height) = self.size(id, frame);
-            moved(
-                shapes::rounded_rect(width, height, timeline.radii(id, frame)),
-                origin,
-            )
+            place(frame).apply(shapes::rounded_rect(
+                width,
+                height,
+                timeline.radii(id, frame),
+            ))
         };
         let numbers = |frame: f64| shapes::flatten(&[contour(frame)]);
         let hints = timeline.hints(id);
@@ -456,7 +491,7 @@ impl Converter<'_> {
     }
 
     /// A mask of the part of a layer that reveal animations leave showing.
-    fn reveal_mask(&self, node: &Node, origin: [f64; 2]) -> Value {
+    fn reveal_mask(&self, node: &Node, place: &dyn Fn(f64) -> Place) -> Value {
         let id = &node.id;
         let timeline = self.timeline;
         let edges = |frame: f64| -> [f64; 4] {
@@ -476,15 +511,7 @@ impl Converter<'_> {
                 None => [0.0, 0.0, 0.0, 0.0],
             }
         };
-        let contour = |frame: f64| {
-            let [left, top, right, bottom] = edges(frame);
-            rectangle([
-                left + origin[0],
-                top + origin[1],
-                right + origin[0],
-                bottom + origin[1],
-            ])
-        };
+        let contour = |frame: f64| place(frame).apply(rectangle(edges(frame)));
         let numbers = |frame: f64| shapes::flatten(&[contour(frame)]);
         let hints = timeline.hints(id);
         let outline = Outline {
