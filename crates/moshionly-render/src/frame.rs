@@ -190,6 +190,16 @@ impl Frame {
         .map_err(|error| RenderError::Png(error.to_string()))?;
         Ok(file)
     }
+
+    /// The pixels, for the renderer to draw into.
+    pub(crate) fn premultiplied_mut(&mut self) -> &mut [u8] {
+        &mut self.pixels
+    }
+
+    /// Attaches the warnings gathered while drawing.
+    pub(crate) fn set_warnings(&mut self, warnings: Vec<RenderWarning>) {
+        self.warnings = warnings;
+    }
 }
 
 /// Converts RGBA pixels from unpremultiplied to premultiplied in place.

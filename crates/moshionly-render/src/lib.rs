@@ -9,10 +9,18 @@
 
 #![warn(missing_docs)]
 
+mod convert;
+mod draw;
 pub mod error;
 pub mod frame;
 pub mod options;
+pub mod renderer;
 
 pub use error::{RenderError, RenderWarning};
 pub use frame::Frame;
 pub use options::{Background, RenderOptions};
+pub use renderer::Renderer;
+
+/// The Skia binding this crate draws with, for callers of
+/// [`Renderer::render_into`] who need its canvas type.
+pub use skia_safe;

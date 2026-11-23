@@ -11,4 +11,8 @@ authors.workspace = true
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
+# Skia is downloaded prebuilt, and which prebuilt is chosen by the exact list
+# of features. Default features plus `textlayout` has one for macOS and Linux;
+# adding a feature without checking can make every build compile Skia itself.
+skia-safe = { version = "0.157", features = ["textlayout"] }
 thiserror = "2"

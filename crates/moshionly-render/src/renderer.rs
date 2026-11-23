@@ -1,0 +1,305 @@
+//! The renderer: a scene and options in, a frame out.
+
+use moshionly_core::Scene;
+use skia_safe as sk;
+
+use crate::draw::Painter;
+use crate::error::{RenderError, RenderWarning};
+use crate::frame::{BYTES_PER_PIXEL, Frame};
+use crate::options::{Background, RenderOptions};
+
+/// Draws scenes.
+///
+/// A renderer keeps what is worth keeping between frames, so make one and
+/// use it for every frame. It can be created on one thread and used on
+/// another, and shared between threads.
+#[derive(Debug, Default)]
+pub struct Renderer {}
+
+impl Renderer {
+    /// A renderer.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Renders a scene into a new frame.
+    ///
+    /// The frame is `options.scale` times the size of the artboard, or of
+    /// `options.region` when that is set. See [`RenderOptions::frame_size`].
+    pub fn render(&self, scene: &Scene, options: &RenderOptions) -> Result<Frame, RenderError> {
+        let (width, height) = options.frame_size(scene)?;
+        let region = options.region_of(scene);
+        let mut frame = Frame::new(width, height)?;
+        let info = sk::ImageInfo::new(
+            (width as i32, height as i32),
+            sk::ColorType::RGBA8888,
+            sk::AlphaType::Premul,
+            None,
+        );
+        let row_bytes = width as usize * BYTES_PER_PIXEL;
+        let warnings = {
+            let mut surface =
+                sk::surfaces::wrap_pixels(&info, frame.premultiplied_mut(), row_bytes, None)
+                    .ok_or(RenderError::Surface { width, height })?;
+            let canvas = surface.canvas();
+            canvas.scale((options.scale as f32, options.scale as f32));
+            canvas.translate((-region.x as f32, -region.y as f32));
+            self.draw(scene, canvas, options.background)
+        };
+        frame.set_warnings(warnings);
+        Ok(frame)
+    }
+
+    /// Draws a scene onto a canvas the caller owns, on the artboard's own
+    /// fill.
+    ///
+    /// The artboard's top-left corner goes where the canvas's current
+    /// transform puts the origin, and one artboard pixel is one unit, so
+    /// scale and translate the canvas first to place the scene. The canvas
+    /// comes back with the transform and clip it had.
+    ///
+    /// Returns what was drawn differently from what the scene asked for.
+    pub fn render_into(&self, scene: &Scene, canvas: &sk::Canvas) -> Vec<RenderWarning> {
+        self.draw(scene, canvas, Background::Artboard)
+    }
+
+    fn draw(
+        &self,
+        scene: &Scene,
+        canvas: &sk::Canvas,
+        background: Background,
+    ) -> Vec<RenderWarning> {
+        let mut painter = Painter::new(canvas);
+        painter.scene(scene, background);
+        painter.into_warnings()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use moshionly_core::model::{BlendMode, GradientStop};
+    use moshionly_core::scene::{Content, SceneNode, ScenePaint};
+    use moshionly_core::{Affine, Color, NodeId, Point, Rect};
+
+    fn scene(background: Option<ScenePaint>) -> Scene {
+        Scene {
+            artboard: NodeId::from("ab"),
+            time_ms: 0.0,
+            width: 40.0,
+            height: 20.0,
+            background,
+            nodes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_background_follows_the_options() {
+        let renderer = Renderer::new();
+        let blue = Color::rgb(0, 0, 255);
+        let filled = scene(Some(ScenePaint::solid(blue)));
+        let options = RenderOptions::new();
+
+        let frame = renderer.render(&filled, &options).unwrap();
+        assert_eq!((frame.width(), frame.height()), (40, 20));
+        assert!(frame.is_opaque());
+        assert_eq!(frame.premultiplied_pixel(39, 19), Some([0, 0, 255, 255]));
+        assert!(frame.warnings().is_empty());
+
+        let clear = renderer
+            .render(&filled, &options.with_background(Background::Transparent))
+            .unwrap();
+        assert_eq!(clear.premultiplied_pixel(5, 5), Some([0, 0, 0, 0]));
+
+        // An artboard without a fill is transparent, unless a colour is put
+        // behind it.
+        let empty = scene(None);
+        let frame = renderer.render(&empty, &options).unwrap();
+        assert_eq!(frame.premultiplied_pixel(5, 5), Some([0, 0, 0, 0]));
+        let over = options.with_background(Background::Over(Color::WHITE));
+        let frame = renderer.render(&empty, &over).unwrap();
+        assert_eq!(frame.premultiplied_pixel(5, 5), Some([255, 255, 255, 255]));
+
+        // A see-through fill lets the colour behind it show.
+        let glass = scene(Some(ScenePaint::solid(Color::rgba(0, 0, 0, 128))));
+        let frame = renderer.render(&glass, &over).unwrap();
+        assert!(frame.is_opaque());
+        assert_eq!(frame.premultiplied_pixel(5, 5), Some([127, 127, 127, 255]));
+    }
+
+    #[test]
+    fn scale_and_region_choose_the_pixels() {
+        let renderer = Renderer::new();
+        // Black on the left edge, white on the right edge.
+        let gradient = scene(Some(ScenePaint::LinearGradient {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(40.0, 0.0),
+            stops: vec![
+                GradientStop::new(0.0, Color::BLACK),
+                GradientStop::new(1.0, Color::WHITE),
+            ],
+        }));
+        let grey = |frame: &Frame, x: u32| i32::from(frame.premultiplied_pixel(x, 0).unwrap()[0]);
+
+        let double = renderer
+            .render(&gradient, &RenderOptions::new().with_scale(2.0))
+            .unwrap();
+        assert_eq!((double.width(), double.height()), (80, 40));
+        assert!(
+            (grey(&double, 40) - 128).abs() <= 3,
+            "{}",
+            grey(&double, 40)
+        );
+
+        // The right half only: it starts at mid grey.
+        let right = RenderOptions::new().with_region(Rect::new(20.0, 0.0, 20.0, 20.0));
+        let frame = renderer.render(&gradient, &right).unwrap();
+        assert_eq!((frame.width(), frame.height()), (20, 20));
+        assert!((grey(&frame, 0) - 130).abs() <= 3, "{}", grey(&frame, 0));
+        assert!(grey(&frame, 19) > 245);
+
+        // A region that reaches past the artboard: nothing is drawn there.
+        let past = RenderOptions::new().with_region(Rect::new(30.0, 10.0, 20.0, 20.0));
+        let frame = renderer.render(&gradient, &past).unwrap();
+        assert_eq!(frame.premultiplied_pixel(9, 9).unwrap()[3], 255);
+        assert_eq!(frame.premultiplied_pixel(10, 9), Some([0, 0, 0, 0]));
+        assert_eq!(frame.premultiplied_pixel(9, 10), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn a_callers_canvas_is_drawn_on_and_left_as_it_was() {
+        let renderer = Renderer::new();
+        let filled = scene(Some(ScenePaint::solid(Color::rgb(255, 0, 0))));
+        let mut surface = sk::surfaces::raster_n32_premul((100, 100)).unwrap();
+        let canvas = surface.canvas();
+        canvas.translate((10.0, 30.0));
+        let before = (canvas.save_count(), canvas.local_to_device_as_3x3());
+        assert!(renderer.render_into(&filled, canvas).is_empty());
+        assert_eq!(
+            (canvas.save_count(), canvas.local_to_device_as_3x3()),
+            before
+        );
+        let image = surface.image_snapshot();
+        let pixmap = image.peek_pixels().unwrap();
+        assert_eq!(pixmap.get_color((49, 49)), sk::Color::RED);
+        assert_eq!(pixmap.get_color((50, 49)), sk::Color::TRANSPARENT);
+        assert_eq!(pixmap.get_color((9, 30)), sk::Color::TRANSPARENT);
+    }
+
+    fn node(id: &str, transform: Affine, width: f64, height: f64, content: Content) -> SceneNode {
+        SceneNode {
+            id: NodeId::from(id),
+            transform,
+            width,
+            height,
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            blur: 0.0,
+            shadow: None,
+            clip: None,
+            mask: None,
+            content,
+        }
+    }
+
+    fn square(id: &str, x: f64, y: f64, size: f64, color: Color) -> SceneNode {
+        let content = Content::Rect {
+            radii: [0.0; 4],
+            fill: Some(ScenePaint::solid(color)),
+            stroke: None,
+        };
+        node(id, Affine::translate(x, y), size, size, content)
+    }
+
+    #[test]
+    fn nodes_are_drawn_back_to_front_through_nested_transforms() {
+        let renderer = Renderer::new();
+        let red = Color::rgb(255, 0, 0);
+        let green = Color::rgb(0, 255, 0);
+        // A group at (10, 0), scaled 2, holding a 5 by 5 square at (2, 2):
+        // the square lands at (14, 4) and is 10 by 10.
+        let group = node(
+            "group",
+            Affine::translate(10.0, 0.0) * Affine::scale(2.0, 2.0),
+            10.0,
+            10.0,
+            Content::Group {
+                children: vec![square("inner", 2.0, 2.0, 5.0, green)],
+            },
+        );
+        let mut scene = scene(None);
+        scene.nodes = vec![square("back", 0.0, 0.0, 20.0, red), group];
+        let frame = renderer.render(&scene, &RenderOptions::new()).unwrap();
+        let pixel = |x, y| frame.premultiplied_pixel(x, y).unwrap();
+        assert_eq!(pixel(13, 4), [255, 0, 0, 255], "left of the inner square");
+        assert_eq!(pixel(14, 4), [0, 255, 0, 255], "the later node is in front");
+        assert_eq!(pixel(23, 13), [0, 255, 0, 255]);
+        assert_eq!(pixel(24, 13), [0, 0, 0, 0]);
+        assert_eq!(pixel(14, 14), [255, 0, 0, 255]);
+
+        // A quarter turn about the centre of a 20 by 10 box at (10, 5)
+        // stands it upright: 10 wide, 20 tall, around the same centre.
+        let mut turned = self::scene(None);
+        let mut bar = square("bar", 0.0, 0.0, 0.0, red);
+        (bar.width, bar.height) = (20.0, 10.0);
+        bar.transform = Affine::layer(10.0, 5.0, 20.0, 10.0, 90.0, 1.0);
+        turned.nodes = vec![bar];
+        let frame = renderer.render(&turned, &RenderOptions::new()).unwrap();
+        let alpha = |x, y| frame.premultiplied_pixel(x, y).unwrap()[3];
+        assert_eq!((alpha(20, 1), alpha(20, 18)), (255, 255));
+        assert_eq!((alpha(12, 10), alpha(27, 10)), (0, 0));
+    }
+
+    #[test]
+    fn opacity_fades_a_node_as_a_whole() {
+        let renderer = Renderer::new();
+        let black = Color::BLACK;
+        // Two overlapping squares in a half-transparent group: the overlap
+        // is no darker than the rest.
+        let mut group = node(
+            "group",
+            Affine::IDENTITY,
+            40.0,
+            20.0,
+            Content::Group {
+                children: vec![
+                    square("a", 0.0, 0.0, 12.0, black),
+                    square("b", 6.0, 6.0, 12.0, black),
+                ],
+            },
+        );
+        group.opacity = 0.5;
+        let mut scene = scene(None);
+        scene.nodes = vec![group];
+        let frame = renderer.render(&scene, &RenderOptions::new()).unwrap();
+        let alpha = |x, y| i32::from(frame.premultiplied_pixel(x, y).unwrap()[3]);
+        assert!((alpha(2, 2) - 128).abs() <= 1, "{}", alpha(2, 2));
+        assert_eq!(alpha(2, 2), alpha(9, 9), "the overlap");
+        assert_eq!(alpha(2, 2), alpha(15, 15));
+
+        // A node that cannot be seen or placed is skipped without fuss.
+        let mut hidden = square("hidden", 0.0, 0.0, 10.0, black);
+        hidden.opacity = 0.0;
+        let mut flattened = square("flat", 0.0, 0.0, 10.0, black);
+        flattened.transform = Affine::scale(0.0, 1.0);
+        let mut broken = square("broken", 0.0, 0.0, 10.0, black);
+        broken.transform = Affine([f64::NAN; 6]);
+        scene.nodes = vec![hidden, flattened, broken];
+        let frame = renderer.render(&scene, &RenderOptions::new()).unwrap();
+        assert!(frame.premultiplied().iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn the_renderer_can_go_to_another_thread() {
+        fn sendable<T: Send + Sync>() {}
+        sendable::<Renderer>();
+        sendable::<Frame>();
+        let renderer = Renderer::new();
+        let scene = scene(Some(ScenePaint::solid(Color::WHITE)));
+        let frame = std::thread::spawn(move || renderer.render(&scene, &RenderOptions::new()))
+            .join()
+            .unwrap()
+            .unwrap();
+        assert!(frame.is_opaque());
+    }
+}

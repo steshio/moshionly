@@ -1,0 +1,141 @@
+//! Drawing a scene onto a Skia canvas.
+//!
+//! [`Painter`] walks the scene tree. Each node is drawn in its own
+//! coordinate space: the painter saves the canvas, applies the node's
+//! transform, draws, and restores.
+
+mod geometry;
+mod paint;
+mod stroke;
+
+use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint};
+use moshionly_core::{Color, Rect};
+use skia_safe as sk;
+
+use crate::convert;
+use crate::error::RenderWarning;
+use crate::options::Background;
+
+/// Draws scenes onto one canvas and collects what went wrong on the way.
+pub(crate) struct Painter<'a> {
+    canvas: &'a sk::Canvas,
+    warnings: Vec<RenderWarning>,
+}
+
+impl<'a> Painter<'a> {
+    /// A painter for `canvas`. The canvas's current transform is where the
+    /// artboard's top-left corner goes.
+    pub(crate) fn new(canvas: &'a sk::Canvas) -> Self {
+        Self {
+            canvas,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// The warnings gathered so far.
+    pub(crate) fn into_warnings(self) -> Vec<RenderWarning> {
+        self.warnings
+    }
+
+    /// Draws a whole scene: background first, then the nodes back to front,
+    /// everything clipped to the artboard.
+    pub(crate) fn scene(&mut self, scene: &Scene, background: Background) {
+        let canvas = self.canvas;
+        let artboard = convert::rect(&Rect::new(0.0, 0.0, scene.width, scene.height));
+        canvas.save();
+        canvas.clip_rect(artboard, sk::ClipOp::Intersect, true);
+        if let Background::Over(color) = background {
+            self.fill_artboard(artboard, color);
+        }
+        if background != Background::Transparent
+            && let Some(fill) = scene
+                .background
+                .as_ref()
+                .and_then(|paint| paint::fill(paint, 1.0))
+        {
+            canvas.draw_rect(artboard, &fill);
+        }
+        for node in &scene.nodes {
+            self.node(node);
+        }
+        canvas.restore();
+    }
+
+    fn fill_artboard(&self, artboard: sk::Rect, color: Color) {
+        let mut paint = sk::Paint::default();
+        paint.set_color4f(convert::color(color), None);
+        self.canvas.draw_rect(artboard, &paint);
+    }
+
+    /// Draws one node and everything inside it.
+    fn node(&mut self, node: &SceneNode) {
+        // A transform that flattens space leaves nothing to see, and Skia
+        // must not be given numbers that are not finite.
+        if !convert::is_finite(&node.transform) || node.transform.invert().is_none() {
+            return;
+        }
+        let opacity = node.opacity as f32;
+        if opacity.is_nan() || opacity <= 0.0 {
+            return;
+        }
+        let opacity = opacity.min(1.0);
+        let canvas = self.canvas;
+        canvas.save();
+        canvas.concat(&convert::matrix(&node.transform));
+        if opacity >= 1.0 || is_flat(node) {
+            self.content(node, opacity);
+        } else {
+            // What the node draws overlaps itself. Fading the pieces one by
+            // one would show them through each other, so the node is drawn
+            // whole into a layer and the layer is faded.
+            canvas.save_layer_alpha_f(None, opacity);
+            self.content(node, 1.0);
+            canvas.restore();
+        }
+        canvas.restore();
+    }
+
+    /// Draws what a node holds, in the node's own coordinates, faded by
+    /// `opacity`.
+    fn content(&mut self, node: &SceneNode, opacity: f32) {
+        match &node.content {
+            Content::Group { children } => {
+                for child in children {
+                    self.node(child);
+                }
+            }
+            Content::Rect { fill, stroke, .. }
+            | Content::Ellipse { fill, stroke, .. }
+            | Content::Star { fill, stroke, .. }
+            | Content::Path { fill, stroke, .. } => {
+                if let Some(outline) = geometry::outline(node) {
+                    self.fill(&outline.path, fill.as_ref(), opacity);
+                    if let Some(stroke) = stroke {
+                        stroke::draw(self.canvas, &outline, stroke, opacity);
+                    }
+                }
+            }
+            // TODO: text and images.
+            Content::Text(_) | Content::Image { .. } => {}
+        }
+    }
+
+    fn fill(&self, path: &sk::Path, fill: Option<&ScenePaint>, opacity: f32) {
+        if let Some(paint) = fill.and_then(|fill| paint::fill(fill, opacity)) {
+            self.canvas.draw_path(path, &paint);
+        }
+    }
+}
+
+/// Whether a node draws at most one thing, so that fading that one thing
+/// is the same as fading the node.
+fn is_flat(node: &SceneNode) -> bool {
+    match &node.content {
+        Content::Group { children } => children.is_empty(),
+        Content::Rect { fill, stroke, .. }
+        | Content::Ellipse { fill, stroke, .. }
+        | Content::Star { fill, stroke, .. }
+        | Content::Path { fill, stroke, .. } => fill.is_none() || stroke.is_none(),
+        Content::Text(_) | Content::Image { .. } => false,
+    }
+}
