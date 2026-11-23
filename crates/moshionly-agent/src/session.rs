@@ -130,6 +130,15 @@ pub struct Session {
     pending: Vec<Change>,
 }
 
+/// `path` made absolute against the current folder, so that everything that
+/// uses the project's folder (assets, exports, image sources) sees a real
+/// one. A bare `demo.moshi` would otherwise have an empty folder, which
+/// every path seems to be inside. The path stays as given when the current
+/// folder cannot be found.
+fn absolute(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
+}
+
 impl Session {
     /// How many undo steps a session keeps.
     pub const UNDO_LIMIT: usize = History::DEFAULT_LIMIT;
@@ -150,10 +159,10 @@ impl Session {
     }
 
     /// A session on a document that was read from, or will be saved to,
-    /// `path`.
+    /// `path`. A relative path is taken from the current folder.
     pub fn with_path(document: Document, path: impl Into<PathBuf>) -> Self {
         let mut session = Self::new(document);
-        session.path = Some(path.into());
+        session.path = Some(absolute(path.into()));
         session.saved_revision = Some(0);
         session
     }
@@ -176,13 +185,16 @@ impl Session {
         Arc::clone(&self.document)
     }
 
-    /// The project file, when the project has one.
+    /// The project file, when the project has one. The path is absolute
+    /// whenever the current folder could be found when it was given.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
-    /// Says where the project file is, or that there is none.
+    /// Says where the project file is, or that there is none. A relative
+    /// path is taken from the current folder.
     pub fn set_path(&mut self, path: Option<PathBuf>) {
+        let path = path.map(absolute);
         if self.path != path {
             self.path = path;
             self.saved_revision = None;
@@ -430,7 +442,7 @@ impl Session {
         if path.is_some() {
             self.saved_revision = Some(self.revision);
         }
-        self.path = path;
+        self.path = path.map(absolute);
     }
 
     /// Gives the project another name. The name is not a node, so this is
@@ -453,7 +465,7 @@ impl Session {
 
     /// Writes the document to `path`, which becomes the project file.
     pub fn save_as(&mut self, path: impl Into<PathBuf>) -> Result<(), SaveError> {
-        let path = path.into();
+        let path = absolute(path.into());
         io::save(&self.document, &path)?;
         self.path = Some(path);
         self.saved_revision = Some(self.revision);
@@ -920,6 +932,20 @@ mod tests {
         session.commit_gesture();
         assert_eq!(session.undo_steps().len(), Session::UNDO_LIMIT);
         assert_eq!(session.undo().unwrap().unwrap().summary, "Gesture");
+    }
+
+    #[test]
+    fn a_relative_project_path_is_made_absolute() {
+        let here = std::env::current_dir().unwrap();
+        let session = Session::with_path(Document::new("Demo"), "demo.moshi");
+        assert_eq!(session.path(), Some(here.join("demo.moshi").as_path()));
+        assert_eq!(session.file_name(), "demo.moshi");
+
+        let mut session = Session::new(Document::new("Demo"));
+        session.set_path(Some(PathBuf::from("demo.moshi")));
+        assert_eq!(session.path(), Some(here.join("demo.moshi").as_path()));
+        session.replace(Document::new("Other"), Some(PathBuf::from("other.moshi")));
+        assert_eq!(session.path(), Some(here.join("other.moshi").as_path()));
     }
 
     #[test]
