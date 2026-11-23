@@ -101,6 +101,11 @@ pub(crate) fn number(value: f64) -> Value {
     }
 }
 
+/// A number as it is written in a sentence: `1080`, `12.5`.
+pub(crate) fn number_text(value: f64) -> String {
+    number(value).to_string()
+}
+
 /// A box as `{ "x", "y", "width", "height" }`.
 pub(crate) fn rect(rect: &Rect) -> Value {
     json!({

@@ -14,6 +14,7 @@
 //!
 //! | Module | What it is for |
 //! |---|---|
+//! | [`guide`] | [`guide::GUIDE`] and [`guide::system_prompt`]: how to work in a file, written for a model |
 //! | [`session`] | [`Session`] and [`SessionHandle`]: the open document, its undo history, and who changed what |
 //! | [`host`] | [`Host`]: what the embedding app supplies, as traits: [`FrameSource`], [`Exporter`], [`FontSource`] |
 //! | [`tools`] | [`Tools`]: every tool, with `list` and `call` |
@@ -21,6 +22,7 @@
 
 #![warn(missing_docs)]
 
+pub mod guide;
 pub mod host;
 pub mod session;
 pub mod tool;

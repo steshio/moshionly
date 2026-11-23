@@ -37,6 +37,7 @@ use crate::host::Host;
 use crate::session::SessionHandle;
 use crate::tool::{ToolError, ToolOutput, ToolSpec};
 use args::Args;
+pub(crate) use common::number_text;
 
 /// Limits and locations for the tools.
 #[derive(Debug, Clone, PartialEq, Eq)]
