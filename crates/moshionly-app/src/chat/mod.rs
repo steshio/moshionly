@@ -57,8 +57,8 @@
 //! - [`controller`]: runs turns and provider checks in the background.
 //! - [`format`]: the bit of formatting answers may use.
 //! - [`help`]: the way forward after each kind of failure.
-//! - The panel itself (`panel`, `messages`) and the picture cache
-//!   (`images`).
+//! - The panel itself (`panel`, `messages`), the AI settings dialog
+//!   (`settings_view`) and the picture cache (`images`).
 
 pub mod controller;
 pub mod conversation;
@@ -68,6 +68,7 @@ pub mod help;
 mod images;
 mod messages;
 mod panel;
+mod settings_view;
 pub mod source;
 pub mod testing;
 pub mod tool_summary;
@@ -90,6 +91,7 @@ pub use source::{ProviderSource, RegistrySource};
 
 use crate::dialogs::Dialogs;
 use panel::{PanelAction, PanelView};
+use settings_view::SettingsView;
 
 /// What the chat needs from the editor, every frame.
 pub struct ChatInputs<'a> {
@@ -128,7 +130,7 @@ pub struct Chat {
     attachments: Vec<ImageData>,
     notice: Option<String>,
     images: images::ImageCache,
-    // TODO: draw the AI settings dialog; until then this only records the wish.
+    settings: SettingsView,
     settings_open: bool,
     /// The settings were opened by themselves once, because no AI was
     /// ready. They are not opened by themselves again.
@@ -180,6 +182,7 @@ impl Chat {
             attachments: Vec::new(),
             notice: None,
             images: images::ImageCache::default(),
+            settings: SettingsView::default(),
             settings_open: false,
             offered_settings: false,
         }
@@ -214,11 +217,17 @@ impl Chat {
     /// Closes the AI settings dialog.
     pub fn close_settings(&mut self) {
         self.settings_open = false;
+        self.settings.reset();
     }
 
     /// Whether the AI settings dialog is open.
     pub fn is_settings_open(&self) -> bool {
         self.settings_open
+    }
+
+    /// Opens one provider's details in the AI settings, or closes them all.
+    pub fn expand_in_settings(&mut self, provider: Option<&str>) {
+        self.settings.expand(provider);
     }
 
     /// Takes in what the background produced, without drawing. Call it
@@ -234,7 +243,8 @@ impl Chat {
         }
     }
 
-    /// Draws the panel into `ui`'s available rectangle.
+    /// Draws the panel into `ui`'s available rectangle, and the AI settings
+    /// over the window when they are open.
     pub fn show(&mut self, ui: &mut egui::Ui, inputs: ChatInputs<'_>) -> ChatOutput {
         let mut output = self.poll(ui.ctx());
         self.controller.ensure_checked();
@@ -258,6 +268,9 @@ impl Chat {
             self.perform(action, &inputs, &mut output);
         }
 
+        if self.settings_open && self.settings.show(ui.ctx(), &mut self.controller) {
+            self.settings_open = false;
+        }
         output.busy = self.controller.is_busy();
         output
     }
