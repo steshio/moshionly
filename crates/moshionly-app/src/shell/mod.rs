@@ -473,7 +473,7 @@ impl Shell {
     fn canvas_gesture(&self) -> bool {
         matches!(
             self.drag,
-            Some(CanvasDrag::Selection(_) | CanvasDrag::Create(_))
+            Some(CanvasDrag::Selection(_) | CanvasDrag::Create(_) | CanvasDrag::Animate(_))
         ) || self
             .text_edit
             .as_ref()

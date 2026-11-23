@@ -71,7 +71,7 @@ impl Editor {
     /// The selected nodes a drag works on: not locked (a locked artboard
     /// included), and not inside another selected node (which carries
     /// them along).
-    fn drag_ids(&self) -> Vec<NodeId> {
+    pub(super) fn drag_ids(&self) -> Vec<NodeId> {
         let ids = self.selection.ids();
         ids.iter()
             .filter(|id| {
@@ -83,7 +83,7 @@ impl Editor {
     }
 
     /// The nodes a drag works on, as they are now.
-    fn drag_items(&self) -> Vec<Item> {
+    pub(super) fn drag_items(&self) -> Vec<Item> {
         self.drag_ids()
             .iter()
             .filter_map(|id| Item::of(&self.document, id))

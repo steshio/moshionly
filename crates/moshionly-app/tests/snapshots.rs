@@ -529,6 +529,15 @@ fn viewport() {
                     closing: false,
                 }),
                 editing: None,
+                paths: vec![(
+                    (0..=24)
+                        .map(|n| {
+                            let t = n as f32 / 24.0;
+                            egui::pos2(160.0 + 420.0 * t, 960.0 - 300.0 * t * (2.0 - t))
+                        })
+                        .collect(),
+                    vec![egui::pos2(160.0, 960.0), egui::pos2(580.0, 660.0)],
+                )],
             };
             Viewport::new(&mut camera)
                 .artboards(&artboards)
