@@ -130,16 +130,21 @@ Export steps through an artboard at `1000 / fps` millisecond intervals, renders 
 
 | Tool | Purpose |
 |---|---|
-| `get_overview` | Artboards, sizes, durations, layer and animation counts |
+| `get_overview` | Artboards, sizes, durations, layer and animation counts, fonts in use |
 | `query_nodes` | Find nodes by type, name, parent or target and return chosen fields |
+| `get_node` | One node in full, with its box on the artboard and the animations that target it |
 | `get_schema` | The JSON Schema for a node type, with defaults |
-| `apply_edits` | An atomic batch of add, update, remove, move and clone operations |
+| `apply_edits` | An atomic batch of add, update, remove, move, clone and set-duration operations |
 | `screenshot` | Render an artboard or layer at a time, as a small PNG |
+| `evaluate` | The values of chosen properties of chosen layers at chosen times, as numbers |
+| `list_fonts` | The font families the renderer can use |
+| `import_image` | Copy an image into the project's `assets/` folder and return the source to use |
 | `export` | Render a file to disk |
+| `undo_last_agent_change` | Undo the most recent change an agent made, never the person's own |
 
 Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
 
-The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use. The same local port accepts designs sent by the Figma plugin.
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use. The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then waits for the person to accept it, and is never applied directly.
 
 ## AI providers
 
