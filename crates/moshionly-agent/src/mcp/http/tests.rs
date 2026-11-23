@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::tools::testing::demo_tools;
+use crate::tools::testing::{demo_session, demo_tools};
 
 /// A started server on a free port.
 fn start() -> HttpServer {
@@ -321,4 +321,185 @@ fn a_taken_port_is_reported_and_stopping_frees_it() {
     server.stop();
     let again = HttpServer::start(McpServer::new(demo_tools()), config).unwrap();
     assert_eq!(again.address().port(), port);
+}
+
+fn envelope() -> Value {
+    json!({
+        "format": "moshionly-import", "version": 1,
+        "source": { "app": "figma", "file_name": "Launch", "file_key": "abc" },
+        "nodes": [
+            { "id": "1:1", "type": "artboard", "name": "Frame", "width": 400, "height": 300,
+              "source_id": "figma:abc:1:1" },
+            { "id": "1:2", "parent": "1:1", "type": "rect", "fill": "#0D99FF",
+              "source_id": "figma:abc:1:2" }
+        ],
+        "notes": []
+    })
+}
+
+/// A server that takes designs, its inbox, and the session it serves.
+fn start_with_imports() -> (
+    HttpServer,
+    std::sync::mpsc::Receiver<crate::import::PendingImport>,
+    crate::SessionHandle,
+) {
+    let session = demo_session();
+    let tools = crate::Tools::new(session.clone(), crate::Host::new());
+    let (sink, inbox) = ImportSink::new();
+    let server = HttpServer::start_with_imports(
+        McpServer::new(tools),
+        HttpConfig {
+            port: 0,
+            ..HttpConfig::default()
+        },
+        sink,
+    )
+    .unwrap();
+    (server, inbox, session)
+}
+
+#[test]
+fn the_plugin_panel_may_send_a_design_after_its_preflight() {
+    let (server, inbox, session) = start_with_imports();
+    let reply = send(
+        &server,
+        "OPTIONS",
+        "/import",
+        &[
+            ("Origin", "null"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "content-type"),
+            ("Access-Control-Request-Private-Network", "true"),
+        ],
+        "",
+    );
+    assert_eq!(reply.status, 204);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    assert_eq!(
+        reply.header("access-control-allow-methods"),
+        Some("POST, OPTIONS")
+    );
+    assert_eq!(
+        reply.header("access-control-allow-headers"),
+        Some("Content-Type")
+    );
+    assert_eq!(
+        reply.header("access-control-allow-private-network"),
+        Some("true")
+    );
+
+    let reply = send(
+        &server,
+        "POST",
+        "/import",
+        &[("Origin", "null"), JSON],
+        &envelope().to_string(),
+    );
+    assert_eq!(reply.status, 202, "{}", reply.body);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    assert_eq!(reply.json()["status"], "pending");
+    assert_eq!(reply.json()["layers"], 2);
+    let pending = inbox.try_recv().unwrap();
+    assert_eq!(pending.source.file_name.as_deref(), Some("Launch"));
+    // Nothing was applied: the app decides.
+    assert_eq!(session.document().artboards().len(), 2);
+    assert_eq!(session.revision(), 0);
+}
+
+#[test]
+fn a_bad_design_is_refused_with_a_reason_the_plugin_can_show() {
+    let (server, inbox, _) = start_with_imports();
+    let mut bad = envelope();
+    bad["nodes"][1]["fil"] = json!("#000000");
+    let reply = send(
+        &server,
+        "POST",
+        "/import",
+        &[("Origin", "null"), JSON],
+        &bad.to_string(),
+    );
+    assert_eq!(reply.status, 400);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    assert_eq!(reply.json()["ok"], false);
+    let error = reply.json()["error"].as_str().unwrap().to_owned();
+    assert!(error.starts_with("The design cannot be used"), "{error}");
+    assert!(error.contains("Did you mean \"fill\"?"), "{error}");
+    assert!(inbox.try_recv().is_err());
+
+    let reply = send(&server, "POST", "/import", &[JSON], "[1, 2]");
+    assert_eq!(reply.status, 400);
+    assert!(reply.header("access-control-allow-origin").is_none());
+}
+
+#[test]
+fn other_pages_and_methods_are_refused_at_import() {
+    let (server, inbox, _) = start_with_imports();
+    let reply = send(
+        &server,
+        "POST",
+        "/import",
+        &[("Origin", "https://evil.example"), JSON],
+        &envelope().to_string(),
+    );
+    assert_eq!(reply.status, 403);
+    assert!(reply.header("access-control-allow-origin").is_none());
+    let reply = send(
+        &server,
+        "OPTIONS",
+        "/import",
+        &[("Origin", "https://evil.example")],
+        "",
+    );
+    assert_eq!(reply.status, 403);
+    assert_eq!(send(&server, "GET", "/import", &[], "").status, 405);
+    assert!(inbox.try_recv().is_err());
+
+    // A server that does not take designs says so.
+    let plain_server = start();
+    let reply = send(
+        &plain_server,
+        "POST",
+        "/import",
+        &[JSON],
+        &envelope().to_string(),
+    );
+    assert_eq!(reply.status, 503);
+    assert!(
+        reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("not taking designs")
+    );
+}
+
+#[test]
+fn the_plugin_can_ask_whether_the_app_is_running() {
+    let server = start();
+    let reply = send(&server, "GET", "/health", &[("Origin", "null")], "");
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    assert_eq!(reply.json()["import"], "/import");
+    let reply = send(
+        &server,
+        "OPTIONS",
+        "/health",
+        &[
+            ("Origin", "null"),
+            ("Access-Control-Request-Private-Network", "true"),
+        ],
+        "",
+    );
+    assert_eq!(reply.status, 204);
+    assert_eq!(
+        reply.header("access-control-allow-private-network"),
+        Some("true")
+    );
+    let reply = send(
+        &server,
+        "GET",
+        "/health",
+        &[("Origin", "https://evil.example")],
+        "",
+    );
+    assert_eq!(reply.status, 403);
 }

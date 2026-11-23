@@ -12,6 +12,15 @@
 //! Requests are answered with a single JSON response; the server never
 //! needs to stream. Clients of the earlier protocol revisions get a
 //! session id from `initialize` and end it with `DELETE`.
+//!
+//! The same port takes designs from the Figma plugin at `POST /import`
+//! and says it is running at `GET /health`. The plugin's panel is a
+//! sandboxed page whose origin is `null`, so these two answer that origin's
+//! cross-origin requests, including the preflight Chromium sends before a
+//! page may reach a private address. Because any sandboxed page looks the
+//! same, what arrives is checked and handed to the app as a
+//! [`PendingImport`](crate::import::PendingImport) the person accepts or
+//! rejects; nothing is applied directly.
 
 use std::collections::HashMap;
 use std::io;
@@ -24,13 +33,14 @@ use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{any, get};
+use axum::routing::any;
 use moshionly_core::NodeId;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use super::McpServer;
 use super::protocol::{Headers, Outcome, Status, code, server_info};
+use crate::import::{ImportSink, read_envelope};
 
 /// The port the app listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 47821;
@@ -38,6 +48,8 @@ pub const DEFAULT_PORT: u16 = 47821;
 pub const MCP_PATH: &str = "/mcp";
 /// The path that says the app is running.
 pub const HEALTH_PATH: &str = "/health";
+/// The path the Figma plugin sends designs to.
+pub const IMPORT_PATH: &str = "/import";
 
 /// The most legacy sessions kept at once; the oldest goes first.
 const MAX_SESSIONS: usize = 64;
@@ -77,8 +89,27 @@ impl HttpServer {
     /// on a thread of its own.
     ///
     /// Fails when the port is taken, for example by another copy of the
-    /// app.
+    /// app. Designs sent to `/import` are refused; use
+    /// [`HttpServer::start_with_imports`] to take them.
     pub fn start(server: McpServer, config: HttpConfig) -> io::Result<HttpServer> {
+        Self::serve(server, config, None)
+    }
+
+    /// Like [`HttpServer::start`], and hands designs sent to `/import` to
+    /// `imports` once they pass the checks.
+    pub fn start_with_imports(
+        server: McpServer,
+        config: HttpConfig,
+        imports: ImportSink,
+    ) -> io::Result<HttpServer> {
+        Self::serve(server, config, Some(imports))
+    }
+
+    fn serve(
+        server: McpServer,
+        config: HttpConfig,
+        imports: Option<ImportSink>,
+    ) -> io::Result<HttpServer> {
         let listener = StdListener::bind((Ipv4Addr::LOCALHOST, config.port))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -89,6 +120,7 @@ impl HttpServer {
             .build()?;
         let state = Arc::new(Shared {
             server,
+            imports,
             port: address.port(),
             sessions: Mutex::new(Sessions::default()),
         });
@@ -189,6 +221,7 @@ impl Sessions {
 /// What every request handler shares.
 struct Shared {
     server: McpServer,
+    imports: Option<ImportSink>,
     port: u16,
     sessions: Mutex<Sessions>,
 }
@@ -202,7 +235,8 @@ impl Shared {
 fn router(state: Arc<Shared>, max_body_bytes: usize) -> Router {
     Router::new()
         .route(MCP_PATH, any(mcp))
-        .route(HEALTH_PATH, get(health))
+        .route(HEALTH_PATH, any(health))
+        .route(IMPORT_PATH, any(import))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
@@ -235,13 +269,7 @@ async fn mcp(
         Method::POST => post(&state, &headers, &body).await,
         Method::DELETE => delete(&state, &headers),
         // Nothing is ever sent unasked, so there is no stream to open.
-        _ => {
-            let mut response = plain(StatusCode::METHOD_NOT_ALLOWED, "");
-            response
-                .headers_mut()
-                .insert(header::ALLOW, HeaderValue::from_static("POST, DELETE"));
-            response
-        }
+        _ => not_allowed("POST, DELETE"),
     }
 }
 
@@ -344,18 +372,158 @@ fn delete(state: &Shared, headers: &HeaderMap) -> Response {
 }
 
 /// `GET /health`: whether the app is running, and which version.
-async fn health(State(state): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    if let Some(refusal) = foreign_host(&headers, state.port) {
-        return refusal;
+async fn health(State(state): State<Arc<Shared>>, method: Method, headers: HeaderMap) -> Response {
+    let origin = match plugin_origin(&headers, state.port) {
+        Ok(origin) => origin,
+        Err(refusal) => return *refusal,
+    };
+    let response = match method {
+        Method::OPTIONS => return preflight(&headers, origin.as_deref(), "GET, OPTIONS"),
+        Method::GET | Method::HEAD => {
+            let info = server_info();
+            json_response(
+                StatusCode::OK,
+                &json!({
+                    "app": "Moshionly",
+                    "name": info["name"],
+                    "version": info["version"],
+                    "mcp": MCP_PATH,
+                    "import": IMPORT_PATH,
+                }),
+            )
+        }
+        _ => not_allowed("GET, OPTIONS"),
+    };
+    with_cors(response, origin.as_deref())
+}
+
+/// `POST /import`: a design from the Figma plugin.
+async fn import(
+    State(state): State<Arc<Shared>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let origin = match plugin_origin(&headers, state.port) {
+        Ok(origin) => origin,
+        Err(refusal) => return *refusal,
+    };
+    let response = match method {
+        Method::OPTIONS => return preflight(&headers, origin.as_deref(), "POST, OPTIONS"),
+        Method::POST => receive(&state, &body),
+        _ => not_allowed("POST, OPTIONS"),
+    };
+    with_cors(response, origin.as_deref())
+}
+
+/// Checks a design and hands it to the app.
+fn receive(state: &Shared, body: &Bytes) -> Response {
+    let refuse = |status: StatusCode, message: String| {
+        json_response(status, &json!({ "ok": false, "error": message }))
+    };
+    let Some(sink) = &state.imports else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "This Moshionly is not taking designs. Open the Moshionly app and send again."
+                .to_owned(),
+        );
+    };
+    let pending = match read_envelope(body) {
+        Ok(pending) => pending,
+        Err(error) => return refuse(StatusCode::BAD_REQUEST, capitalised(&error.to_string())),
+    };
+    let (layers, notes) = (pending.nodes.len(), pending.notes.len());
+    if !sink.deliver(pending) {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Moshionly is closing and cannot take the design. Send it again once it is open."
+                .to_owned(),
+        );
     }
-    let info = server_info();
-    let body = json!({
-        "app": "Moshionly",
-        "name": info["name"],
-        "version": info["version"],
-        "mcp": MCP_PATH,
-    });
-    json_response(StatusCode::OK, &body)
+    json_response(
+        StatusCode::ACCEPTED,
+        &json!({
+            "ok": true,
+            "status": "pending",
+            "layers": layers,
+            "notes": notes,
+            "message": "Moshionly received the design and is asking where to put it.",
+        }),
+    )
+}
+
+/// The origin of a request to `/health` or `/import`, when it is one the
+/// plugin's panel can have: none, `null`, or this server's own. Anything
+/// else is refused.
+fn plugin_origin(headers: &HeaderMap, port: u16) -> Result<Option<String>, Box<Response>> {
+    if let Some(refusal) = foreign_host(headers, port) {
+        return Err(Box::new(refusal));
+    }
+    match header_text(headers, header::ORIGIN.as_str()) {
+        None => Ok(None),
+        Some(origin) if origin == "null" || is_own_origin(&origin, port) => Ok(Some(origin)),
+        Some(origin) => Err(Box::new(json_response(
+            StatusCode::FORBIDDEN,
+            &json!({ "ok": false, "error": format!(
+                "Requests from {origin} are not accepted. Designs come from the Moshionly \
+                 Figma plugin."
+            ) }),
+        ))),
+    }
+}
+
+/// The answer to a CORS preflight from an allowed origin, including the
+/// private network part Chromium asks for before a page may reach a
+/// loopback address.
+fn preflight(headers: &HeaderMap, origin: Option<&str>, methods: &'static str) -> Response {
+    let mut response = with_cors(plain(StatusCode::NO_CONTENT, ""), origin);
+    let out = response.headers_mut();
+    out.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static(methods),
+    );
+    out.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type"),
+    );
+    out.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
+    let private_network = header_text(headers, "access-control-request-private-network");
+    if private_network.as_deref() == Some("true") {
+        out.insert(
+            "access-control-allow-private-network",
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
+}
+
+/// The response with the CORS header that lets `origin` read it.
+fn with_cors(mut response: Response, origin: Option<&str>) -> Response {
+    if let Some(value) = origin.and_then(|origin| HeaderValue::from_str(origin).ok()) {
+        let out = response.headers_mut();
+        out.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        out.insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    response
+}
+
+fn not_allowed(methods: &'static str) -> Response {
+    let mut response = plain(StatusCode::METHOD_NOT_ALLOWED, "");
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static(methods));
+    response
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 async fn not_found() -> Response {
