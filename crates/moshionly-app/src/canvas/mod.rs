@@ -13,6 +13,7 @@
 //! changes, nothing is requested and the window stays idle.
 
 pub mod plan;
+pub mod quality;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -25,6 +26,7 @@ use moshionly_core::{Document, NodeId, Scene, SceneNode, evaluate, evaluate_at_r
 use moshionly_render::{RenderOptions, Renderer};
 
 pub use self::plan::{MAX_TEXTURE_SIDE, Plan, density, pixel_size, plan};
+pub use self::quality::Quality;
 
 /// Everything that decides the pixels of a picture of an artboard.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,12 +58,14 @@ pub struct Picture {
 #[derive(Clone, Debug, Default)]
 pub struct RenderTimes {
     recent: VecDeque<Duration>,
+    finished: u64,
 }
 
 impl RenderTimes {
     const KEPT: usize = 64;
 
     fn record(&mut self, elapsed: Duration) {
+        self.finished += 1;
         if self.recent.len() == Self::KEPT {
             self.recent.pop_front();
         }
@@ -82,6 +86,11 @@ impl RenderTimes {
     /// How many renders the figures cover.
     pub fn count(&self) -> usize {
         self.recent.len()
+    }
+
+    /// How many renders have finished since the renderer was made.
+    pub fn finished(&self) -> u64 {
+        self.finished
     }
 }
 
@@ -525,6 +534,7 @@ mod tests {
         canvas.request(&artboard, &document, key(1, Some(0.0), 1.0));
         canvas.poll(&ctx);
         assert_eq!(canvas.times().count(), 2);
+        assert_eq!(canvas.times().finished(), 2);
         assert_eq!(canvas.picture(&artboard).unwrap().key.time, Some(0.0));
     }
 

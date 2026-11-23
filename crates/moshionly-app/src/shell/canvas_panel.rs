@@ -134,10 +134,17 @@ impl Shell {
                 continue;
             }
             let previous = self.pictures.requested(id).map(|key| key.plan);
+            // While playing, pictures may be drawn less sharp to keep up;
+            // they are sharp again when playback stops.
+            let sharpness = if self.playback.is_playing() {
+                self.quality.factor()
+            } else {
+                1.0
+            };
             let plan = plan(
                 rect.size(),
                 visible.translate(-rect.min.to_vec2()),
-                self.camera.zoom,
+                self.camera.zoom * sharpness,
                 pixels_per_point,
                 previous.as_ref(),
             );

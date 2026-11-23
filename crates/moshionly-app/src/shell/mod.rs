@@ -35,7 +35,7 @@ pub use self::{
     tool_bar::Tool,
 };
 use crate::{
-    canvas::CanvasRenderer,
+    canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{
@@ -66,6 +66,8 @@ pub struct Shell {
     playback: Playback,
     /// The window's clock, in seconds, as of this frame.
     now: f64,
+    /// How sharp the canvas is drawn while playing.
+    quality: Quality,
     looping: bool,
     snapping: bool,
     timeline: TimelineState,
@@ -185,6 +187,7 @@ impl Shell {
             palette: Palette::default(),
             playback: Playback::new(),
             now: 0.0,
+            quality: Quality::new(),
             looping: true,
             snapping: true,
             timeline: TimelineState::default(),
@@ -341,6 +344,10 @@ impl Shell {
             self.pictures.clear();
         }
         self.pictures.poll(&ctx);
+        if self.playback.is_playing() {
+            let times = self.pictures.times();
+            self.quality.observe_renders(times.finished(), times.last());
+        }
         self.editor
             .set_animating(self.inspector.tab == InspectorTab::Animate);
         self.follow_selection();
