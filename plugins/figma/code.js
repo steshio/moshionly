@@ -1081,17 +1081,29 @@ async function convertGroup(node, container, m, run) {
 }
 
 /**
+ * The children of `node` in the order Figma draws them, bottom first.
+ * That is the order of the list, except in a horizontal or vertical auto
+ * layout frame with "Canvas stacking: first on top" (`itemReverseZIndex`;
+ * Figma ignores it in other frames), where the first child is on top.
+ */
+function drawOrder(node) {
+  const children = Array.from(node.children || []);
+  const autoLayout = node.layoutMode === 'HORIZONTAL' || node.layoutMode === 'VERTICAL';
+  return node.itemReverseZIndex === true && autoLayout ? children.reverse() : children;
+}
+
+/**
  * Converts the children of `node` into `container`, bottom first.
  *
- * In Figma a mask hides everything above it in the same parent. Here each
- * mask starts a mask group that holds the mask (its first child, which
- * Moshionly uses as the mask) and every sibling above it, up to the next
- * mask. `masked` says the container already is the mask group of the first
- * child.
+ * In Figma a mask hides everything drawn above it in the same parent. Here
+ * each mask starts a mask group that holds the mask (its first child, which
+ * Moshionly uses as the mask) and every sibling drawn above it, up to the
+ * next mask. `masked` says the container already is the mask group of the
+ * first child.
  */
 async function convertChildren(node, container, run, masked) {
   let target = container;
-  const children = node.children || [];
+  const children = drawOrder(node);
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index];
     if (isActiveMask(child) && !(masked && index === 0)) {

@@ -192,3 +192,20 @@ test('a turned top-level frame arrives upright, with a note', async () => {
   assert.equal(result.nodes[0].rotation, undefined);
   assert.match(result.notes[0].message, /upright/);
 });
+
+test('an auto layout frame with its first layer on top keeps that stacking', async () => {
+  const avatars = (spec) =>
+    frame(Object.assign({ name: 'Avatars', width: 100, height: 40, itemSpacing: -10 }, spec), [
+      rect({ name: 'First', x: 0, width: 40, height: 40 }),
+      rect({ name: 'Second', x: 30, width: 40, height: 40 }),
+      rect({ name: 'Third', x: 60, width: 40, height: 40 }),
+    ]);
+  const firstOnTop = avatars({ layoutMode: 'HORIZONTAL', itemReverseZIndex: true });
+  const plain = avatars({ name: 'Plain', layoutMode: 'NONE', itemReverseZIndex: true });
+  const board = frame({ name: 'Board', width: 400, height: 400 }, [firstOnTop, plain]);
+  page(board);
+  const result = await convert([board]);
+  const order = (holder) => result.nodes.filter((layer) => layer.parent === holder.id).map((layer) => layer.name);
+  assert.deepEqual(order(firstOnTop), ['Third', 'Second', 'First'], 'drawn back to front');
+  assert.deepEqual(order(plain), ['First', 'Second', 'Third'], 'Figma ignores the setting without auto layout');
+});

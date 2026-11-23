@@ -78,3 +78,20 @@ test('brightness masks and masks sent on their own are noted', async () => {
   const alone = await convertSelection([lone], { fileKey: 'FILE' });
   assert.match(alone.notes[0].message, /select what holds it/);
 });
+
+test('in an auto layout frame with its first layer on top, a mask hides what is drawn above it', async () => {
+  const stack = F.frame({ name: 'Stack', width: 100, height: 100, layoutMode: 'VERTICAL', itemReverseZIndex: true }, [
+    F.rect({ name: 'Top', width: 100, height: 40 }),
+    F.ellipse({ name: 'Spot', y: 40, width: 20, height: 20, isMask: true }),
+    F.rect({ name: 'Bottom', y: 60, width: 100, height: 40 }),
+  ]);
+  const result = await convert(stack);
+  const group = result.layers.find((layer) => layer.type === 'mask_group');
+  assert.deepEqual(summary(result), [
+    ['Stack', 'group', result.board.id],
+    ['Bottom', 'rect', stack.id],
+    ['Spot group', 'mask_group', stack.id],
+    ['Spot', 'ellipse', group.id],
+    ['Top', 'rect', group.id],
+  ]);
+});
