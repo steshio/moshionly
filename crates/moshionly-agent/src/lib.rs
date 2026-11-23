@@ -15,11 +15,17 @@
 //! | Module | What it is for |
 //! |---|---|
 //! | [`session`] | [`Session`] and [`SessionHandle`]: the open document, its undo history, and who changed what |
+//! | [`host`] | [`Host`]: what the embedding app supplies, as traits: [`FrameSource`], [`Exporter`], [`FontSource`] |
 
 #![warn(missing_docs)]
 
+pub mod host;
 pub mod session;
 
+pub use host::{
+    ExportFormat, ExportOptions, ExportProgress, ExportRequest, Exported, Exporter, FontFamily,
+    FontSource, Frame, FrameRequest, FrameSource, Host, HostError, SharedMeasurer,
+};
 pub use session::{
     Change, ChangeKind, Origin, Session, SessionHandle, SessionSaveError, Step, Subscription,
 };
