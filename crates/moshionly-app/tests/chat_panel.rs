@@ -332,6 +332,35 @@ fn an_error_offers_settings_and_another_try() {
 }
 
 #[test]
+fn an_answer_with_nothing_in_it_says_so_and_offers_another_try() {
+    // A model that finishes at once, without a word.
+    let provider = ScriptedProvider::new("anthropic", Vec::new());
+    let mut harness = harness(
+        ready(&["anthropic"]).with_provider(provider.clone()),
+        Arc::default(),
+    );
+    type_message(&mut harness, "Fade the title in");
+    harness.key_press(Key::Enter);
+    settle(&mut harness, |state| {
+        idle(state) && !state.chat.controller().conversation().is_empty()
+    });
+    assert!(
+        harness
+            .query_by_label("Anthropic finished without a reply")
+            .is_some(),
+        "the empty answer is shown"
+    );
+
+    harness.get_by_label("Try again").click();
+    settle(&mut harness, |state| {
+        idle(state) && provider.requests().len() == 2
+    });
+    let messages = harness.state().chat.controller().conversation().messages();
+    assert_eq!(messages.len(), 2, "the message was sent again, not added");
+    assert_eq!(messages[0].text(), "Fade the title in");
+}
+
+#[test]
 fn with_no_ai_ready_the_panel_says_so_and_opens_the_settings() {
     let mut harness = harness(ready(&[]), Arc::default());
     harness.run_steps(2);

@@ -109,6 +109,7 @@ fn answer(
     let c = &theme.color;
     let mut action = None;
     let running = message.is_running();
+    let name = message.provider.as_deref().unwrap_or("The AI");
     let last_part = message.parts.len().saturating_sub(1);
     for (index, part) in message.parts.iter().enumerate() {
         if index > 0 {
@@ -124,7 +125,6 @@ fn answer(
             Part::Tool(call) => tool_chip(ui, id, call, images),
             Part::Image(image) => thumbnail_row(ui, &[image], images),
             Part::Error(error) => {
-                let name = message.provider.as_deref().unwrap_or("The AI");
                 let found = error_card(ui, error, provider_id, name, is_last);
                 action = action.or(found);
             }
@@ -132,8 +132,12 @@ fn answer(
     }
 
     // A quiet line under the answer: working, stopped, what it used.
+    let silent = !running && says_nothing(message);
     let status = match message.state {
         AnswerState::Running => None,
+        AnswerState::Finished(StopReason::EndTurn | StopReason::Error) if silent => {
+            Some(format!("{name} finished without a reply"))
+        }
         AnswerState::Finished(StopReason::Cancelled) => Some("Stopped".to_owned()),
         AnswerState::Finished(StopReason::MaxTokens) => {
             Some("The answer reached its length limit".to_owned())
@@ -161,16 +165,29 @@ fn answer(
             Vec2::new(ui.available_width(), theme.type_scale.caption * 1.6),
             Sense::hover(),
         );
-        paint::text_in(
-            ui,
-            rect,
-            Align2::LEFT_CENTER,
-            &footer,
-            theme.caption(),
-            c.text_tertiary,
-        );
+        let galley = paint::elided(ui, &footer, theme.caption(), c.text_tertiary, rect.width());
+        let place = Align2::LEFT_CENTER.align_size_within_rect(galley.size(), rect);
+        ui.place(place, egui::Label::new(galley).selectable(false));
+        // With nothing to read, the way forward is to ask again.
+        if silent && is_last {
+            ui.add_space(theme.space.sm);
+            let again =
+                TextButton::new(help::remedy_label(Remedy::TryAgain)).kind(ButtonKind::Secondary);
+            if ui.add(again).clicked() {
+                action = Some(ListAction::TryAgain);
+            }
+        }
     }
     action
+}
+
+/// True for an answer with nothing to show: no text, reasoning, tool call,
+/// picture or error.
+fn says_nothing(message: &Message) -> bool {
+    message
+        .parts
+        .iter()
+        .all(|part| matches!(part, Part::Text(text) if text.trim().is_empty()))
 }
 
 /// A spinner and "Working…" while the answer arrives.
@@ -861,6 +878,22 @@ mod tests {
             cost_usd: None,
         };
         assert_eq!(usage_text(&usage), "0 in · 0 out");
+    }
+
+    #[test]
+    fn an_answer_with_only_blank_text_says_nothing() {
+        let answer = |parts: Vec<Part>| Message {
+            id: 1,
+            author: Author::Assistant,
+            parts,
+            state: AnswerState::Finished(StopReason::EndTurn),
+            usage: None,
+            provider: Some("Ollama".into()),
+        };
+        assert!(says_nothing(&answer(Vec::new())));
+        assert!(says_nothing(&answer(vec![Part::Text(" \n".into())])));
+        assert!(!says_nothing(&answer(vec![Part::Text("Done.".into())])));
+        assert!(!says_nothing(&answer(vec![Part::Thinking("Hmm".into())])));
     }
 
     #[test]
