@@ -105,8 +105,9 @@ pub const MENU: [(MenuSection, NodeType); 29] = {
     ]
 };
 
-/// The menu entries that work on every one of `targets`, in menu order.
-/// Empty when there are no targets or one of them is not a layer.
+/// The menu entries that work on every one of `targets`, in menu order,
+/// with the text section first when there is one. Empty when there are no
+/// targets or one of them is not a layer.
 pub fn menu_for(document: &Document, targets: &[NodeId]) -> Vec<(MenuSection, NodeType)> {
     let types: Option<Vec<NodeType>> = targets
         .iter()
@@ -120,13 +121,17 @@ pub fn menu_for(document: &Document, targets: &[NodeId]) -> Vec<(MenuSection, No
     let Some(types) = types.filter(|types| !types.is_empty()) else {
         return Vec::new();
     };
-    MENU.into_iter()
+    let mut menu: Vec<(MenuSection, NodeType)> = MENU
+        .into_iter()
         .filter(|(_, action)| {
             types
                 .iter()
                 .all(|layer| animation_applies_to(*action, *layer))
         })
-        .collect()
+        .collect();
+    // What only text can do comes first for text.
+    menu.sort_by_key(|(section, _)| *section != MenuSection::Text);
+    menu
 }
 
 /// Where a new action of `length` milliseconds starts: at the playhead, in
@@ -549,9 +554,16 @@ mod tests {
         )
         .unwrap();
         let menu = menu_for(&document, &[id("t")]);
-        for ty in [NodeType::TextIn, NodeType::TextOut, NodeType::Counter] {
-            assert!(menu.contains(&(MenuSection::Text, ty)));
-        }
+        // First, as they are what only text can do.
+        assert_eq!(
+            menu[..3],
+            [
+                (MenuSection::Text, NodeType::TextIn),
+                (MenuSection::Text, NodeType::TextOut),
+                (MenuSection::Text, NodeType::Counter)
+            ]
+        );
+        assert_eq!(menu[3], (MenuSection::In, NodeType::FadeIn));
     }
 
     #[test]

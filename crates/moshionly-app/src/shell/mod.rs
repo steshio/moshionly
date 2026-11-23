@@ -50,7 +50,7 @@ use crate::{
     key::Key,
     settings::Settings,
     theme::{self, Theme, ThemeMode},
-    timeline::{BarCommand, Timeline, TimelineEvent, TimelineState},
+    timeline::{BarCommand, Timeline, TimelineEvent, TimelineLayout, TimelineState},
     viewport::Camera,
     widgets::{Grow, Toast, Toasts, splitter},
 };
@@ -89,6 +89,8 @@ pub struct Shell {
     layer_query: String,
     /// The selection as of the last frame, to notice changes.
     shown_selection: Vec<NodeId>,
+    /// The selected actions as of the last frame, to notice changes.
+    shown_actions: Vec<NodeId>,
     /// Scroll the layer list to this row on the next frame.
     reveal_row: Option<NodeId>,
     /// The layer row being renamed, with the name typed so far.
@@ -99,6 +101,8 @@ pub struct Shell {
     collapsed_groups: HashSet<NodeId>,
     /// A drag on the timeline holds an undo step open.
     timeline_edit: bool,
+    /// Where the parts of the timeline were drawn in the last frame.
+    timeline_layout: Option<TimelineLayout>,
     /// The drag in progress on the canvas.
     drag: Option<CanvasDrag>,
     /// Snapping guides to draw while dragging.
@@ -200,11 +204,13 @@ impl Shell {
             tree: TreeState::default(),
             layer_query: String::new(),
             shown_selection: Vec::new(),
+            shown_actions: Vec::new(),
             reveal_row: None,
             renaming: None,
             list_drag: None,
             collapsed_groups: HashSet::new(),
             timeline_edit: false,
+            timeline_layout: None,
             drag: None,
             guides: Vec::new(),
             pointer: None,
@@ -285,6 +291,16 @@ impl Shell {
         self.canvas
     }
 
+    /// Where the parts of the timeline were drawn in the last frame.
+    pub fn timeline_layout(&self) -> Option<TimelineLayout> {
+        self.timeline_layout
+    }
+
+    /// Whether the animation is playing.
+    pub fn is_playing(&self) -> bool {
+        self.playback.is_playing()
+    }
+
     /// The settings as they are now, for saving.
     pub fn settings(&self) -> &Settings {
         &self.settings
@@ -293,6 +309,11 @@ impl Shell {
     /// The sizes of the panels. Changing them moves the panels.
     pub fn panels_mut(&mut self) -> &mut PanelSizes {
         &mut self.settings.panels
+    }
+
+    /// The tab the inspector shows.
+    pub fn inspector_tab(&self) -> InspectorTab {
+        self.inspector.tab
     }
 
     /// The inspector's state, for choosing the tab.
@@ -602,6 +623,13 @@ impl Shell {
     /// list and its actions in the timeline, and its artboard becomes the
     /// current one.
     fn follow_selection(&mut self) {
+        // Newly selected actions come into view on the timeline.
+        if self.editor.actions() != self.shown_actions.as_slice() {
+            self.shown_actions = self.editor.actions().to_vec();
+            if let Some(first) = self.shown_actions.first() {
+                self.timeline.reveal(Key::new(first.as_str()));
+            }
+        }
         let selection = self.editor.selection.ids().to_vec();
         if selection == self.shown_selection {
             return;
@@ -671,6 +699,7 @@ impl Shell {
                 .show(ui, layout.timeline)
         });
         edge_line(ui, layout.timeline, Edge::Top);
+        self.timeline_layout = Some(timeline.layout);
         for event in timeline.events {
             self.timeline_event(event);
         }
@@ -838,6 +867,18 @@ impl Shell {
             self.commands.set_enabled(id, selected);
         }
         edit_commands::enable_edit_commands(&mut self.commands, &self.editor);
+        // Selected actions can be deleted, copied and grouped on their own.
+        if !self.editor.actions().is_empty() {
+            for id in [
+                CommandId::Delete,
+                CommandId::Deselect,
+                CommandId::Duplicate,
+                CommandId::Group,
+                CommandId::Ungroup,
+            ] {
+                self.commands.set_enabled(id, true);
+            }
+        }
         let has_artboards = !self.editor.document().artboards().is_empty();
         self.commands
             .set_enabled(CommandId::SelectAll, has_artboards);
