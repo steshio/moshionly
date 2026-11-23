@@ -792,6 +792,14 @@ mod tests {
             "the lightest there is"
         );
         assert_eq!(face("No Such Font", 500), ("Inter".into(), 500));
+
+        // Inter has no italic face here, so italic text is slanted.
+        let mut italic = style(20.0, 24.0, 0.0, TextAlign::Left);
+        italic.font.italic = true;
+        let slant = library.layout("x", &italic, None).runs[0].font.skew_x();
+        let upright = library.layout("x", &style(20.0, 24.0, 0.0, TextAlign::Left), None);
+        assert!(slant < 0.0, "{slant}");
+        assert_eq!(upright.runs[0].font.skew_x(), 0.0);
     }
 
     #[test]
@@ -843,6 +851,45 @@ mod tests {
         let wrap = scene.find(&moshionly_core::NodeId::from("wrap")).unwrap();
         assert_eq!(wrap.width, 120.0);
         assert_eq!(wrap.height, 80.0, "two lines of 40");
+    }
+
+    #[test]
+    fn installed_fonts_fill_in_letters_inter_does_not_have() {
+        let library = FontLibrary::with_system_fonts();
+        let installed = sk::FontMgr::new();
+        let style = style(24.0, 30.0, 0.0, TextAlign::Left);
+        for (sample, what) in [("😀", "emoji"), ("漢字", "Chinese"), ("שלום", "Hebrew")] {
+            let first = sample.chars().next().unwrap();
+            let Some(font) = installed.match_family_style_character(
+                "",
+                sk::FontStyle::normal(),
+                &[],
+                first as sk::Unichar,
+            ) else {
+                println!("skipped {what}: no installed font has {first:?} on this machine");
+                continue;
+            };
+            let block = library.layout(sample, &style, None);
+            let families: Vec<String> = block
+                .runs
+                .iter()
+                .map(|run| run.font.typeface().family_name())
+                .collect();
+            assert!(
+                families.iter().all(|family| family != DEFAULT_FAMILY),
+                "{what} should come from {}, not Inter: {families:?}",
+                font.family_name()
+            );
+            assert!(
+                block
+                    .runs
+                    .iter()
+                    .flat_map(|run| &run.glyphs)
+                    .all(|glyph| *glyph != 0),
+                "{what}: every letter has a glyph"
+            );
+            assert_eq!(block.clusters.len(), sample.graphemes(true).count());
+        }
     }
 
     #[test]

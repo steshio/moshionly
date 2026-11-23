@@ -2,7 +2,7 @@
 //!
 //! An image layer's `source` is a path relative to the project file, an
 //! absolute path or a `data:` URI; core's
-//! [`resolve_asset`](moshionly_core::io::resolve_asset) says which. The
+//! [`moshionly_core::io::resolve_asset`] says which. The
 //! [`AssetLoader`] reads and decodes the image once and keeps the decoded
 //! pixels, up to a memory budget, so frames after the first cost nothing.
 //! A file that changes on disk is read again.
