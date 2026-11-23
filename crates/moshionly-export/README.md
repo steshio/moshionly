@@ -56,8 +56,9 @@ its own size, 30 frames per second, on its own background.
   width or a height in pixels. Proportions are kept. MP4, WebM and ProRes
   need even sizes, so they are rounded down to even numbers, losing at most
   one pixel at the right or bottom edge. Each format has a limit: 4096 pixels
-  a side for GIF, 3840 by 2160 (either way round) for MP4, 8192 a side for
-  WebM and ProRes, 16384 for PNG.
+  a side for GIF; 3840 by 2160 (either way round) for MP4; 8192 a side and
+  35.4 million pixels in all (8192 by 4320) for WebM and ProRes; 16384 a
+  side and 134.2 million pixels in all (16384 by 8192) for PNG.
 - **Frame rate**: an exact fraction, so 29.97 (30000/1001) and 23.976
   (24000/1001) keep their timing over long videos. `FrameRate::PRESETS` has
   the common rates; `FrameRate::from_fps(29.97)` understands the television

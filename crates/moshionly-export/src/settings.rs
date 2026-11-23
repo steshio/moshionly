@@ -505,13 +505,9 @@ pub enum SettingsError {
     /// A width or height of zero pixels was asked for.
     #[error("a width or height of 0 pixels cannot be exported; choose at least 1")]
     ZeroSize,
-    /// The frames would be larger than the format allows.
-    #[error(
-        "{format} frames can be at most {} by {} pixels (either way round), and this export \
-         would be {width} by {height}; choose a smaller scale or width",
-        limits.max_long_side,
-        limits.max_short_side
-    )]
+    /// The frames would be larger than the format allows: a side is too
+    /// long, or there are too many pixels in all.
+    #[error("{}", too_large(*format, *width, *height, limits))]
     TooLarge {
         /// The format.
         format: Format,
@@ -575,6 +571,38 @@ pub enum SettingsError {
     /// A GIF was asked to play zero times.
     #[error("a GIF must play at least once; choose once, a number of times, or forever")]
     NoPlays,
+}
+
+/// What [`SettingsError::TooLarge`] says: the limit on sides when a side is
+/// too long, otherwise the limit on pixels in all, so the message never
+/// quotes a size larger than the one it refuses.
+fn too_large(format: Format, width: u64, height: u64, limits: &SizeLimits) -> String {
+    let (long, short) = (width.max(height), width.min(height));
+    let sides_fit =
+        long <= u64::from(limits.max_long_side) && short <= u64::from(limits.max_short_side);
+    if !sides_fit {
+        return format!(
+            "{format} frames can be at most {} by {} pixels (either way round), and this export \
+             would be {width} by {height}; choose a smaller scale or width",
+            limits.max_long_side, limits.max_short_side
+        );
+    }
+    // The widest frame that fits, as an example.
+    let example_short = (limits.max_pixels / u64::from(limits.max_long_side.max(1)))
+        .min(u64::from(limits.max_short_side));
+    format!(
+        "{format} frames can have at most {} pixels in all, for example {} by {example_short}, \
+         and this export would be {width} by {height}, which is {}; choose a smaller scale or \
+         width",
+        millions(limits.max_pixels),
+        limits.max_long_side,
+        millions(width.saturating_mul(height)),
+    )
+}
+
+/// A number of pixels as people read it, such as "35.4 million".
+fn millions(pixels: u64) -> String {
+    format!("{:.1} million", pixels as f64 / 1e6)
 }
 
 #[cfg(test)]
@@ -661,6 +689,32 @@ mod tests {
         assert_eq!((tiny.width, tiny.height), (1, 1));
         let huge = plan_for(Settings::default().with_scale(1e300), Format::Png).unwrap_err();
         assert!(matches!(huge, SettingsError::TooLarge { .. }), "{huge}");
+    }
+
+    #[test]
+    fn the_limit_on_pixels_in_all_is_named_when_it_is_what_fails() {
+        // 8192 by 4546: both sides fit WebM's 8192, but not in all.
+        let wide = Settings::default().with_size(Size::Width(8192));
+        let error = plan_for(wide, Format::WebM).unwrap_err();
+        assert!(matches!(error, SettingsError::TooLarge { .. }), "{error}");
+        let text = error.to_string();
+        assert!(text.contains("35.4 million pixels in all"), "{text}");
+        assert!(text.contains("for example 8192 by 4320"), "{text}");
+        assert!(
+            text.contains("8192 by 4546, which is 37.2 million"),
+            "{text}"
+        );
+        assert!(!text.contains("8192 by 8192"), "{text}");
+
+        let png = Settings::default().with_size(Size::Width(16_000));
+        let text = plan_for(png, Format::Png).unwrap_err().to_string();
+        assert!(text.contains("134.2 million pixels in all"), "{text}");
+        assert!(text.contains("for example 16384 by 8192"), "{text}");
+
+        // A side that is too long names the limit on sides.
+        let wider = Settings::default().with_size(Size::Width(9000));
+        let text = plan_for(wider, Format::WebM).unwrap_err().to_string();
+        assert!(text.contains("at most 8192 by 8192 pixels"), "{text}");
     }
 
     #[test]
