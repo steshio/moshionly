@@ -40,7 +40,7 @@ impl Editor {
     }
 
     /// Commits the words typed. A new text layer left empty is taken away
-    /// again, leaving nothing in the undo history.
+    /// again, leaving nothing in the undo history when it can.
     pub fn finish_text_edit(&mut self, editing: TextEditing) -> Result<(), EditError> {
         let exists = self.document.contains(&editing.id);
         let empty = editing.buffer.trim().is_empty();
@@ -48,8 +48,12 @@ impl Editor {
             if empty {
                 if self.in_gesture() {
                     self.cancel_gesture()?;
-                } else if exists {
-                    // The gesture was closed by something else meanwhile.
+                }
+                // An edit from elsewhere (the chat, the MCP server) while
+                // the person was typing closes the gesture and records the
+                // new layer as a step of its own; the gesture open now began
+                // after it, so cancelling it leaves the layer. Remove it.
+                if self.document.contains(&editing.id) {
                     let edits = build::remove(&self.document, std::slice::from_ref(&editing.id));
                     self.apply("Delete layer", &edits)?;
                 }
@@ -130,6 +134,53 @@ mod tests {
         assert!(!editor.document().contains(&id));
         assert!(editor.selection.is_empty());
         assert_eq!(editor.undo_label(), None, "nothing to undo");
+    }
+
+    #[test]
+    fn new_text_left_empty_is_not_kept_after_an_agent_edit() {
+        let mut editor = editor();
+        editor.begin_gesture("Add text");
+        let id = editor.create_at(Tool::Text, pos2(100.0, 600.0)).unwrap();
+        let editing = editor.begin_text_edit(&id, true).unwrap();
+        // The chat renames the artboard while the person is about to type:
+        // the session records the new layer as a step of its own.
+        editor
+            .session()
+            .apply(
+                moshionly_agent::Origin::Agent,
+                "Rename",
+                &[Edit::set("ab", "name", "Intro")],
+            )
+            .unwrap();
+        editor.sync();
+        editor.finish_text_edit(editing).unwrap();
+        assert!(!editor.document().contains(&id), "no empty text is left");
+        assert!(!editor.in_gesture());
+        assert_eq!(
+            editor.document().get(&NodeId::from("ab")).unwrap().name(),
+            "Intro"
+        );
+    }
+
+    #[test]
+    fn new_text_typed_around_an_agent_edit_is_kept() {
+        let mut editor = editor();
+        editor.begin_gesture("Add text");
+        let id = editor.create_at(Tool::Text, pos2(100.0, 600.0)).unwrap();
+        let mut editing = editor.begin_text_edit(&id, true).unwrap();
+        editor
+            .session()
+            .apply(
+                moshionly_agent::Origin::Agent,
+                "Rename",
+                &[Edit::set("ab", "name", "Intro")],
+            )
+            .unwrap();
+        editor.sync();
+        editing.buffer = "Launch".to_owned();
+        editor.finish_text_edit(editing).unwrap();
+        assert_eq!(content(&editor, &id), "Launch");
+        assert!(!editor.in_gesture());
     }
 
     #[test]
