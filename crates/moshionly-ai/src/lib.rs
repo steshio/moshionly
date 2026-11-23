@@ -31,6 +31,8 @@ mod tool;
 pub use api::anthropic::{
     ANTHROPIC_API_URL, ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_ID, Anthropic, AnthropicOptions, Effort,
 };
+pub use api::openai::presets::{OPENAI_PRESETS, OpenAiPreset, openai_preset};
+pub use api::openai::{OpenAiCompatible, OpenAiCompatibleOptions};
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
 pub use cli::claude_code::{CLAUDE_CODE_ID, ClaudeCode, ClaudeCodeOptions};
 pub use cli::codex::{CODEX_ID, Codex, CodexOptions};

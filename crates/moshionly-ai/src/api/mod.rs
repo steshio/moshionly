@@ -7,6 +7,7 @@
 //! up token use over the requests of one turn.
 
 pub(crate) mod anthropic;
+pub(crate) mod openai;
 
 use std::collections::HashMap;
 use std::sync::Arc;
