@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 
 use super::{Bind, numeric};
 use crate::{
-    editor::inspect::{Inspected, image_of, set_all, text_of, tidy},
+    editor::{
+        assets::is_data_uri,
+        inspect::{Inspected, image_of, set_all, text_of, tidy},
+    },
     theme::{Theme, icons},
     widgets::{
         ButtonKind, Dropdown, NumericResponse, TextButton, control_row, pair, property_row,
@@ -271,15 +274,19 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
 /// Where the selected images come from, and how they fill their box.
 pub(super) fn image_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     let ids = inspected.ids_where(|node| node.node_type() == NodeType::Image);
-    let source = inspected.read(|node| image_of(node).map(|i| i.source.clone()));
+    // Borrowed, not copied: an embedded image's source can be megabytes.
+    let source = inspected.read(|node| image_of(node).map(|i| i.source.as_str()));
     let fit = inspected.read(|node| image_of(node).map(|i| i.fit));
     let (Some(source), Some(fit)) = (source, fit) else {
         return;
     };
-    let shown = if source.is_mixed() {
-        "Several images".to_owned()
+    let (shown, about) = if source.is_mixed() {
+        (
+            "Several images".to_owned(),
+            "The selected layers show different images.".to_owned(),
+        )
     } else {
-        source_name(source.value())
+        (source_name(source.value()), source_details(source.value()))
     };
     let mut fit_value = *fit.value();
     let mut fitted = false;
@@ -298,7 +305,7 @@ pub(super) fn image_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspec
                         .font(theme.body())
                         .color(theme.color.text_secondary),
                 )
-                .on_hover_text(source.value());
+                .on_hover_text(about);
             });
             property_row(ui, "Fill", |ui| {
                 fitted = Dropdown::new(&mut fit_value, "Image fill", &FITS)
@@ -328,22 +335,96 @@ pub(super) fn image_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspec
     }
 }
 
+/// The longest source shown whole in a tooltip, in characters.
+const LONGEST_SHOWN: usize = 200;
+
 /// A short name for an image source: the file name, or "Embedded image"
-/// for a `data:` URI.
+/// for a `data:` URI, which is never decoded here.
 fn source_name(source: &str) -> String {
+    if is_data_uri(source) {
+        return "Embedded image".to_owned();
+    }
     match io::resolve_asset(source, None) {
-        Ok(io::Asset::Data { .. }) => "Embedded image".to_owned(),
         Ok(io::Asset::File(path)) => path.file_name().map_or_else(
-            || source.to_owned(),
+            || shortened(source),
             |name| name.to_string_lossy().into_owned(),
         ),
-        Err(_) => source.to_owned(),
+        _ => shortened(source),
+    }
+}
+
+/// More about an image source, for its tooltip: an embedded image's kind
+/// and size, or the source as written, cut short when it is long. Only
+/// the start of a `data:` URI is read.
+fn source_details(source: &str) -> String {
+    if !is_data_uri(source) {
+        return shortened(source);
+    }
+    let rest = source.trim_start().get(5..).unwrap_or_default();
+    let (header, data) = rest.split_once(',').unwrap_or((rest, ""));
+    let media_type = header.split(';').next().unwrap_or_default().trim();
+    let kind = match media_type.to_ascii_lowercase().as_str() {
+        "image/png" => "PNG".to_owned(),
+        "image/jpeg" | "image/jpg" => "JPEG".to_owned(),
+        "image/gif" => "GIF".to_owned(),
+        "image/webp" => "WebP".to_owned(),
+        "" => "image".to_owned(),
+        other => other.to_owned(),
+    };
+    let base64 = header
+        .split(';')
+        .any(|part| part.trim().eq_ignore_ascii_case("base64"));
+    let bytes = if base64 {
+        let padding = data.bytes().rev().take_while(|b| *b == b'=').count();
+        (data.len() / 4 * 3).saturating_sub(padding)
+    } else {
+        data.len()
+    };
+    format!("Embedded {kind}, {}", byte_size(bytes))
+}
+
+/// A size in bytes, in the unit that reads best.
+fn byte_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} bytes")
+    } else if b < KB * KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / (KB * KB))
+    }
+}
+
+/// `text` cut to [`LONGEST_SHOWN`] characters, with an ellipsis.
+fn shortened(text: &str) -> String {
+    match text.char_indices().nth(LONGEST_SHOWN) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_images_are_described_without_reading_them() {
+        // Not valid base64: it is never decoded, so it does not matter.
+        assert_eq!(source_name("data:image/png;base64,@@@@"), "Embedded image");
+        let big = format!("data:image/png;base64,{}", "A".repeat(4 * 1024 * 1024));
+        assert_eq!(source_details(&big), "Embedded PNG, 3.0 MB");
+        assert_eq!(
+            source_details("data:image/jpeg;base64,AAAAAA=="),
+            "Embedded JPEG, 4 bytes"
+        );
+        assert_eq!(source_details("data:,abc"), "Embedded image, 3 bytes");
+        assert_eq!(byte_size(2048), "2 KB");
+        // A long file path is cut short in the tooltip.
+        let long = format!("/{}/hero.png", "folder/".repeat(100));
+        assert!(source_details(&long).chars().count() <= LONGEST_SHOWN + 1);
+        assert_eq!(source_details("assets/hero.png"), "assets/hero.png");
+    }
 
     #[test]
     fn weights_and_sources_have_readable_names() {
