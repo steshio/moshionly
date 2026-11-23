@@ -133,7 +133,8 @@ written into.
 - **WebM and ProRes**: raw frames are piped to `ffmpeg`, which converts them
   to BT.709 and encodes VP9 (`yuva420p` when transparent) or ProRes 4444
   (`yuva444p10le` when transparent). If `ffmpeg` fails, its own message is
-  reported; on cancellation it is stopped.
+  reported; on cancellation it is stopped at once, also while it is still
+  finishing the file or not yet taking frames.
 
 Exporting the same thing twice gives the same bytes, in every format (for
 WebM and ProRes, with the same `ffmpeg`).

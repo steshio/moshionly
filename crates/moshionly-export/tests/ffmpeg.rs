@@ -8,9 +8,11 @@ mod common;
 
 use std::path::Path;
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use moshionly_export::{
-    Background, CancelToken, ExportError, Ffmpeg, Format, FrameRate, Quality, Settings,
+    Background, CancelToken, ExportError, Ffmpeg, Format, FrameRate, Phase, Quality, Settings,
     availability_with,
 };
 
@@ -240,7 +242,10 @@ fn stand_in(dir: &Path, script: &str) -> Ffmpeg {
     std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     for _ in 0..50 {
-        match Command::new(&path).arg("-version").output() {
+        match Command::new(&path)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+        {
             Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
@@ -273,4 +278,78 @@ fn an_ffmpeg_that_cannot_run_is_not_called_incomplete() {
         .unwrap();
     let missing = prores.missing.as_deref().unwrap();
     assert!(missing.contains("Library not loaded"), "{missing}");
+}
+
+/// The start of a stand-in that lists the encoders when asked, like a full
+/// ffmpeg, and otherwise goes on to the rest of the script.
+#[cfg(unix)]
+const LISTS_ENCODERS: &str = r#"for arg in "$@"; do
+  if [ "$arg" = "-encoders" ]; then
+    echo " V....D libvpx-vp9           libvpx VP9"
+    echo " V....D prores_ks            Apple ProRes"
+    exit 0
+  fi
+done"#;
+
+#[test]
+#[cfg(unix)]
+fn cancelling_while_ffmpeg_finishes_the_file_stops_it_at_once() {
+    let tools = tempfile::tempdir().unwrap();
+    // Reads every frame, then takes 30 seconds to finish the file.
+    let slow = stand_in(
+        tools.path(),
+        &format!("{LISTS_ENCODERS}\ncat > /dev/null\nexec sleep 30"),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::default()
+        .with_scale(0.1)
+        .with_range(None, Some(200.0));
+    let job = common::job(Format::WebM, dir.path().join("slow.webm"), settings).with_ffmpeg(slow);
+    let cancel = CancelToken::new();
+    let started = Instant::now();
+    let error = job
+        .run(
+            |progress| {
+                if progress.phase == Phase::Encoding {
+                    cancel.cancel();
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+    assert!(matches!(error, ExportError::Cancelled), "{error}");
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(common::names_in(dir.path()).is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn cancelling_while_ffmpeg_takes_no_frames_stops_it_at_once() {
+    let tools = tempfile::tempdir().unwrap();
+    // Never reads its input, so the first frame fills the pipe and writing
+    // it waits.
+    let stuck = stand_in(tools.path(), &format!("{LISTS_ENCODERS}\nexec sleep 30"));
+    let dir = tempfile::tempdir().unwrap();
+    let job = common::job(
+        Format::ProRes,
+        dir.path().join("stuck.mov"),
+        Settings::default().with_scale(0.25),
+    )
+    .with_ffmpeg(stuck);
+    let cancel = CancelToken::new();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            cancel.cancel();
+        })
+    };
+    let started = Instant::now();
+    let error = job.run(|_| {}, &cancel).unwrap_err();
+    canceller.join().unwrap();
+    assert!(matches!(error, ExportError::Cancelled), "{error}");
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(common::names_in(dir.path()).is_empty());
 }

@@ -15,8 +15,11 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use moshionly_render::Frame;
 
@@ -24,7 +27,7 @@ use crate::error::ExportError;
 use crate::format::Format;
 use crate::frames::{self, Pass};
 use crate::job::Context;
-use crate::progress::Phase;
+use crate::progress::{CancelToken, Phase};
 use crate::settings::{Plan, Quality};
 
 /// Where `ffmpeg` is commonly installed, besides the folders on `PATH`.
@@ -271,7 +274,8 @@ fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
 pub(crate) fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: &Ffmpeg) -> Result<(), ExportError> {
     let plan = cx.plan;
     let format = plan.format;
-    let mut child = Running::start(ffmpeg, &arguments(plan, path), format)?;
+    let cancel = cx.reporter.cancel_token().clone();
+    let mut child = Running::start(ffmpeg, &arguments(plan, path), format, cancel)?;
 
     let pass = Pass {
         moments: plan.moments,
@@ -287,17 +291,41 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: &Ffmpeg) -> Resul
     child.finish()
 }
 
+/// How often a running `ffmpeg` is checked on: whether the export was
+/// cancelled, and whether it has finished.
+const CHECK_EVERY: Duration = Duration::from_millis(20);
+
 /// A running `ffmpeg`. Dropping it stops the program, so an export that
 /// fails or is cancelled never leaves one behind.
+///
+/// Cancelling stops it at once, whatever the export is doing at the time:
+/// a watcher thread stops the program as soon as the export is cancelled,
+/// which also ends a write that is waiting for `ffmpeg` to take a frame,
+/// and waiting for `ffmpeg` to finish the file gives up on cancellation.
 struct Running {
-    child: Child,
+    /// Shared with the watcher, which stops it on cancellation.
+    child: Arc<Mutex<Child>>,
     stdin: Option<ChildStdin>,
     errors: Option<JoinHandle<String>>,
+    watcher: Option<Watcher>,
+    cancel: CancelToken,
     format: Format,
 }
 
+/// The thread that stops `ffmpeg` when the export is cancelled.
+struct Watcher {
+    /// Dropping it tells the thread to end.
+    done: mpsc::Sender<()>,
+    thread: JoinHandle<()>,
+}
+
 impl Running {
-    fn start(ffmpeg: &Ffmpeg, args: &[OsString], format: Format) -> Result<Self, ExportError> {
+    fn start(
+        ffmpeg: &Ffmpeg,
+        args: &[OsString],
+        format: Format,
+        cancel: CancelToken,
+    ) -> Result<Self, ExportError> {
         let mut child = Command::new(ffmpeg.path())
             .args(args)
             .stdin(Stdio::piped())
@@ -327,10 +355,14 @@ impl Running {
                 String::from_utf8_lossy(&text).into_owned()
             })
         });
+        let child = Arc::new(Mutex::new(child));
+        let watcher = Watcher::start(Arc::clone(&child), cancel.clone());
         Ok(Self {
             child,
             stdin,
             errors,
+            watcher: Some(watcher),
+            cancel,
             format,
         })
     }
@@ -341,28 +373,53 @@ impl Running {
             Some(stdin) => stdin.write_all(pixels),
             None => Err(std::io::ErrorKind::BrokenPipe.into()),
         };
-        // A write fails when ffmpeg has stopped; its own message says why.
-        written.map_err(|_| self.failure())
+        match written {
+            Ok(()) => Ok(()),
+            // The watcher stopped ffmpeg, which is why the write failed.
+            Err(_) if self.cancel.is_cancelled() => Err(ExportError::Cancelled),
+            // ffmpeg stopped on its own; its own message says why.
+            Err(_) => Err(self.failure()),
+        }
     }
 
     /// Lets ffmpeg finish the file and checks that it did.
     fn finish(mut self) -> Result<(), ExportError> {
         drop(self.stdin.take());
-        let status = self.child.wait().map_err(|error| ExportError::Ffmpeg {
-            format: self.format,
-            message: error.to_string(),
-        })?;
-        if status.success() {
+        if self.wait()?.success() {
             Ok(())
         } else {
             Err(self.failure())
         }
     }
 
+    /// Waits for ffmpeg to end, giving up as soon as the export is
+    /// cancelled; dropping `self` then stops it.
+    fn wait(&self) -> Result<ExitStatus, ExportError> {
+        loop {
+            if self.cancel.is_cancelled() {
+                return Err(ExportError::Cancelled);
+            }
+            match lock(&self.child).try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => thread::sleep(CHECK_EVERY),
+                Err(error) => {
+                    return Err(ExportError::Ffmpeg {
+                        format: self.format,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     /// Stops ffmpeg and says why it failed, in its own words.
     fn failure(&mut self) -> ExportError {
         drop(self.stdin.take());
-        let status = self.child.wait().ok();
+        let status = match self.wait() {
+            Ok(status) => Some(status),
+            Err(ExportError::Cancelled) => return ExportError::Cancelled,
+            Err(_) => None,
+        };
         let said = self
             .errors
             .take()
@@ -384,6 +441,34 @@ impl Running {
     }
 }
 
+impl Watcher {
+    /// Watches `cancel` and stops `child` when it is cancelled, until
+    /// told to end.
+    fn start(child: Arc<Mutex<Child>>, cancel: CancelToken) -> Self {
+        let (done, ended) = mpsc::channel::<()>();
+        let thread = thread::spawn(move || {
+            while let Err(RecvTimeoutError::Timeout) = ended.recv_timeout(CHECK_EVERY) {
+                if cancel.is_cancelled() {
+                    let _ = lock(&child).kill();
+                    return;
+                }
+            }
+        });
+        Self { done, thread }
+    }
+
+    /// Ends the thread and waits for it.
+    fn end(self) {
+        drop(self.done);
+        let _ = self.thread.join();
+    }
+}
+
+/// The child, even if a thread panicked while holding it.
+fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
+    child.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The end of what a program printed, at most `limit` bytes, without
 /// surrounding blank space.
 fn last_words(said: &str, limit: usize) -> &str {
@@ -398,10 +483,14 @@ fn last_words(said: &str, limit: usize) -> &str {
 impl Drop for Running {
     fn drop(&mut self) {
         drop(self.stdin.take());
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
+        if let Some(watcher) = self.watcher.take() {
+            watcher.end();
         }
-        let _ = self.child.wait();
+        let mut child = lock(&self.child);
+        if matches!(child.try_wait(), Ok(None)) {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
     }
 }
 
