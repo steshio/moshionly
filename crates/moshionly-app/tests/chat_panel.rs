@@ -187,7 +187,8 @@ fn the_composer_leaves_the_keyboard_alone_after_a_click_elsewhere() {
     type_message(&mut harness, "Make it bounce");
     harness.key_press(Key::Enter);
     settle(&mut harness, |state| {
-        state.chat.controller().conversation().messages().len() == 2
+        let messages = state.chat.controller().conversation().messages();
+        messages.len() == 2 && messages[1].text() == "Working on it"
     });
 
     // The person clicks elsewhere while the answer arrives, then stops it.
