@@ -437,11 +437,26 @@ impl Conversation {
     }
 }
 
+/// The call a finish with this `id` belongs to: the newest one still
+/// running, else the newest with that id.
+///
+/// Ids are not always unique within a turn: OpenAI-compatible servers that
+/// send none get `call_0` for the first call of every round, so each round
+/// of a tool loop reuses it. A finish always follows its own start, so the
+/// newest running call with the id is the one that finished.
 fn tool_call_mut<'a>(answer: &'a mut Message, id: &str) -> Option<&'a mut ToolCall> {
-    answer.parts.iter_mut().find_map(|part| match part {
+    let mut calls = answer.parts.iter_mut().rev().filter_map(|part| match part {
         Part::Tool(call) if call.id == id => Some(call),
         _ => None,
-    })
+    });
+    let newest = calls.next()?;
+    if newest.state == ToolState::Running {
+        return Some(newest);
+    }
+    match calls.find(|call| call.state == ToolState::Running) {
+        Some(running) => Some(running),
+        None => Some(newest),
+    }
 }
 
 #[cfg(test)]
@@ -573,6 +588,64 @@ mod tests {
         );
         assert_eq!(answer(&conversation).text(), "Adding a fade.Done.");
         assert!(matches!(answer(&conversation).parts[3], Part::Text(_)));
+    }
+
+    #[test]
+    fn calls_that_share_an_id_finish_in_turn() {
+        // A server that sends no ids: every round's first call is `call_0`.
+        let finish = |summary: &str| ChatEvent::ToolCallFinished {
+            id: "call_0".into(),
+            ok: true,
+            summary: summary.into(),
+        };
+        let conversation = turn(&[
+            started("call_0", "get_overview", json!({})),
+            finish("round one"),
+            started("call_0", "screenshot", json!({})),
+            finish("round two"),
+            finished(StopReason::EndTurn),
+        ]);
+        let calls: Vec<(ToolState, Option<&str>)> = answer(&conversation)
+            .tool_calls()
+            .map(|call| (call.state, call.result.as_deref()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (ToolState::Succeeded, Some("round one")),
+                (ToolState::Succeeded, Some("round two")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_late_finish_goes_to_the_call_still_running() {
+        // Two calls with one id are running; the newer one finishes first.
+        let conversation = turn(&[
+            started("dup", "get_overview", json!({})),
+            started("dup", "screenshot", json!({})),
+            ChatEvent::ToolCallFinished {
+                id: "dup".into(),
+                ok: true,
+                summary: "second".into(),
+            },
+            ChatEvent::ToolCallFinished {
+                id: "dup".into(),
+                ok: false,
+                summary: "first".into(),
+            },
+        ]);
+        let calls: Vec<(ToolState, Option<&str>)> = answer(&conversation)
+            .tool_calls()
+            .map(|call| (call.state, call.result.as_deref()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (ToolState::Failed, Some("first")),
+                (ToolState::Succeeded, Some("second")),
+            ]
+        );
     }
 
     #[test]
