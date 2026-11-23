@@ -476,6 +476,7 @@ impl Sample {
                 name: artboard.name,
                 rect: artboard.rect,
                 texture: artboard.texture.as_ref().map(TextureHandle::id),
+                texture_rect: None,
                 fill: artboard.fill,
                 selected: self.selected_layer.as_ref() == Some(&artboard.key),
             })
