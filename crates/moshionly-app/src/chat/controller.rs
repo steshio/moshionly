@@ -73,6 +73,14 @@ pub enum ModelList {
     Failed(String),
 }
 
+/// One provider's models, and the listing they came from or wait for.
+#[derive(Debug)]
+struct Models {
+    /// The number of the listing.
+    listing: u64,
+    list: ModelList,
+}
+
 /// The outcome of the latest key change for a provider, for the settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyNote {
@@ -124,8 +132,10 @@ enum Update {
         check: u64,
         status: ProviderStatus,
     },
+    /// A provider's models, from listing number `listing`.
     Models {
         provider: String,
+        listing: u64,
         result: Result<Vec<ModelInfo>, String>,
     },
     Event {
@@ -197,7 +207,12 @@ pub struct Controller {
     /// For each provider, the number of the check its status came from. A
     /// check that started earlier cannot replace it.
     checked: HashMap<String, u64>,
-    models: HashMap<String, ModelList>,
+    /// Each provider's models. An entry is dropped when how the provider
+    /// is reached changes, and a listing then only counts if it is the one
+    /// its provider's entry waits for.
+    models: HashMap<String, Models>,
+    /// Numbers every model listing, in the order they start.
+    listings: u64,
     keys: HashMap<String, KeyNote>,
     selected: Option<String>,
     conversation: Conversation,
@@ -236,6 +251,7 @@ impl Controller {
             full_check: 0,
             checked: HashMap::new(),
             models: HashMap::new(),
+            listings: 0,
             keys: HashMap::new(),
             selected: None,
             conversation: Conversation::new(),
@@ -296,7 +312,7 @@ impl Controller {
 
     /// The models of a provider, when they were asked for.
     pub fn models(&self, id: &str) -> Option<&ModelList> {
-        self.models.get(id)
+        self.models.get(id).map(|models| &models.list)
     }
 
     /// The outcome of the latest key change for a provider.
@@ -359,7 +375,15 @@ impl Controller {
         if self.models.contains_key(id) {
             return;
         }
-        self.models.insert(id.to_owned(), ModelList::Loading);
+        self.listings += 1;
+        let listing = self.listings;
+        self.models.insert(
+            id.to_owned(),
+            Models {
+                listing,
+                list: ModelList::Loading,
+            },
+        );
         let (registry, source, id) = (
             self.registry.clone(),
             Arc::clone(&self.source),
@@ -375,6 +399,7 @@ impl Controller {
             };
             Some(Update::Models {
                 provider: id,
+                listing,
                 result,
             })
         });
@@ -640,7 +665,7 @@ impl Controller {
             let loading = self
                 .models
                 .values()
-                .any(|models| *models == ModelList::Loading)
+                .any(|models| models.list == ModelList::Loading)
                 || self.keys.values().any(|note| *note == KeyNote::Working);
             if !self.is_busy() && !self.checking && !loading {
                 return true;
@@ -678,12 +703,21 @@ impl Controller {
                 self.follow_settings();
                 self.reselect();
             }
-            Update::Models { provider, result } => {
-                let list = match result {
-                    Ok(models) => ModelList::Loaded(models),
-                    Err(problem) => ModelList::Failed(problem),
-                };
-                self.models.insert(provider, list);
+            Update::Models {
+                provider,
+                listing,
+                result,
+            } => {
+                // A listing for an address or key that has changed since
+                // is dropped: it would show another server's models.
+                if let Some(models) = self.models.get_mut(&provider)
+                    && models.listing == listing
+                {
+                    models.list = match result {
+                        Ok(found) => ModelList::Loaded(found),
+                        Err(problem) => ModelList::Failed(problem),
+                    };
+                }
             }
             Update::Event { turn, event } => {
                 let Some(running) = self.turn.as_ref().filter(|running| running.id == turn) else {
@@ -1266,6 +1300,43 @@ mod tests {
         source.release_checks();
         assert!(controller.settle(WAIT));
         assert!(controller.status("anthropic").unwrap().key_stored);
+    }
+
+    #[test]
+    fn models_listed_for_an_old_address_do_not_replace_the_new_ones() {
+        let old_server = ScriptedProvider::new("ollama", Vec::new())
+            .with_models(vec![ModelInfo::new("old", "Old server's model")]);
+        old_server.hold_models();
+        let source = ScriptedSource::new(statuses(&["ollama"])).with_provider(old_server.clone());
+        let registry =
+            ProviderRegistry::new(AiSettings::default(), Arc::new(MemoryKeyStore::new()));
+        let mut controller = Controller::new(registry, Arc::new(source.clone()), None);
+        controller.ensure_checked();
+        wait_until(&mut controller, |_| old_server.model_listings() == 1);
+
+        // The address is corrected while the old one is still being asked.
+        let new_models = vec![ModelInfo::new("new", "New server's model")];
+        source.set_provider(
+            ScriptedProvider::new("ollama", Vec::new()).with_models(new_models.clone()),
+        );
+        assert!(controller.change_settings(|settings| {
+            settings.provider_mut("ollama").base_url = Some("http://10.0.0.2:11434/v1".into());
+        }));
+        wait_until(&mut controller, |c| {
+            c.models("ollama") == Some(&ModelList::Loaded(new_models.clone()))
+        });
+
+        // The old server answers last.
+        old_server.release_models();
+        let deadline = std::time::Instant::now() + WAIT;
+        while !controller.poll().updated {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            controller.models("ollama"),
+            Some(&ModelList::Loaded(new_models))
+        );
     }
 
     #[test]

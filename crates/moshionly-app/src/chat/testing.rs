@@ -74,6 +74,10 @@ struct Seen {
     requests: Mutex<Vec<ChatRequest>>,
     stopped: AtomicBool,
     turns: AtomicUsize,
+    /// Model listings wait while this is set.
+    models_held: AtomicBool,
+    /// How many times the models were asked for.
+    listings: AtomicUsize,
 }
 
 /// Marks a turn as stopped when its work is dropped before it finished,
@@ -150,6 +154,24 @@ impl ScriptedProvider {
     pub fn with_models(mut self, models: Vec<ModelInfo>) -> Self {
         self.models = models;
         self
+    }
+
+    /// Keeps every listing of its models waiting until
+    /// [`release_models`](Self::release_models), like a server that is
+    /// slow to answer.
+    pub fn hold_models(&self) {
+        self.seen.models_held.store(true, Ordering::Release);
+    }
+
+    /// Lets the held listings of its models finish.
+    pub fn release_models(&self) {
+        self.seen.models_held.store(false, Ordering::Release);
+    }
+
+    /// How many times its models were asked for, including listings still
+    /// held.
+    pub fn model_listings(&self) -> usize {
+        self.seen.listings.load(Ordering::Acquire)
     }
 
     /// Every request it was sent, oldest first.
@@ -238,6 +260,10 @@ impl ChatProvider for ScriptedProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, AiError> {
+        self.seen.listings.fetch_add(1, Ordering::AcqRel);
+        while self.seen.models_held.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         Ok(self.models.clone())
     }
 
