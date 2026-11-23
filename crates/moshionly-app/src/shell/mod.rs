@@ -129,6 +129,14 @@ pub fn new_document() -> Document {
     document
 }
 
+/// A session on a new document with nothing in it worth saving yet: it
+/// counts as unsaved only once something changes.
+pub fn untitled_session() -> SessionHandle {
+    let mut session = Session::new(new_document());
+    session.mark_clean();
+    SessionHandle::new(session)
+}
+
 impl Shell {
     /// A shell on `session`, drawing with the bundled and installed fonts
     /// on worker threads.
@@ -149,7 +157,7 @@ impl Shell {
 
     /// A shell on a new, untitled document.
     pub fn untitled(settings: Settings) -> Self {
-        Self::new(settings, SessionHandle::new(Session::new(new_document())))
+        Self::new(settings, untitled_session())
     }
 
     fn build(
@@ -1012,6 +1020,13 @@ mod tests {
         assert_eq!(played(0.0, 16.0, 0.0, true), (0.0, false));
         // A long stall wraps as many times as needed.
         assert_eq!(played(0.0, 9000.0, 4000.0, true), (1000.0, true));
+    }
+
+    #[test]
+    fn a_new_document_has_nothing_to_save() {
+        let session = untitled_session();
+        assert!(!session.read(|s| s.has_unsaved_changes()));
+        assert_eq!(session.path(), None);
     }
 
     #[test]

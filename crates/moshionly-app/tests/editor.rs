@@ -411,6 +411,14 @@ fn unsaved_changes_are_asked_about_before_a_new_document() {
     assert_eq!(document.artboards().len(), 1);
     assert!(!document.contains(&NodeId::from("card")));
     assert_eq!(harness.state().project_name(), "Untitled");
+
+    // The blank document has nothing to lose: another New does not ask,
+    // and neither does closing the window.
+    assert!(!harness.state().editor().has_unsaved_changes());
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    assert!(!harness.state().is_asking());
+    assert!(harness.state_mut().may_close());
 }
 
 #[test]

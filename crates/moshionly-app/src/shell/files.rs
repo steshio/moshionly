@@ -107,9 +107,11 @@ impl Shell {
     fn perform(&mut self, action: FileAction) {
         match action {
             FileAction::New => {
-                self.editor
-                    .session()
-                    .write(|session| session.replace(new_document(), None));
+                self.editor.session().write(|session| {
+                    session.replace(new_document(), None);
+                    // Nothing in a blank document is worth asking about.
+                    session.mark_clean();
+                });
                 self.after_replace();
             }
             FileAction::Open(path) => {
