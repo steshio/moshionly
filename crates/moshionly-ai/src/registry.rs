@@ -698,6 +698,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_key_stored_for_a_server_that_needs_none_is_still_sent() {
+        let models = || MockResponse::json(200, json!({ "data": [{ "id": "local-model" }] }));
+        let server = MockServer::start(vec![models(), models()]).await;
+        let mut settings = AiSettings::default();
+        settings.provider_mut("custom").base_url = Some(format!("{}/v1", server.url()));
+
+        // Without a key the custom server is asked without one...
+        let without = registry(settings.clone(), MemoryKeyStore::new());
+        assert!(without.status("custom").await.unwrap().readiness.is_ready());
+        // ...and with one stored, the key goes along.
+        let keys = MemoryKeyStore::new().with_key("custom", ApiKey::new(KEY));
+        let status = registry(settings, keys).status("custom").await.unwrap();
+        assert!(status.readiness.is_ready());
+        assert!(status.key_stored);
+
+        let requests = server.requests();
+        assert_eq!(requests[0].header("authorization"), "");
+        assert_eq!(requests[1].header("authorization"), format!("Bearer {KEY}"));
+    }
+
+    #[tokio::test]
     async fn the_chosen_model_is_used_when_a_request_names_none() {
         let reply = |text: &str| {
             MockResponse::sse(&[

@@ -148,7 +148,8 @@ impl OpenAiCompatible {
     }
 
     /// The key to send, or an error when the service needs one and none is
-    /// stored. Services that need no key get none even if one is stored.
+    /// stored. A stored key is sent even where none is required: a custom
+    /// server, or a local one behind a proxy, may ask for it.
     fn key(&self) -> Result<Option<&ApiKey>, AiError> {
         match &self.key {
             Some(key) => Ok(Some(key)),
