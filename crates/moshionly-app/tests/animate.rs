@@ -240,6 +240,37 @@ fn playing_moves_the_playhead_with_the_clock_and_stops_at_the_end() {
 }
 
 #[test]
+fn leaving_the_animate_tab_pauses_playback() {
+    let mut harness = demo();
+    for leave in ["M", "the Design tab"] {
+        harness.key_press(Key::Home);
+        harness.run();
+        harness.key_press(Key::Space);
+        for _ in 0..12 {
+            harness.step();
+        }
+        assert!(harness.state().is_playing());
+        assert_eq!(harness.state().inspector_tab(), InspectorTab::Animate);
+        if leave == "M" {
+            harness.key_press(Key::M);
+        } else {
+            // What the Design tab button does.
+            harness.state_mut().inspector_mut().tab = InspectorTab::Design;
+        }
+        harness.run_steps(3);
+        assert_eq!(harness.state().inspector_tab(), InspectorTab::Design);
+        assert!(!harness.state().is_playing(), "{leave} paused it");
+        // The playhead stays where playback left it.
+        let paused = harness.state().editor().playhead();
+        assert!(paused > 0.0, "{paused}");
+        for _ in 0..10 {
+            harness.step();
+        }
+        assert_eq!(harness.state().editor().playhead(), paused);
+    }
+}
+
+#[test]
 fn the_timeline_context_menu_works_on_the_selected_actions() {
     let mut harness = demo();
     let dot = NodeId::from("dotin");

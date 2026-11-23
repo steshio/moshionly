@@ -1125,8 +1125,17 @@ impl Shell {
 
     /// Moves the playhead on with the clock while playing. At the end of
     /// the scene it starts over when looping and stops otherwise.
+    ///
+    /// Only the Animate tab shows the animation on the canvas; the Design
+    /// tab shows the design at rest. Leaving the Animate tab (with M or the
+    /// tab itself) therefore pauses playback where it is, rather than run
+    /// the clock over a canvas that does not move.
     fn advance_playback(&mut self, ctx: &Context) {
         if !self.playback.is_playing() {
+            return;
+        }
+        if self.inspector.tab != InspectorTab::Animate {
+            self.playback.pause();
             return;
         }
         let tick = self.playback.tick(
