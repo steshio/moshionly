@@ -177,6 +177,9 @@ fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
         &fps,
     ]);
     add(&["-i", "pipe:0"]);
+    // Options after the input are for the output. No random ids or version
+    // strings, so the same export gives the same file.
+    add(&["-fflags", "+bitexact", "-flags:v", "+bitexact"]);
     let key_interval = (2.0 * rate.fps()).round().max(1.0).to_string();
     let pixel_format = match (plan.format, plan.transparent) {
         (Format::ProRes, true) => "yuva444p10le",
@@ -184,7 +187,12 @@ fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
         (_, true) => "yuva420p",
         (_, false) => "yuv420p",
     };
-    let filter = format!("scale=out_color_matrix=bt709:out_range=tv,format={pixel_format}");
+    // Convert with the BT.709 matrix, and say so in the file: primaries,
+    // transfer and matrix, so players show the colours as rendered.
+    let filter = format!(
+        "scale=out_color_matrix=bt709:out_range=tv,format={pixel_format},\
+         setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+    );
     add(&["-vf", &filter, "-pix_fmt", pixel_format]);
     add(&[
         "-color_primaries",
@@ -221,8 +229,8 @@ fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
         _ => {
             let (crf, speed) = match plan.quality {
                 Quality::Draft => ("40", "5"),
-                Quality::Standard => ("31", "3"),
-                Quality::High => ("22", "1"),
+                Quality::Standard => ("30", "3"),
+                Quality::High => ("20", "1"),
             };
             add(&["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0"]);
             add(&["-deadline", "good", "-cpu-used", speed, "-row-mt", "1"]);
@@ -406,7 +414,9 @@ mod tests {
             args.contains("-s 200x100 -framerate 30/1 -i pipe:0"),
             "{args}"
         );
-        assert!(args.contains("-c:v libvpx-vp9 -crf 31"), "{args}");
+        assert!(args.contains("-c:v libvpx-vp9 -crf 30"), "{args}");
+        assert!(args.contains("setparams=color_primaries=bt709"), "{args}");
+        assert!(args.contains("-fflags +bitexact"), "{args}");
         assert!(args.contains("format=yuva420p"), "{args}");
         assert!(args.contains("-auto-alt-ref 0"), "{args}");
         assert!(args.contains("-colorspace bt709"), "{args}");

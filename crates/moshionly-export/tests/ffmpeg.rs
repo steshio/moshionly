@@ -34,7 +34,8 @@ fn probe(path: &Path, decoder: Option<&str>) -> String {
         .args(["-count_frames", "-select_streams", "v:0", "-show_entries"])
         .arg(
             "stream=codec_name,profile,width,height,pix_fmt,nb_read_frames,avg_frame_rate,\
-             color_space:stream_tags=alpha_mode:format=duration,format_name",
+             color_space,color_primaries,color_transfer:stream_tags=alpha_mode:\
+             format=duration,format_name",
         )
         .args(["-of", "default=noprint_wrappers=1"])
         .arg(path)
@@ -87,6 +88,8 @@ fn a_transparent_webm_keeps_its_alpha() {
             "avg_frame_rate=30/1",
             "nb_read_frames=60",
             "color_space=bt709",
+            "color_primaries=bt709",
+            "color_transfer=bt709",
             "TAG:alpha_mode=1",
             "duration=2.000000",
         ],
@@ -149,6 +152,36 @@ fn prores_4444_keeps_its_alpha_at_television_rates() {
         .find_map(|line| line.strip_prefix("pix_fmt="))
         .unwrap_or_default();
     assert!(pixel_format.starts_with("yuva444"), "{report}");
+}
+
+#[test]
+fn the_same_export_gives_the_same_bytes() {
+    if !tools_present("the_same_export_gives_the_same_bytes") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::default()
+        .with_scale(0.1)
+        .with_quality(Quality::Draft)
+        .with_range(None, Some(500.0));
+    for format in [Format::WebM, Format::ProRes] {
+        let first = dir
+            .path()
+            .join(format!("a.{}", format.extension().unwrap()));
+        let second = dir
+            .path()
+            .join(format!("b.{}", format.extension().unwrap()));
+        common::run(&common::job(format, &first, settings))
+            .0
+            .unwrap();
+        common::run(&common::job(format, &second, settings))
+            .0
+            .unwrap();
+        assert!(
+            std::fs::read(first).unwrap() == std::fs::read(second).unwrap(),
+            "{format}"
+        );
+    }
 }
 
 #[test]
