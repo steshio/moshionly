@@ -12,11 +12,13 @@
 mod convert;
 mod draw;
 pub mod error;
+pub mod fonts;
 pub mod frame;
 pub mod options;
 pub mod renderer;
 
 pub use error::{RenderError, RenderWarning};
+pub use fonts::{FontError, FontFace, FontFamily, FontLibrary};
 pub use frame::Frame;
 pub use options::{Background, RenderOptions};
 pub use renderer::Renderer;
