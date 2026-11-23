@@ -567,3 +567,60 @@ fn layers_move_in_the_stacking_order() {
     harness.run();
     assert_eq!(order(&harness), ["title", "accent", "raised", "dot"]);
 }
+
+/// The rectangle of the first widget named `label`: in the layer list
+/// that is the row, which comes before the timeline's.
+fn rect_of(harness: &Harness<'_, Shell>, label: &str) -> egui::Rect {
+    harness
+        .get_all_by_label(label)
+        .next()
+        .unwrap_or_else(|| panic!("nothing named {label}"))
+        .rect()
+}
+
+#[test]
+fn a_double_click_renames_a_row() {
+    let mut harness = harness();
+    let card = rect_of(&harness, "Card").center();
+    double_click(&mut harness, card);
+    let field = harness.get_by_label("Layer name");
+    field.type_text(" front");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("card")).unwrap().name(),
+        "Card front"
+    );
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Rename")
+    );
+}
+
+#[test]
+fn dragging_a_row_moves_the_layer_out_of_its_group() {
+    let mut harness = harness();
+    // Selecting the dot opens the card's row.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let card = rect_of(&harness, "Card");
+    // Onto the top edge of the card's row: just above it, out of it.
+    drag(
+        &mut harness,
+        dot.center(),
+        egui::pos2(card.center().x, card.top() + 2.0),
+    );
+    let document = harness.state().editor().document().clone();
+    let dot = document.get(&NodeId::from("dot")).unwrap();
+    assert_eq!(dot.parent, Some(NodeId::from("scene")));
+    // It stayed where it was on the artboard.
+    let layer = dot.layer().unwrap();
+    assert_eq!((layer.x, layer.y), (240.0 + 500.0, 340.0 + 300.0));
+}

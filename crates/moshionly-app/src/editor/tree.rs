@@ -7,7 +7,8 @@
 
 use std::collections::HashSet;
 
-use moshionly_core::{Document, Family, NodeId, NodeType};
+use moshionly_core::build::{self, Place};
+use moshionly_core::{Document, Edit, Family, NodeId, NodeType};
 
 use super::describe::display_name;
 
@@ -112,6 +113,133 @@ fn push_rows(
     }
 }
 
+/// Where a row being dragged in the layer list would land, relative to the
+/// row under the pointer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Drop {
+    /// Just above the row: in front of that layer.
+    Above(NodeId),
+    /// Just below the row: behind that layer.
+    Below(NodeId),
+    /// Into the row's layer, on top of what is in it.
+    Inside(NodeId),
+}
+
+/// Where a drop over `row` lands, from how far down the row the pointer is
+/// (0 at its top, 1 at its bottom). The top and bottom quarters drop beside
+/// it; the middle drops into it when it can hold layers.
+pub fn drop_at(row: &LayerRow, fraction: f32) -> Drop {
+    let holds = row.node_type.holds_layers();
+    let id = row.id.clone();
+    if holds && (0.25..=0.75).contains(&fraction) {
+        Drop::Inside(id)
+    } else if fraction < 0.5 {
+        Drop::Above(id)
+    } else if holds && row.expanded == Some(true) {
+        // Below an open group is its first row, on top of its layers.
+        Drop::Inside(id)
+    } else {
+        Drop::Below(id)
+    }
+}
+
+/// The parent and place a drop puts layers at. Layers dropped beside an
+/// artboard go into it; artboards only move among artboards.
+pub fn drop_target(
+    document: &Document,
+    drop: &Drop,
+    moving_artboards: bool,
+) -> Option<(Option<NodeId>, Place)> {
+    let (row, place) = match drop {
+        Drop::Inside(id) => {
+            if moving_artboards {
+                return None;
+            }
+            return Some((Some(id.clone()), Place::Last));
+        }
+        Drop::Above(id) => (id, Place::After(id.clone())),
+        Drop::Below(id) => (id, Place::Before(id.clone())),
+    };
+    let node = document.get(row)?;
+    let row_is_artboard = node.node_type() == NodeType::Artboard;
+    match (moving_artboards, row_is_artboard) {
+        // Artboards are listed first to last, not front to back.
+        (true, true) => Some((
+            None,
+            match drop {
+                Drop::Above(id) => Place::Before(id.clone()),
+                _ => Place::After(row.clone()),
+            },
+        )),
+        (true, false) => None,
+        (false, true) => {
+            // Above an artboard is on top of it, below it at its back.
+            let into = match place {
+                Place::After(_) => Place::Last,
+                _ => Place::First,
+            };
+            Some((Some(row.clone()), into))
+        }
+        (false, false) => Some((node.parent.clone(), place)),
+    }
+}
+
+/// The edits that move `ids` to where `drop` lands, keeping each layer
+/// where it is on the artboard. Layers dropped into themselves, and drops
+/// that make no sense, give no edits.
+pub fn drop_edits(document: &Document, ids: &[NodeId], drop: &Drop) -> Vec<Edit> {
+    let moving_artboards = ids.iter().any(|id| {
+        document
+            .get(id)
+            .is_some_and(|n| n.node_type() == NodeType::Artboard)
+    });
+    let Some((parent, place)) = drop_target(document, drop, moving_artboards) else {
+        return Vec::new();
+    };
+    // Nothing moves next to or into one of the moving layers.
+    let anchor = match &place {
+        Place::Before(id) | Place::After(id) => Some(id),
+        _ => None,
+    };
+    if anchor.is_some_and(|a| ids.contains(a)) || parent.as_ref().is_some_and(|p| ids.contains(p)) {
+        return Vec::new();
+    }
+    let mut working = document.clone();
+    let mut edits = Vec::new();
+    // Back to front, so each lands in front of the one before it.
+    let mut ordered: Vec<&NodeId> = ids.iter().collect();
+    ordered.sort_by_key(|id| document.walk_index(id));
+    let mut place = place;
+    for id in ordered {
+        let result = match &parent {
+            Some(parent) => build::move_node(&working, id, parent, &place, true),
+            None => build::index_at(&working, None, Family::Layer, &place, Some(id))
+                .map(|index| vec![Edit::set(id.clone(), "index", index)]),
+        };
+        let Ok(more) = result else {
+            continue;
+        };
+        if working.apply(&more).is_ok() {
+            edits.extend(more);
+            place = Place::After(id.clone());
+        }
+    }
+    edits
+}
+
+/// Where a node is in the tree, for sorting nodes back to front.
+trait WalkIndex {
+    fn walk_index(&self, id: &NodeId) -> usize;
+}
+
+impl WalkIndex for Document {
+    fn walk_index(&self, id: &NodeId) -> usize {
+        self.nodes()
+            .position(|node| node.id == *id)
+            .unwrap_or(usize::MAX)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use moshionly_core::io;
@@ -182,6 +310,76 @@ mod tests {
                 .iter()
                 .any(|row| row.name == "Background")
         );
+    }
+
+    fn row(doc: &Document, id: &str, state: &TreeState) -> LayerRow {
+        layer_rows(doc, state, "")
+            .into_iter()
+            .find(|row| row.id == NodeId::from(id))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_pointer_picks_above_below_or_inside() {
+        let doc = document();
+        let state = TreeState::default();
+        let ellipse = row(&doc, "top", &state);
+        assert_eq!(drop_at(&ellipse, 0.1), Drop::Above(NodeId::from("top")));
+        assert_eq!(drop_at(&ellipse, 0.5), Drop::Below(NodeId::from("top")));
+        let card = row(&doc, "card", &state);
+        assert_eq!(drop_at(&card, 0.5), Drop::Inside(NodeId::from("card")));
+        assert_eq!(drop_at(&card, 0.9), Drop::Below(NodeId::from("card")));
+        let mut open = TreeState::default();
+        open.set_expanded(&doc, &NodeId::from("card"), true);
+        let card = row(&doc, "card", &open);
+        assert_eq!(drop_at(&card, 0.9), Drop::Inside(NodeId::from("card")));
+    }
+
+    #[test]
+    fn dropping_reorders_and_moves_between_groups() {
+        let doc = document();
+        let id = |text: &str| NodeId::from(text);
+        // The ellipse below the card: behind it.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("top")], &Drop::Below(id("card"))))
+            .unwrap();
+        assert_eq!(
+            moved.children(&id("ab"), Family::Layer),
+            [id("top"), id("card")]
+        );
+        // Into the card, on top of what is in it.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("top")], &Drop::Inside(id("card"))))
+            .unwrap();
+        assert_eq!(
+            moved.children(&id("card"), Family::Layer).last(),
+            Some(&id("top"))
+        );
+        // Out of the card, above the ellipse.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("bg")], &Drop::Above(id("top"))))
+            .unwrap();
+        assert_eq!(
+            moved.children(&id("ab"), Family::Layer).last(),
+            Some(&id("bg"))
+        );
+        // Beside an artboard row: into that artboard.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("top")], &Drop::Below(id("ab2"))))
+            .unwrap();
+        assert_eq!(moved.children(&id("ab2"), Family::Layer), [id("top")]);
+        // Not into itself, and artboards only among artboards.
+        assert!(drop_edits(&doc, &[id("card")], &Drop::Inside(id("card"))).is_empty());
+        assert!(drop_edits(&doc, &[id("ab")], &Drop::Inside(id("card"))).is_empty());
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(&doc, &[id("ab")], &Drop::Below(id("ab2"))))
+            .unwrap();
+        assert_eq!(moved.artboards(), [id("ab2"), id("ab")]);
     }
 
     #[test]

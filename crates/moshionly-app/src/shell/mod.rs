@@ -78,6 +78,10 @@ pub struct Shell {
     shown_selection: Vec<NodeId>,
     /// Scroll the layer list to this row on the next frame.
     reveal_row: Option<NodeId>,
+    /// The layer row being renamed, with the name typed so far.
+    renaming: Option<(NodeId, String)>,
+    /// The layers whose rows are being dragged in the list.
+    list_drag: Option<Vec<NodeId>>,
     /// The timeline groups whose rows are folded away.
     collapsed_groups: HashSet<NodeId>,
     /// The selected timeline bars.
@@ -174,6 +178,8 @@ impl Shell {
             layer_query: String::new(),
             shown_selection: Vec::new(),
             reveal_row: None,
+            renaming: None,
+            list_drag: None,
             collapsed_groups: HashSet::new(),
             selected_actions: Vec::new(),
             drag: None,
@@ -301,7 +307,8 @@ impl Shell {
             || self.palette.is_open()
             || self.pending.is_some()
             || self.text_edit.is_some()
-            || self.pen.is_some();
+            || self.pen.is_some()
+            || self.renaming.is_some();
 
         self.editor.attach(&ctx);
         if self.editor.sync() {
@@ -359,6 +366,8 @@ impl Shell {
                     query: &mut self.layer_query,
                     registry: &self.commands,
                     reveal: reveal.as_ref(),
+                    renaming: &mut self.renaming,
+                    dragging: &mut self.list_drag,
                 },
             )
         });
