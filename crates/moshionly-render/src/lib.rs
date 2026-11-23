@@ -9,6 +9,7 @@
 
 #![warn(missing_docs)]
 
+pub mod assets;
 mod convert;
 mod draw;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod options;
 pub mod renderer;
 mod text;
 
+pub use assets::AssetLoader;
 pub use error::{RenderError, RenderWarning};
 pub use fonts::{FontError, FontFace, FontFamily, FontLibrary};
 pub use frame::Frame;

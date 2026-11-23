@@ -3,6 +3,7 @@
 use moshionly_core::Scene;
 use skia_safe as sk;
 
+use crate::assets::AssetLoader;
 use crate::draw::Painter;
 use crate::error::{RenderError, RenderWarning};
 use crate::fonts::FontLibrary;
@@ -17,21 +18,27 @@ use crate::options::{Background, RenderOptions};
 #[derive(Debug, Clone)]
 pub struct Renderer {
     fonts: FontLibrary,
+    assets: AssetLoader,
 }
 
 impl Renderer {
-    /// A renderer that draws text with `fonts`.
+    /// A renderer that draws text with `fonts` and images from `assets`.
     ///
-    /// Evaluate scenes with the same library as the measurer (it is one),
-    /// so that text is split where it is drawn.
-    pub fn new(fonts: FontLibrary) -> Self {
-        Self { fonts }
+    /// Evaluate scenes with the same font library as the measurer (it is
+    /// one), so that text is split where it is drawn.
+    pub fn new(fonts: FontLibrary, assets: AssetLoader) -> Self {
+        Self { fonts, assets }
     }
 
     /// The fonts text is drawn with. They are also the text measurer to
     /// evaluate scenes with.
     pub fn fonts(&self) -> &FontLibrary {
         &self.fonts
+    }
+
+    /// Where images come from.
+    pub fn assets(&self) -> &AssetLoader {
+        &self.assets
     }
 
     /// Renders a scene into a new frame.
@@ -81,7 +88,7 @@ impl Renderer {
         canvas: &sk::Canvas,
         background: Background,
     ) -> Vec<RenderWarning> {
-        let mut painter = Painter::new(canvas, &self.fonts);
+        let mut painter = Painter::new(canvas, &self.fonts, &self.assets);
         painter.scene(scene, background);
         painter.into_warnings()
     }
@@ -92,9 +99,9 @@ mod tests {
     use super::*;
 
     fn renderer() -> Renderer {
-        Renderer::new(FontLibrary::bundled())
+        Renderer::new(FontLibrary::bundled(), AssetLoader::default())
     }
-    use moshionly_core::model::{BlendMode, GradientStop, Shadow};
+    use moshionly_core::model::{BlendMode, GradientStop, ImageFit, Shadow};
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
@@ -426,6 +433,83 @@ mod tests {
         );
         assert_eq!(pixel(15, 5), [0, 0, 0, 0], "outside the mask");
         assert_eq!(pixel(35, 5), [0, 0, 255, 255], "the mask cuts nothing else");
+    }
+
+    /// An image layer at the origin showing a 20 by 10 picture: red on the
+    /// left half, blue on the right.
+    fn picture(width: f64, height: f64, fit: ImageFit, radii: [f64; 4]) -> SceneNode {
+        let png = crate::assets::tests::png(20, 10, |x, _| {
+            if x < 10 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            }
+        });
+        let content = Content::Image {
+            source: moshionly_core::io::data_uri("image/png", &png),
+            fit,
+            radii,
+            stroke: None,
+        };
+        node("photo", Affine::IDENTITY, width, height, content)
+    }
+
+    #[test]
+    fn images_fill_their_box_by_fit() {
+        let pixel = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap();
+        let red = [255, 0, 0, 255];
+        let blue = [0, 0, 255, 255];
+
+        let stretched = draw(vec![picture(40.0, 20.0, ImageFit::Stretch, [0.0; 4])]);
+        assert!(
+            stretched.warnings().is_empty(),
+            "{:?}",
+            stretched.warnings()
+        );
+        assert_eq!(pixel(&stretched, 5, 10), red);
+        assert_eq!(pixel(&stretched, 35, 10), blue);
+
+        // A square box: cover crops the sides, contain leaves bands above
+        // and below.
+        let cover = draw(vec![picture(20.0, 20.0, ImageFit::Cover, [0.0; 4])]);
+        assert_eq!(pixel(&cover, 2, 1), red);
+        assert_eq!(pixel(&cover, 17, 18), blue);
+        let contain = draw(vec![picture(20.0, 20.0, ImageFit::Contain, [0.0; 4])]);
+        assert_eq!(pixel(&contain, 2, 2), [0, 0, 0, 0]);
+        assert_eq!(pixel(&contain, 2, 10), red);
+        assert_eq!(pixel(&contain, 17, 17), [0, 0, 0, 0]);
+
+        // Rounded corners cut the picture.
+        let rounded = draw(vec![picture(20.0, 20.0, ImageFit::Cover, [8.0; 4])]);
+        assert_eq!(pixel(&rounded, 0, 0), [0, 0, 0, 0]);
+        assert_eq!(pixel(&rounded, 8, 8), red);
+    }
+
+    #[test]
+    fn a_missing_image_draws_a_placeholder_and_says_so() {
+        let mut missing = picture(40.0, 20.0, ImageFit::Cover, [0.0; 4]);
+        missing.content = Content::Image {
+            source: "/no/such/photo.png".into(),
+            fit: ImageFit::Cover,
+            radii: [0.0; 4],
+            stroke: None,
+        };
+        let frame = draw(vec![missing]);
+        assert_eq!(frame.premultiplied_pixel(30, 4).unwrap()[3], 255, "drawn");
+        match frame.warnings() {
+            [
+                RenderWarning::MissingImage {
+                    node,
+                    source,
+                    reason,
+                },
+            ] => {
+                assert_eq!(node, &NodeId::from("photo"));
+                assert_eq!(source, "/no/such/photo.png");
+                assert!(reason.contains("no file"), "{reason}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 mod effects;
 mod geometry;
+mod image;
 mod paint;
 mod stroke;
 mod text;
@@ -14,6 +15,7 @@ use moshionly_core::scene::{Content, Scene, SceneNode, ScenePaint, TextContent};
 use moshionly_core::{Color, Rect};
 use skia_safe as sk;
 
+use crate::assets::{self, AssetLoader};
 use crate::convert;
 use crate::error::RenderWarning;
 use crate::fonts::FontLibrary;
@@ -23,16 +25,23 @@ use crate::options::Background;
 pub(crate) struct Painter<'a> {
     canvas: &'a sk::Canvas,
     fonts: &'a FontLibrary,
+    assets: &'a AssetLoader,
     warnings: Vec<RenderWarning>,
 }
 
 impl<'a> Painter<'a> {
-    /// A painter for `canvas`, drawing text with `fonts`. The canvas's
-    /// current transform is where the artboard's top-left corner goes.
-    pub(crate) fn new(canvas: &'a sk::Canvas, fonts: &'a FontLibrary) -> Self {
+    /// A painter for `canvas`, drawing text with `fonts` and images from
+    /// `assets`. The canvas's current transform is where the artboard's
+    /// top-left corner goes.
+    pub(crate) fn new(
+        canvas: &'a sk::Canvas,
+        fonts: &'a FontLibrary,
+        assets: &'a AssetLoader,
+    ) -> Self {
         Self {
             canvas,
             fonts,
+            assets,
             warnings: Vec::new(),
         }
     }
@@ -171,8 +180,31 @@ impl<'a> Painter<'a> {
                 }
             }
             Content::Text(content) => self.text(node, content, opacity),
-            // TODO: images.
-            Content::Image { .. } => {}
+            Content::Image {
+                source,
+                fit,
+                radii,
+                stroke,
+            } => {
+                let picture = match self.assets.load(source) {
+                    Ok(picture) => Some(picture),
+                    Err(reason) => {
+                        self.warn(RenderWarning::MissingImage {
+                            node: node.id.clone(),
+                            source: assets::shorten(source),
+                            reason,
+                        });
+                        None
+                    }
+                };
+                let frame = image::ImageBox {
+                    size: (node.width, node.height),
+                    radii,
+                    fit: *fit,
+                    stroke: stroke.as_ref(),
+                };
+                image::draw(self.canvas, &frame, picture.as_ref(), opacity);
+            }
         }
     }
 

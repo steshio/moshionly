@@ -277,7 +277,7 @@ mod tests {
             background: None,
             nodes: vec![node],
         };
-        Renderer::new(FontLibrary::bundled())
+        Renderer::new(FontLibrary::bundled(), crate::AssetLoader::default())
             .render(&scene, &RenderOptions::new())
             .unwrap()
     }
