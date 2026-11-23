@@ -10,6 +10,7 @@
 //! the work. Adding a tool is writing such a module and listing it in
 //! [`TOOLS`].
 
+mod apply;
 mod args;
 mod common;
 mod node;
@@ -83,6 +84,7 @@ const TOOLS: &[&ToolDef] = &[
     &query::QUERY_NODES,
     &node::GET_NODE,
     &schema::GET_SCHEMA,
+    &apply::APPLY_EDITS,
 ];
 
 /// The JSON Schema of an input object with these properties, of which

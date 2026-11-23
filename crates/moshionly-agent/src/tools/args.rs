@@ -36,6 +36,15 @@ impl Args {
         value: &Value,
         allowed: &[&str],
     ) -> Result<Self, ToolError> {
+        let args = Self::open(path, value)?;
+        args.check_names(allowed)?;
+        Ok(args)
+    }
+
+    /// Reads an object found at `path` inside a tool's input, whatever
+    /// names it has. Use it to read the field that decides which names are
+    /// allowed, then read the object again with [`Args::nested`].
+    pub fn open(path: impl Into<String>, value: &Value) -> Result<Self, ToolError> {
         let path = path.into();
         let values = match from_json_text(value) {
             Value::Object(values) => values,
@@ -55,8 +64,12 @@ impl Args {
                 ));
             }
         };
-        let args = Self { path, values };
-        if let Some(unknown) = args
+        Ok(Self { path, values })
+    }
+
+    /// Refuses a name that is not one of `allowed`.
+    fn check_names(&self, allowed: &[&str]) -> Result<(), ToolError> {
+        if let Some(unknown) = self
             .values
             .keys()
             .find(|name| !allowed.contains(&name.as_str()))
@@ -64,10 +77,10 @@ impl Args {
             let hint = closest(unknown, allowed)
                 .map(|name| format!(" Did you mean \"{name}\"?"))
                 .unwrap_or_default();
-            let owner = if args.path.is_empty() {
+            let owner = if self.path.is_empty() {
                 "an argument of this tool".to_owned()
             } else {
-                format!("a field of \"{}\"", args.path)
+                format!("a field of \"{}\"", self.path)
             };
             let takes = if allowed.is_empty() {
                 "It takes no arguments.".to_owned()
@@ -75,11 +88,11 @@ impl Args {
                 format!("It takes: {}.", allowed.join(", "))
             };
             return Err(ToolError::argument(
-                args.field(unknown),
+                self.field(unknown),
                 format!("\"{unknown}\" is not {owner}.{hint} {takes}"),
             ));
         }
-        Ok(args)
+        Ok(())
     }
 
     /// The full path of one of these arguments, for messages.
