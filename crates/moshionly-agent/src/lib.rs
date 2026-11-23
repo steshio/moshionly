@@ -14,6 +14,7 @@
 //!
 //! | Module | What it is for |
 //! |---|---|
+//! | [`bridge`] | [`ToolBridge`]: the same tools as plain data, for the built-in chat |
 //! | [`guide`] | [`guide::GUIDE`] and [`guide::system_prompt`]: how to work in a file, written for a model |
 //! | [`import`] | [`import::PendingImport`]: designs sent from Figma, waiting for the person to accept them |
 //! | [`mcp`] | [`mcp::McpServer`]: the Model Context Protocol server, for agents outside the app |
@@ -24,6 +25,7 @@
 
 #![warn(missing_docs)]
 
+pub mod bridge;
 pub mod guide;
 pub mod host;
 pub mod import;
@@ -32,6 +34,7 @@ pub mod session;
 pub mod tool;
 pub mod tools;
 
+pub use bridge::{BridgePart, BridgeResult, BridgeTool, ToolBridge};
 pub use host::{
     ExportFormat, ExportOptions, ExportProgress, ExportRequest, Exported, Exporter, FontFamily,
     FontSource, Frame, FrameRequest, FrameSource, Host, HostError, SharedMeasurer,
