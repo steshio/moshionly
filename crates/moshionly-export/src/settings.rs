@@ -545,7 +545,10 @@ pub enum SettingsError {
     )]
     CannotBeTransparent(Format),
     /// The frame rate is higher than the format plays.
-    #[error("{format} can play at most {max_fps} frames per second, and {fps} was asked for")]
+    #[error(
+        "{format} can play at most {max_fps} frames per second, and {fps} was asked for; choose \
+         {max_fps} or fewer"
+    )]
     FrameRateTooHigh {
         /// The format.
         format: Format,
