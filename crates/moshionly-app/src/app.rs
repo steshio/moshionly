@@ -1,13 +1,12 @@
 //! The [`eframe::App`] that owns the editor window.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{IconData, ViewportBuilder, ViewportCommand};
 
 use crate::{
-    APP_NAME,
-    commands::CommandId,
-    dialogs,
+    APP_NAME, dialogs,
     settings::Settings,
     shell::{Shell, ShellOutput},
     theme::{self, brand},
@@ -57,14 +56,24 @@ pub fn native_options() -> eframe::NativeOptions {
     }
 }
 
-/// The window title for a project: its name, then the app's.
-pub fn window_title(project_name: &str) -> String {
+/// The window title for a project: its name, marked when it has unsaved
+/// changes, then the app's.
+pub fn window_title(project_name: &str, unsaved: bool) -> String {
     let name = project_name.trim();
-    if name.is_empty() {
-        APP_NAME.to_owned()
-    } else {
-        format!("{name} – {APP_NAME}")
+    match (name.is_empty(), unsaved) {
+        (true, _) => APP_NAME.to_owned(),
+        (false, false) => format!("{name} – {APP_NAME}"),
+        (false, true) => format!("{name} (edited) – {APP_NAME}"),
     }
+}
+
+/// The project named on the command line (`moshionly path/to/file.moshi`):
+/// the first argument that is not an option. `args` leaves out the
+/// program's own name.
+pub fn project_argument(args: impl IntoIterator<Item = String>) -> Option<PathBuf> {
+    args.into_iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(PathBuf::from)
 }
 
 /// The running editor: one window, one document.
@@ -76,7 +85,9 @@ pub struct MoshionlyApp {
 
 impl MoshionlyApp {
     /// Creates the app. Called once by `eframe` when the window is ready.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `project` is a file to open straight away, for example one given on
+    /// the command line.
+    pub fn new(cc: &eframe::CreationContext<'_>, project: Option<PathBuf>) -> Self {
         theme::install(&cc.egui_ctx);
         // ⌘+ and ⌘- zoom the canvas here, not the whole interface.
         cc.egui_ctx
@@ -88,46 +99,46 @@ impl MoshionlyApp {
         if cfg!(target_os = "macos") {
             shell.use_top_bar_as_title_bar(MAC_WINDOW_BUTTONS);
         }
+        if let Some(project) = project {
+            shell.open_path(&project);
+        }
         Self {
             shell,
             title: APP_NAME.to_owned(),
         }
     }
 
-    /// Carries out the commands the shell handed up: the ones that need a
-    /// file dialog.
-    fn handle(&mut self, output: ShellOutput) {
+    /// Carries out what the shell handed up: closing the window, and the
+    /// commands that are not available yet.
+    fn handle(&mut self, ctx: &egui::Context, output: ShellOutput) {
+        if output.close_window {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
         for id in output.commands {
-            // TODO: these stop at the dialog until the shell is bound to the
-            // document engine and the exporter.
-            let chosen = match id {
-                CommandId::OpenProject => dialogs::open_project(),
-                CommandId::SaveAs => dialogs::save_project(&self.shell.project_name()),
-                _ => {
-                    self.shell.toast(Toast::info(format!(
-                        "\"{}\" is not available yet",
-                        id.name().trim_end_matches('…')
-                    )));
-                    continue;
-                }
-            };
-            if let Some(path) = chosen {
-                self.shell.toast(Toast::info(format!(
-                    "Chose {}. Projects are not connected yet.",
-                    path.file_name()
-                        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy())
-                )));
-            }
+            // TODO: export is connected by the export task.
+            self.shell.toast(Toast::info(format!(
+                "\"{}\" is not available yet",
+                id.name().trim_end_matches('…')
+            )));
         }
     }
 }
 
 impl eframe::App for MoshionlyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Closing with unsaved changes asks first; the shell closes the
+        // window itself once the person has answered.
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.shell.may_close() {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        }
         let output = self.shell.show(ui);
-        self.handle(output);
+        self.handle(&ctx, output);
 
-        let title = window_title(&self.shell.project_name());
+        let title = window_title(
+            &self.shell.project_name(),
+            self.shell.editor().has_unsaved_changes(),
+        );
         if title != self.title {
             ui.ctx()
                 .send_viewport_cmd(ViewportCommand::Title(title.clone()));
@@ -152,9 +163,29 @@ mod tests {
 
     #[test]
     fn the_window_title_names_the_project_first() {
-        assert_eq!(window_title("Launch teaser"), "Launch teaser – Moshionly");
-        assert_eq!(window_title("  "), "Moshionly");
-        assert_eq!(window_title(""), "Moshionly");
+        assert_eq!(
+            window_title("Launch teaser", false),
+            "Launch teaser – Moshionly"
+        );
+        assert_eq!(
+            window_title("Launch teaser", true),
+            "Launch teaser (edited) – Moshionly"
+        );
+        assert_eq!(window_title("  ", true), "Moshionly");
+        assert_eq!(window_title("", false), "Moshionly");
+    }
+
+    #[test]
+    fn the_project_to_open_comes_from_the_command_line() {
+        let args = |list: &[&str]| project_argument(list.iter().map(|s| s.to_string()));
+        assert_eq!(args(&[]), None);
+        assert_eq!(args(&["teaser.moshi"]), Some(PathBuf::from("teaser.moshi")));
+        // Options are not files.
+        assert_eq!(
+            args(&["--verbose", "a.moshi"]),
+            Some(PathBuf::from("a.moshi"))
+        );
+        assert_eq!(args(&["-psn_0_1234"]), None);
     }
 
     #[test]

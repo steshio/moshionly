@@ -349,3 +349,143 @@ fn the_pen_draws_a_path() {
         .clone();
     assert!((layer.width - 200.0).abs() < 1.0 && (layer.height - 100.0).abs() < 1.0);
 }
+
+/// Dialogs that answer with fixed files.
+struct FakeDialogs {
+    open: Option<std::path::PathBuf>,
+    save: Option<std::path::PathBuf>,
+}
+
+impl moshionly_app::dialogs::Dialogs for FakeDialogs {
+    fn open_project(&self) -> Option<std::path::PathBuf> {
+        self.open.clone()
+    }
+
+    fn save_project(&self, _suggested_name: &str) -> Option<std::path::PathBuf> {
+        self.save.clone()
+    }
+
+    fn import_images(&self) -> Option<Vec<std::path::PathBuf>> {
+        None
+    }
+}
+
+/// A folder of its own for one test's files.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let folder = std::env::temp_dir().join(format!("moshionly-app-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    folder
+}
+
+#[test]
+fn unsaved_changes_are_asked_about_before_a_new_document() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowRight);
+    harness.run();
+    assert!(harness.state().editor().has_unsaved_changes());
+
+    // Cancel keeps everything as it was.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    assert!(harness.state().is_asking());
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert!(!harness.state().is_asking());
+    assert!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+
+    // Don't save throws the changes away.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    harness.get_by_label("Don't save").click();
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(document.name, "Untitled");
+    assert_eq!(document.artboards().len(), 1);
+    assert!(!document.contains(&NodeId::from("card")));
+    assert_eq!(harness.state().project_name(), "Untitled");
+}
+
+#[test]
+fn closing_with_unsaved_changes_asks_first() {
+    let mut harness = harness();
+    // Nothing to lose: the window may close.
+    assert!(harness.state_mut().may_close());
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowRight);
+    harness.run();
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    harness.get_by_label("Don't save").click();
+    harness.run();
+    assert!(harness.state_mut().may_close());
+}
+
+#[test]
+fn projects_open_and_save_through_the_dialogs() {
+    let folder = scratch("files");
+    let saved = folder.join("copy.moshi");
+    let mut harness = harness();
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: Some(DEMO.into()),
+        save: Some(saved.clone()),
+    }));
+    // Save as writes the file and makes it the project's.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    assert!(saved.exists());
+    assert!(!harness.state().editor().has_unsaved_changes());
+    assert_eq!(harness.state().settings().recent.first(), Some(&saved));
+    // A change and a plain save.
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run();
+    assert!(!harness.state().editor().has_unsaved_changes());
+    let reread = moshionly_core::io::load(&saved).unwrap();
+    let y = reread
+        .get(&NodeId::from("card"))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .y;
+    assert_eq!(y, 341.0);
+    // Opening asks for a file and replaces the document.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    harness.run();
+    let y = position(&harness, "card").1;
+    assert_eq!(y, 340.0, "the demo as it is on disk");
+    assert!(selection(&harness).is_empty());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_broken_file_is_refused_in_plain_words() {
+    let folder = scratch("broken");
+    let broken = folder.join("broken.moshi");
+    std::fs::write(&broken, "this is not a project").unwrap();
+    let mut harness = harness();
+    harness.state_mut().open_path(&broken);
+    harness.run();
+    // The demo is still open.
+    assert!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+    assert!(!harness.state().settings().recent.contains(&broken));
+    let _ = std::fs::remove_dir_all(&folder);
+}

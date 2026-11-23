@@ -7,6 +7,7 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod files;
 mod inspector;
 mod layers_panel;
 pub mod layout;
@@ -27,6 +28,7 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
+    files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
     tool_bar::Tool,
@@ -34,7 +36,7 @@ pub use self::{
 use crate::{
     canvas::CanvasRenderer,
     commands::{CommandId, CommandRegistry, Palette},
-    dialogs::{Dialogs, NoDialogs, is_image},
+    dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{Editor, pen::Pen, text::TextEditing, timeline::timeline_groups, tree::TreeState},
     key::Key,
     settings::Settings,
@@ -91,6 +93,10 @@ pub struct Shell {
     text_edit: Option<TextEditing>,
     /// How files are chosen.
     dialogs: Box<dyn Dialogs>,
+    /// An action waiting for an answer about unsaved changes.
+    pending: Option<FileAction>,
+    /// The window may close: the person said so.
+    closing: bool,
     /// What is typed into the chat composer.
     chat_draft: String,
 }
@@ -99,8 +105,10 @@ pub struct Shell {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShellOutput {
     /// Commands the user asked for that the shell does not carry out itself:
-    /// opening, saving, exporting and the like.
+    /// exporting and the like.
     pub commands: Vec<CommandId>,
+    /// The person agreed to close the window: close it.
+    pub close_window: bool,
 }
 
 /// A new document: one empty 1080 by 1080 artboard named "Scene 1".
@@ -170,6 +178,8 @@ impl Shell {
             pen: None,
             text_edit: None,
             dialogs: Box::new(NoDialogs),
+            pending: None,
+            closing: false,
             chat_draft: String::new(),
         }
     }
@@ -284,6 +294,7 @@ impl Shell {
         // being edited, before it means anything else.
         let overlay_open = egui::Popup::is_any_open(&ctx)
             || self.palette.is_open()
+            || self.pending.is_some()
             || self.text_edit.is_some()
             || self.pen.is_some();
 
@@ -304,8 +315,10 @@ impl Shell {
         // In full screen the window's buttons are hidden, so the inset goes.
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         let project_name = self.project_name();
+        let recent = self.settings.recent.clone();
         let bar = TopBar {
             project_name: &project_name,
+            recent: &recent,
             unsaved: self.editor.has_unsaved_changes(),
             zoom: self.camera.zoom,
             playing: self.playing,
@@ -320,6 +333,9 @@ impl Shell {
         });
         edge_line(ui, layout.top_bar, Edge::Bottom);
         requested.extend(top.commands);
+        if let Some(path) = top.open_recent {
+            self.request(FileAction::Open(Some(path)));
+        }
         if top.drag_window {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
@@ -380,6 +396,7 @@ impl Shell {
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.palette.show(&ctx, &self.commands));
+        self.unsaved_prompt(&ctx);
         if !self.palette.is_open() {
             self.nudge(&ctx);
         }
@@ -396,6 +413,7 @@ impl Shell {
             }
         }
         self.update_commands();
+        output.close_window = self.closing;
         output
     }
 
@@ -416,6 +434,10 @@ impl Shell {
         if !images.is_empty() {
             let at = self.pointer;
             self.import_images(&images, at);
+        }
+        // A project dropped on the window is opened.
+        if let Some(project) = dropped.iter().find(|path| is_project(path)) {
+            self.request(FileAction::Open(Some(project.clone())));
         }
     }
 
@@ -741,6 +763,14 @@ impl Shell {
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
             CommandId::ImportImage => self.import_image_dialog(),
+            CommandId::NewProject => self.request(FileAction::New),
+            CommandId::OpenProject => self.request(FileAction::Open(None)),
+            CommandId::Save => {
+                self.save();
+            }
+            CommandId::SaveAs => {
+                self.save_as();
+            }
             other => match Tool::from_command(other) {
                 Some(tool) => self.choose_tool(tool),
                 None => return false,
