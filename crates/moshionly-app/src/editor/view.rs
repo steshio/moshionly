@@ -237,7 +237,7 @@ fn touches(b: &OrientedBox, rect: Rect) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use moshionly_agent::{Session, SessionHandle};

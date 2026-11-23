@@ -139,6 +139,10 @@ impl<'a> ListRow<'a> {
             .unwrap_or_else(|| egui::IdSalt::new(self.label));
         let id = ui.make_persistent_id(("list-row", salt));
         let response = ui.interact(rect, id, Sense::click_and_drag());
+        let (label, selected) = (self.label, self.selected);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::ListItem, true, selected, label)
+        });
         let hovered = ui.rect_contains_pointer(rect);
 
         let fill = if self.selected {

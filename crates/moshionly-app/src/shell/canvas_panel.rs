@@ -9,7 +9,7 @@ use super::{Shell, parts, tool_bar, tool_cursor};
 use crate::{
     canvas::{RenderKey, plan},
     commands::CommandId,
-    editor::inspect::artboard_of,
+    editor::{Pick, drag::Drag, inspect::artboard_of},
     theme::Theme,
     viewport::{Artboard, Overlays, Viewport, ViewportEvent},
 };
@@ -17,6 +17,8 @@ use crate::{
 /// A drag on the canvas, from the moment it starts until it ends.
 #[derive(Clone, Debug)]
 pub(super) enum CanvasDrag {
+    /// Moving, resizing or turning the selection.
+    Selection(Drag),
     /// A rubber band selecting what it touches.
     Marquee {
         /// Where the drag started, in world coordinates.
@@ -191,30 +193,101 @@ impl Shell {
                 }
             }
             ViewportEvent::DragStarted { world, modifiers } => {
-                self.start_marquee(world, modifiers);
+                self.start_drag(world, modifiers, zoom);
             }
-            ViewportEvent::Dragged { world, .. } => {
-                if let Some(CanvasDrag::Marquee {
-                    start,
-                    current,
-                    base,
-                }) = &mut self.drag
-                {
-                    *current = world;
-                    let rect = Rect::from_two_pos(*start, world);
-                    let base = base.clone();
-                    let hits = self.editor.marquee_hits(rect);
-                    self.editor.selection.set(base);
-                    self.editor.selection.extend(hits);
+            ViewportEvent::HandleDragStarted { handle, world, .. } => {
+                self.drag = self
+                    .editor
+                    .begin_handle(handle, world)
+                    .map(CanvasDrag::Selection);
+            }
+            ViewportEvent::Dragged { world, modifiers }
+            | ViewportEvent::HandleDragged {
+                world, modifiers, ..
+            } => self.continue_drag(world, modifiers, zoom),
+            ViewportEvent::DragStopped { .. } | ViewportEvent::HandleDragStopped { .. } => {
+                if let Some(CanvasDrag::Selection(_)) = self.drag {
+                    self.editor.end_drag();
                 }
-            }
-            ViewportEvent::DragStopped { .. } => {
                 self.drag = None;
                 self.guides.clear();
             }
-            ViewportEvent::HandleDragStarted { .. }
-            | ViewportEvent::HandleDragged { .. }
-            | ViewportEvent::HandleDragStopped { .. } => {}
+        }
+    }
+
+    /// Starts a drag at `world`: on the selection it moves the selection, on
+    /// another layer it selects and moves that layer, and elsewhere it draws
+    /// a marquee. Alt moves a copy.
+    fn start_drag(&mut self, world: Pos2, modifiers: Modifiers, zoom: f32) {
+        let pick = if modifiers.command {
+            Pick::Deep
+        } else {
+            Pick::Normal
+        };
+        let target = self.editor.layer_at(world, pick, zoom);
+        let document = std::sync::Arc::clone(self.editor.document());
+        let selected = |id: &NodeId, editor: &crate::editor::Editor| {
+            editor.selection.contains(id)
+                || editor
+                    .selection
+                    .ids()
+                    .iter()
+                    .any(|s| document.is_ancestor(s, id))
+        };
+        let moves = match target {
+            Some(target) if selected(&target, &self.editor) => true,
+            Some(target) => {
+                if modifiers.shift {
+                    self.editor.selection.toggle(target);
+                } else {
+                    self.editor.selection.select(target);
+                }
+                true
+            }
+            None => self
+                .editor
+                .selection_box()
+                .is_some_and(|b| b.contains(world)),
+        };
+        if moves && !self.editor.selection.is_empty() {
+            self.drag = self
+                .editor
+                .begin_move(world, modifiers.alt)
+                .map(CanvasDrag::Selection);
+        } else {
+            self.start_marquee(world, modifiers);
+        }
+    }
+
+    /// Carries a drag on to `world`.
+    fn continue_drag(&mut self, world: Pos2, modifiers: Modifiers, zoom: f32) {
+        match &mut self.drag {
+            Some(CanvasDrag::Selection(drag)) => {
+                let drag = drag.clone();
+                match self.editor.drag_to(&drag, world, modifiers, zoom) {
+                    Ok(guides) => self.guides = guides,
+                    Err(error) => {
+                        self.toasts
+                            .push(crate::widgets::Toast::error(error.problem.message));
+                        let _ = self.editor.cancel_gesture();
+                        self.drag = None;
+                        self.guides.clear();
+                    }
+                }
+            }
+            Some(CanvasDrag::Marquee {
+                start,
+                current,
+                base,
+            }) => {
+                *current = world;
+                let rect = Rect::from_two_pos(*start, world);
+                let base = base.clone();
+                let hits = self.editor.marquee_hits(rect);
+                self.editor.selection.set(base);
+                self.editor.selection.extend(hits);
+            }
+            None => {}
         }
     }
 

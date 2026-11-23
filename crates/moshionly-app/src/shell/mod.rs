@@ -351,6 +351,9 @@ impl Shell {
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.palette.show(&ctx, &self.commands));
+        if !self.palette.is_open() {
+            self.nudge(&ctx);
+        }
         requested.extend(
             self.commands
                 .triggered(&ctx)
@@ -365,6 +368,33 @@ impl Shell {
         }
         self.update_commands();
         output
+    }
+
+    /// The arrow keys move the selection by a pixel, or ten with Shift,
+    /// unless a text field has the keyboard.
+    fn nudge(&mut self, ctx: &Context) {
+        if ctx.text_edit_focused() || self.editor.selection.is_empty() || self.drag.is_some() {
+            return;
+        }
+        let mut delta = egui::Vec2::ZERO;
+        ctx.input_mut(|input| {
+            for (key, direction) in [
+                (egui::Key::ArrowLeft, egui::vec2(-1.0, 0.0)),
+                (egui::Key::ArrowRight, egui::vec2(1.0, 0.0)),
+                (egui::Key::ArrowUp, egui::vec2(0.0, -1.0)),
+                (egui::Key::ArrowDown, egui::vec2(0.0, 1.0)),
+            ] {
+                // Shift first: a plain pattern would take shifted presses too.
+                let shifted = input.count_and_consume_key(egui::Modifiers::SHIFT, key);
+                let plain = input.count_and_consume_key(egui::Modifiers::NONE, key);
+                delta += direction * (plain as f32 + 10.0 * shifted as f32);
+            }
+        });
+        if delta != egui::Vec2::ZERO
+            && let Err(error) = self.editor.nudge(delta)
+        {
+            self.toasts.push(Toast::error(error.problem.message));
+        }
     }
 
     /// Forgets view state about nodes that are gone.

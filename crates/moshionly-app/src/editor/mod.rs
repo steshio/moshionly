@@ -13,15 +13,21 @@
 //!
 //! - [`selection`]: what a click selects, groups and locks included.
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
+//! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
+//! - [`drag`]: a drag of the selection as one undo step.
+//! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
 pub mod describe;
+pub mod drag;
 pub mod inspect;
 pub mod selection;
+pub mod snap;
 pub mod timeline;
+pub mod transform;
 pub mod tree;
 pub mod view;
 
