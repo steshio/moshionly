@@ -1148,7 +1148,9 @@ async function convertChildren(node, container, run, masked) {
     if (isActiveMask(child) && !(masked && index === 0)) {
       target = emitMaskGroup(child, container, run);
     }
+    const first = run.nodes.length;
     await convertLayer(child, target, run);
+    if (isActiveMask(child)) matchVectorMask(run.nodes[first], child, run);
   }
 }
 
@@ -1164,6 +1166,55 @@ function isActiveMask(node) {
 function noteMask(mask, run) {
   if (mask.maskType === 'LUMINANCE') {
     run.note(mask, 'This mask uses brightness in Figma; Moshionly masks by transparency, so dark parts still show.');
+  }
+}
+
+/** Moshionly layer types that draw nothing but their fill and stroke. */
+const PAINTED_TYPES = new Set(['rect', 'ellipse', 'star', 'path', 'text']);
+
+/** Whether a Figma paint lets what is behind it show through. */
+function seeThrough(paint) {
+  if (paintOpacity(paint) < 1) return true;
+  return GRADIENT_TYPES.has(paint.type) && Array.from(paint.gradientStops || []).some((stop) => numberOr(stop.color && stop.color.a, 1) < 1);
+}
+
+/** A Moshionly paint without its transparency. */
+function opaquePaint(paint) {
+  if (typeof paint === 'string') return paint.slice(0, 7);
+  return Object.assign({}, paint, { stops: paint.stops.map((stop) => ({ offset: stop.offset, color: stop.color.slice(0, 7) })) });
+}
+
+/**
+ * Makes the layer of a vector mask mask the way Figma's does.
+ *
+ * Figma's documentation says a vector mask shows the masked layers fully
+ * wherever it has a visible fill (in its fill regions) or a visible
+ * stroke (in its stroke regions), however see-through those paints are.
+ * Moshionly masks by the mask layer's transparency. For a shape whose
+ * fill and stroke are all it draws, making those paints and the layer
+ * opaque gives exactly Figma's result. A shadow or blur on the mask, a
+ * paint Figma shows but that is fully transparent, and layers that are
+ * more than paint cannot be matched that way; when they may be
+ * see-through, a note says so.
+ */
+function matchVectorMask(layer, mask, run) {
+  if (!layer || mask.maskType !== 'VECTOR') return;
+  const lists = [mask.fills, mask.strokes].map((paints) => (isMixed(paints) ? [] : Array.from(paints || [])));
+  const shown = lists.map((paints) => paints.filter((paint) => paint && paint.visible !== false));
+  const lostPaint = shown.some((paints) => paints.length > 0 && !paints.some(isVisiblePaint));
+  const effects = layer.shadow !== undefined || layer.blur !== undefined;
+  if (PAINTED_TYPES.has(layer.type) && !effects && !lostPaint) {
+    if (layer.fill !== undefined) layer.fill = opaquePaint(layer.fill);
+    if (layer.stroke) layer.stroke.paint = opaquePaint(layer.stroke.paint);
+    delete layer.opacity;
+    return;
+  }
+  const faint = layer.opacity !== undefined || shown.some((paints) => paints.some(seeThrough));
+  if (effects || lostPaint || faint) {
+    run.note(
+      mask,
+      'This vector mask shows what it masks fully inside its shape in Figma; Moshionly masks by transparency, so where the mask is see-through, shadowed or blurred, what it masks shows differently.',
+    );
   }
 }
 

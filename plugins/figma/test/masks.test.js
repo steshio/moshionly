@@ -95,3 +95,66 @@ test('in an auto layout frame with its first layer on top, a mask hides what is 
     ['Top', 'rect', group.id],
   ]);
 });
+
+test('a vector mask ignores its own transparency, as in Figma', async () => {
+  const fade = {
+    type: 'GRADIENT_LINEAR',
+    visible: true,
+    opacity: 1,
+    blendMode: 'NORMAL',
+    gradientTransform: [[1, 0, 0], [0, 1, 0]],
+    gradientStops: [
+      { position: 0, color: { r: 1, g: 0, b: 0, a: 1 } },
+      { position: 1, color: { r: 1, g: 0, b: 0, a: 0 } },
+    ],
+  };
+  const masked = (mask) => F.group({ name: 'G', width: 80, height: 80 }, [mask, F.rect({ name: 'Photo', width: 80, height: 80, fills: [F.solid(0, 0, 1)] })]);
+  const result = await convert(
+    masked(
+      F.ellipse({
+        name: 'Faint',
+        width: 80,
+        height: 80,
+        isMask: true,
+        maskType: 'VECTOR',
+        opacity: 0.5,
+        fills: [F.solid(0, 0, 0, 0.4)],
+        strokes: [F.solid(1, 1, 1, 0.3)],
+        strokeWeight: 2,
+      }),
+    ),
+    masked(F.rect({ name: 'Fading', width: 80, height: 80, isMask: true, maskType: 'VECTOR', fills: [fade] })),
+    masked(F.ellipse({ name: 'Alpha', width: 80, height: 80, isMask: true, maskType: 'ALPHA', fills: [F.solid(0, 0, 0, 0.4)] })),
+  );
+  const layer = (name) => result.layers.find((item) => item.name === name);
+  assert.equal(layer('Faint').fill, '#000000');
+  assert.deepEqual(layer('Faint').stroke, { paint: '#FFFFFF', width: 2 });
+  assert.equal(layer('Faint').opacity, undefined);
+  assert.deepEqual(layer('Fading').fill.stops.map((stop) => stop.color), ['#FF0000', '#FF0000']);
+  assert.equal(layer('Alpha').fill, '#00000066', 'an alpha mask keeps its transparency');
+  assert.deepEqual(result.notes, []);
+});
+
+test('a vector mask that cannot be made opaque exactly is noted', async () => {
+  const masked = (mask) => F.group({ name: 'G', width: 80, height: 80 }, [mask, F.rect({ name: 'Photo', width: 80, height: 80 })]);
+  const shadowed = F.ellipse({
+    name: 'Shadowed',
+    width: 80,
+    height: 80,
+    isMask: true,
+    maskType: 'VECTOR',
+    fills: [F.solid(0, 0, 0, 0.4)],
+    effects: [{ type: 'DROP_SHADOW', visible: true, blendMode: 'NORMAL', color: { r: 0, g: 0, b: 0, a: 0.5 }, offset: { x: 0, y: 4 }, radius: 8, spread: 0 }],
+  });
+  const clear = F.rect({ name: 'Clear', width: 80, height: 80, isMask: true, maskType: 'VECTOR', fills: [F.solid(0, 0, 0, 0)] });
+  const solid = F.rect({ name: 'Solid', width: 80, height: 80, isMask: true, maskType: 'VECTOR', fills: [F.solid(0, 0, 0)] });
+  const result = await convert(masked(shadowed), masked(clear), masked(solid));
+  assert.equal(result.layers.find((item) => item.name === 'Shadowed').fill, '#00000066', 'left as it is');
+  assert.deepEqual(
+    result.notes.map((note) => [note.layer_name, /vector mask/.test(note.message)]),
+    [
+      ['Shadowed', true],
+      ['Clear', true],
+    ],
+  );
+});

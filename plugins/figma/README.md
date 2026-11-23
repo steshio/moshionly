@@ -75,6 +75,7 @@ Each of these is listed in the panel's notes when it happens.
 - **A background image** of a frame that is cropped, tiled or adjusted covers the frame instead.
 - **Blend modes** linear burn and linear dodge become multiply and screen.
 - **Luminance masks** mask by transparency.
+- **Vector masks** ignore how see-through the mask shape is. The plugin makes the shape's colours solid so Moshionly masks the same way; a vector mask with a shadow or blur keeps its look, with a note.
 
 ## What the plugin assumes about Figma
 
