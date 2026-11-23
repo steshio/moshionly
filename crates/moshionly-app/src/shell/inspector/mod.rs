@@ -45,8 +45,9 @@ pub struct InspectorState {
     /// Changing the width changes the height in proportion, and back.
     pub keep_proportions: bool,
     open: Sections,
-    /// A field's change is being recorded as one undo step.
-    editing: bool,
+    /// A field's change is being recorded as one undo step, for the
+    /// layers selected when it began.
+    editing: Option<Vec<moshionly_core::NodeId>>,
     /// The font families the renderer can draw, looked up once.
     families: Vec<moshionly_render::FontFamily>,
 }
@@ -111,15 +112,14 @@ impl Bind<'_> {
         edits: impl FnOnce() -> Vec<Edit>,
     ) {
         if changed {
-            if !self.state.editing {
+            if self.state.editing.is_none() {
                 self.editor.begin_gesture(summary);
-                self.state.editing = true;
+                self.state.editing = Some(self.editor.selection.ids().to_vec());
             }
             self.apply(summary, &edits());
         }
-        if finished && self.state.editing {
+        if finished && self.state.editing.take().is_some() {
             self.editor.commit_gesture();
-            self.state.editing = false;
         }
     }
 
@@ -176,14 +176,35 @@ fn numeric(
     (response, number)
 }
 
-/// Draws the inspector for the selection.
+/// Lets go of an edit the inspector began that can no longer finish
+/// properly, so that later changes are not recorded into it: when
+/// something else closed its undo step (an undo, or the canvas starting a
+/// gesture of its own, which `canvas_gesture` says), or the selection
+/// changed under it (the field that began it now edits other layers, or is
+/// gone), in which case its step is closed here.
+fn end_stale_edit(state: &mut InspectorState, editor: &mut Editor, canvas_gesture: bool) {
+    let Some(began) = &state.editing else {
+        return;
+    };
+    if !editor.in_gesture() || canvas_gesture {
+        state.editing = None;
+    } else if began.as_slice() != editor.selection.ids() {
+        state.editing = None;
+        editor.commit_gesture();
+    }
+}
+
+/// Draws the inspector for the selection. `canvas_gesture` says that the
+/// canvas holds an undo step open (a drag, or text being added).
 pub(super) fn inspector(
     ui: &mut Ui,
     state: &mut InspectorState,
     editor: &mut Editor,
+    canvas_gesture: bool,
 ) -> InspectorOutput {
     let theme = Theme::of(ui);
     let mut out = InspectorOutput::default();
+    end_stale_edit(state, editor, canvas_gesture);
 
     ui.add_space(theme.space.md);
     padded(ui, |ui| {
@@ -244,4 +265,54 @@ pub(super) fn inspector(
             ui.add_space(theme.space.xl);
         });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use moshionly_core::NodeId;
+
+    use super::*;
+    use crate::editor::view::tests::editor;
+
+    fn id(text: &str) -> NodeId {
+        NodeId::from(text)
+    }
+
+    #[test]
+    fn an_edit_left_open_is_closed_when_the_selection_changes() {
+        let mut editor = editor();
+        let mut state = InspectorState::default();
+        editor.selection.select(id("loose"));
+        editor.begin_gesture("Change opacity");
+        state.editing = Some(editor.selection.ids().to_vec());
+        editor
+            .apply("Change opacity", &[Edit::set("loose", "opacity", 50.0)])
+            .unwrap();
+        // The same selection: the edit goes on.
+        end_stale_edit(&mut state, &mut editor, false);
+        assert!(state.editing.is_some() && editor.in_gesture());
+        // Another selection: the step is closed and forgotten.
+        editor.selection.select(id("card"));
+        end_stale_edit(&mut state, &mut editor, false);
+        assert!(state.editing.is_none());
+        assert!(!editor.in_gesture());
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Change opacity"));
+    }
+
+    #[test]
+    fn an_edit_closed_elsewhere_is_forgotten() {
+        let mut editor = editor();
+        let mut state = InspectorState::default();
+        editor.selection.select(id("loose"));
+        // An undo closed the step.
+        state.editing = Some(editor.selection.ids().to_vec());
+        end_stale_edit(&mut state, &mut editor, false);
+        assert!(state.editing.is_none());
+        // A drag on the canvas opened a step of its own: it is left alone.
+        state.editing = Some(vec![id("card")]);
+        editor.begin_gesture("Move");
+        end_stale_edit(&mut state, &mut editor, true);
+        assert!(state.editing.is_none());
+        assert!(editor.in_gesture(), "the canvas's step stays open");
+    }
 }

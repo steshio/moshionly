@@ -377,8 +377,9 @@ impl Shell {
             self.toasts.push(Toast::error(message));
         }
 
+        let canvas_gesture = self.canvas_gesture();
         let inspected = parts::panel(ui, "inspector", layout.right, c.surface, |ui| {
-            inspector::inspector(ui, &mut self.inspector, &mut self.editor)
+            inspector::inspector(ui, &mut self.inspector, &mut self.editor, canvas_gesture)
         });
         edge_line(ui, layout.right, Edge::Left);
         if let Some(message) = inspected.error {
@@ -432,6 +433,18 @@ impl Shell {
         self.update_commands();
         output.close_window = self.closing;
         output
+    }
+
+    /// Whether the canvas holds an undo step open: a drag of the selection,
+    /// a layer being drawn, or text being added.
+    fn canvas_gesture(&self) -> bool {
+        matches!(
+            self.drag,
+            Some(CanvasDrag::Selection(_) | CanvasDrag::Create(_))
+        ) || self
+            .text_edit
+            .as_ref()
+            .is_some_and(|editing| editing.created)
     }
 
     /// Images dropped on the window are placed where they were dropped.

@@ -722,3 +722,62 @@ fn a_gradient_filled_layer_can_be_selected() {
     assert!(harness.query_by_label("Gradient stop 1 colour").is_some());
     assert!(harness.query_by_label("Gradient stop 2 colour").is_some());
 }
+
+/// The opacity of a layer, as the document has it.
+fn opacity(harness: &Harness<'_, Shell>, id: &str) -> f64 {
+    let document = harness.state().editor().document().clone();
+    document
+        .get(&NodeId::from(id))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .opacity
+}
+
+#[test]
+fn a_click_on_a_slider_is_one_undo_step_of_its_own() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let slider = harness
+        .get_all_by_label("Opacity")
+        .find(|node| node.accesskit_node().role() == egui::accesskit::Role::Slider)
+        .expect("the opacity slider")
+        .rect();
+    // A plain click on the track, pressed and let go in separate frames.
+    let at = pos2(slider.left() + slider.width() * 0.3, slider.center().y);
+    harness.hover_at(at);
+    harness.step();
+    harness.drag_at(at);
+    harness.step();
+    harness.drop_at(at);
+    harness.run();
+    let clicked = opacity(&harness, "title");
+    assert!(clicked < 100.0, "the click set the opacity: {clicked}");
+    assert!(!harness.state().editor().in_gesture(), "the step is closed");
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Change opacity")
+    );
+    // An edit of another layer afterwards is a step of its own.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    type_into(&mut harness, "X", "333");
+    assert_eq!(position(&harness, "dot").0, 333.0);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "dot").0, 500.0);
+    assert_eq!(
+        opacity(&harness, "title"),
+        clicked,
+        "only the move was undone"
+    );
+}

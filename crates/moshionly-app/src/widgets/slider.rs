@@ -46,8 +46,9 @@ impl<'a> Slider<'a> {
         self
     }
 
-    /// Draws the slider. `changed()` is true while the value moves and
-    /// `drag_stopped()` when the gesture ends.
+    /// Draws the slider. `changed()` is true while the value moves, and
+    /// `drag_stopped()` or `clicked()` when the gesture ends: a click on the
+    /// track sets the value without ever becoming a drag.
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = Theme::of(ui);
         let c = &theme.color;
@@ -142,7 +143,8 @@ pub fn slider_with_value(
     if slider.changed() {
         numeric.response.mark_changed();
     }
-    numeric.finished |= slider.drag_stopped();
+    // A click on the track changes the value but is never a drag.
+    numeric.finished |= slider.drag_stopped() || slider.clicked();
     numeric.active |= slider.dragged();
     numeric
 }
