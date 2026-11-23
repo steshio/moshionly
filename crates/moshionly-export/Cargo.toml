@@ -1,0 +1,14 @@
+[package]
+name = "moshionly-export"
+description = "Moshionly export: PNG, PNG sequences, GIF and MP4, and WebM and ProRes through ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
+moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
+thiserror = "2"
