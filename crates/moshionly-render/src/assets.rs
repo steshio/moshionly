@@ -27,6 +27,11 @@ pub const DEFAULT_BUDGET: usize = 256 << 20;
 /// The longest side of an image that is decoded.
 const MAX_SIDE: u32 = 16_384;
 
+/// The most pixels an image that is decoded may have: as many as the
+/// largest frame, 512 MB once decoded. A small file can claim far more,
+/// so the size is checked before any pixel is decoded.
+const MAX_PIXELS: u64 = frame::MAX_FRAME_PIXELS;
+
 /// The largest image file that is read, in bytes: 256 MB.
 const MAX_FILE_BYTES: u64 = 256 << 20;
 
@@ -289,10 +294,18 @@ fn decode(bytes: &[u8]) -> Result<sk::Image, String> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(MAX_PIXELS * frame::BYTES_PER_PIXEL as u64);
     reader.limits(limits);
     let mut decoder = reader
         .into_decoder()
         .map_err(|error| format!("the image cannot be decoded: {error}"))?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!(
+            "the image is {width} by {height} pixels, more than the {} million an image may have",
+            MAX_PIXELS / 1_000_000
+        ));
+    }
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
@@ -309,9 +322,10 @@ fn decode(bytes: &[u8]) -> Result<sk::Image, String> {
         sk::AlphaType::Premul,
         None,
     );
+    // Skia takes the pixels over, so they are never held twice.
     let image = sk::images::raster_from_data(
         &info,
-        sk::Data::new_copy(&pixels),
+        sk::Data::new_with_owner(pixels),
         width as usize * frame::BYTES_PER_PIXEL,
     )
     .ok_or("the image is too large to draw")?;
@@ -413,6 +427,40 @@ pub(crate) mod tests {
             "{error}"
         );
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// The header of an uncompressed BMP file of `width` by `height`
+    /// pixels, with none of its pixels.
+    fn bmp_header(width: i32, height: i32) -> Vec<u8> {
+        let mut bytes = b"BM".to_vec();
+        bytes.extend(54u32.to_le_bytes()); // file size
+        bytes.extend([0; 4]);
+        bytes.extend(54u32.to_le_bytes()); // where the pixels start
+        bytes.extend(40u32.to_le_bytes()); // size of this header
+        bytes.extend(width.to_le_bytes());
+        bytes.extend(height.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes()); // planes
+        bytes.extend(24u16.to_le_bytes()); // bits per pixel
+        bytes.extend([0; 24]);
+        bytes
+    }
+
+    #[test]
+    fn an_image_with_too_many_pixels_is_refused_before_decoding() {
+        let loader = AssetLoader::default();
+        // 54 bytes that claim 144 million pixels.
+        let error = loader
+            .natural_size(&data_uri("image/bmp", &bmp_header(12_000, 12_000)))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "the image is 12000 by 12000 pixels, more than the 134 million an image may have"
+        );
+        // A header of a sensible size gets as far as its missing pixels.
+        let error = loader
+            .natural_size(&data_uri("image/bmp", &bmp_header(4, 4)))
+            .unwrap_err();
+        assert!(error.starts_with("the image cannot be decoded"), "{error}");
     }
 
     #[test]
