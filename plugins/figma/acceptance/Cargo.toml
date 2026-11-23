@@ -1,0 +1,17 @@
+[package]
+name = "moshionly-figma-acceptance"
+description = "Checks the Figma plugin's output against the code behind Moshionly's import"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[dependencies]
+moshionly-agent = { path = "../../../crates/moshionly-agent" }
+moshionly-core = { path = "../../../crates/moshionly-core" }
+serde_json = "1"
+
+# Not a member of the Moshionly workspace, so CI does not build it and the
+# workspace never sees it. Run it with `plugins/figma/acceptance/run.sh`.
+[workspace]
