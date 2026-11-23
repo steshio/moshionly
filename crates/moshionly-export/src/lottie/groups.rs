@@ -176,9 +176,11 @@ impl Converter<'_> {
             .survey
             .iter()
             .any(|frame| self.timeline.stroke(&node.id, *frame).is_some());
-        // The clip cuts the children, not the group's own outline: with an
-        // outline, the children get a clipped composition of their own.
-        let clip_children_apart = clip && has_stroke;
+        // The clip cuts the children, not the group's own outline or its
+        // shadow: with an outline or effects, the children get a clipped
+        // composition of their own. (Players apply a layer's masks after
+        // its effects, which would cut the shadow.)
+        let clip_children_apart = clip && (has_stroke || self.has_effects(&node.id));
         let asset = self.composition(node, |this, inner| {
             this.add_paint_layer(node, &hints, Parts::STROKE, inner, None, origin);
             if clip_children_apart {
@@ -211,6 +213,7 @@ impl Converter<'_> {
             reveal: true,
         };
         self.add_masks(node, &mut layer, &|_| Place::moved(origin), masks);
+        self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
         Ok(())
     }
@@ -263,6 +266,7 @@ impl Converter<'_> {
         let index = comp.index();
         let mut layer = self.composition_layer(node, &asset, area, &transform, index, parent_index);
         self.add_masks(node, &mut layer, &|_| Place::moved(origin), Masks::REVEAL);
+        self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
         Ok(())
     }
@@ -322,7 +326,7 @@ impl Converter<'_> {
     }
 
     /// Whether a reveal animation targets the layer.
-    fn has_reveal(&self, id: &NodeId) -> bool {
+    pub fn has_reveal(&self, id: &NodeId) -> bool {
         self.timeline
             .document
             .animations_targeting(id)
@@ -337,7 +341,7 @@ impl Converter<'_> {
 
     /// The part of a group's own space that can ever be seen: its box, and
     /// the artboard as seen from the group at every frame it is drawn.
-    fn area(&self, id: &NodeId) -> Area {
+    pub fn area(&self, id: &NodeId) -> Area {
         let (mut width, mut height) = (0.0_f64, 0.0_f64);
         for frame in &self.survey {
             let (w, h) = self.size(id, *frame);

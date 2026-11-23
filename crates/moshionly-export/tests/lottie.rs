@@ -613,3 +613,54 @@ fn images_can_go_beside_the_file() {
         ["launch.json", "launch_images"]
     );
 }
+
+#[test]
+fn shadows_and_blurs_become_effects() {
+    let nodes = r##",{"id":"card","parent":"board","index":"a0","type":"rect","name":"Card",
+            "width":200,"height":100,"fill":"#FFFFFF","blur":6,
+            "shadow":{"color":"#00000040","x":0,"y":16,"blur":40}}
+        ,{"id":"clip","parent":"board","index":"a1","type":"group","name":"Clip",
+            "x":300,"width":200,"height":100,"clip":true,"corner_radius":20,
+            "shadow":{"color":"#00000040","y":8,"blur":20}}
+        ,{"id":"inside","parent":"clip","index":"a0","type":"ellipse","name":"Inside",
+            "width":300,"height":300,"fill":"#0D99FF"}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    let card = layer(&lottie["layers"], "Card");
+    let effects = card["ef"].as_array().unwrap();
+    assert_eq!(
+        (effects[0]["ty"].as_i64(), effects[1]["ty"].as_i64()),
+        (Some(25), Some(29))
+    );
+    let values = |effect: &Value| -> Vec<Value> {
+        effect["ef"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["v"]["k"].clone())
+            .collect()
+    };
+    // Opacity out of 255, pointing down, 16 away, softness twice the blur.
+    assert_eq!(
+        values(&effects[0])[1..],
+        [
+            Value::from(64),
+            Value::from(180),
+            Value::from(16),
+            Value::from(80)
+        ]
+    );
+    assert_eq!(values(&effects[1])[0], 10, "blurriness is 5/3 of the blur");
+    // A clipping group keeps its shadow off its mask: the clip goes on the
+    // composition of its children inside.
+    let clip = layer(&lottie["layers"], "Clip");
+    assert!(clip["ef"].is_array() && clip["hasMask"].is_null());
+    let inside = &asset(&lottie, &clip["refId"])["layers"];
+    assert!(
+        inside
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|layer| layer["hasMask"] == true)
+    );
+}

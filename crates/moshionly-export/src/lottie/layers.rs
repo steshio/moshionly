@@ -136,6 +136,7 @@ impl<'a> Converter<'a> {
                 let mut layer = self.layer(node, 4, index, parent_index, &transform);
                 layer.insert("shapes".into(), Value::Array(shapes));
                 self.add_masks(node, &mut layer, &|_| Place::default(), Masks::REVEAL);
+                self.add_effects(node, &mut layer);
                 comp.layers.push(Value::Object(layer));
             }
             NodeData::Group(group) => {

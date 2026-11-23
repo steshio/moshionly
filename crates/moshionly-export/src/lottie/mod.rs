@@ -17,6 +17,7 @@
 //! | `props`, `json` | Writing properties and numbers compactly |
 
 mod clock;
+mod effects;
 mod fit;
 mod groups;
 mod images;

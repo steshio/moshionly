@@ -26,8 +26,10 @@ use tempfile::TempPath;
 use crate::error::ExportError;
 
 use super::LottieImages;
+use super::fit::Animated;
 use super::groups::{Masks, Place};
 use super::layers::{Comp, Converter, Parts};
+use super::props::{Position, Transform};
 use super::timeline::{places_for, tolerance};
 
 /// A picture, ready to be written.
@@ -293,33 +295,117 @@ impl Converter<'_> {
             f64::from(written.size.0.max(1)),
             f64::from(written.size.1.max(1)),
         );
-        // The outline is drawn above the picture, by a layer of its own.
-        let outline = self.paint_items(node, &hints, Parts::STROKE);
-        if !outline.is_empty() {
-            let box_transform = self.transform(node, &hints, offset);
-            let index = comp.index();
-            let mut layer = self.layer(node, 4, index, parent_index, &box_transform);
-            layer.insert("nm".into(), Value::from(format!("{} outline", node.name())));
-            layer.insert("shapes".into(), Value::Array(outline));
-            self.add_masks(node, &mut layer, &|_| Place::default(), Masks::REVEAL);
-            comp.layers.push(Value::Object(layer));
-        }
-
         // The picture's pixels to the box: a scale each way and a shift.
         let fit = image.fit;
+        let timeline = self.timeline;
+        let size = move |frame: f64| {
+            (
+                timeline.number(id, Property::Width, frame).max(0.0),
+                timeline.number(id, Property::Height, frame).max(0.0),
+            )
+        };
         let placement = |frame: f64| {
-            let size = self.size(id, frame);
+            let size = size(frame);
             let target = fitted(fit, size, (picture_width, picture_height));
             (
                 [target.width / picture_width, target.height / picture_height],
                 [target.x, target.y],
             )
         };
-        let mut transform = self.transform(node, &hints, offset);
-        let timeline = self.timeline;
         let length = places_for(tolerance::LENGTH);
+        // A picture that reaches past its box, or a box with round
+        // corners, is cut to the box.
+        let radius = self.survey.iter().any(|frame| {
+            timeline
+                .radii(id, *frame)
+                .iter()
+                .any(|radius| *radius > 0.0)
+        });
+        let clip = radius || fit == ImageFit::Cover;
+        let place = |frame: f64| {
+            let (scale, shift) = placement(frame);
+            let inverse = |scale: f64| if scale > 0.0 { 1.0 / scale } else { 0.0 };
+            Place {
+                scale: [inverse(scale[0]), inverse(scale[1])],
+                offset: [-shift[0] * inverse(scale[0]), -shift[1] * inverse(scale[1])],
+            }
+        };
+        let outline = self.paint_items(node, &hints, Parts::STROKE);
+        let transform = self.transform(node, &hints, offset);
+
+        if self.has_effects(id) {
+            // A shadow or blur falls on the picture and its outline
+            // together, and players would cut it with the picture's mask:
+            // both go into a composition the size of the box, and the
+            // effects onto the layer showing it.
+            // Players clip a composition to its size: it covers all of the
+            // picture's box that can be seen, with room for the outline.
+            let area = self.area(id);
+            let origin = area.origin();
+            let in_box = |frame: f64| {
+                let (scale, shift) = placement(frame);
+                vec![
+                    shift[0] + origin[0],
+                    shift[1] + origin[1],
+                    scale[0] * 100.0,
+                    scale[1] * 100.0,
+                ]
+            };
+            let in_box = timeline.fit(&in_box, &hints, tolerance::LENGTH / 10.0, length + 1);
+            let asset = self.composition(node, |this, inner| {
+                if !outline.is_empty() {
+                    let index = inner.index();
+                    let placed = Transform {
+                        position: Position::Joined(Animated::Static(origin.to_vec())),
+                        ..Transform::default()
+                    };
+                    let mut layer = this.layer(node, 4, index, None, &placed);
+                    layer.remove("bm");
+                    layer.insert("nm".into(), Value::from(format!("{} outline", node.name())));
+                    layer.insert("shapes".into(), Value::Array(outline));
+                    inner.layers.push(Value::Object(layer));
+                }
+                let picture = Transform {
+                    position: Position::Joined(super::props::map(&in_box, |v| v[..2].to_vec())),
+                    scale: super::props::map(&in_box, |v| v[2..].to_vec()),
+                    ..Transform::default()
+                };
+                let index = inner.index();
+                let mut layer = this.layer(node, 2, index, None, &picture);
+                layer.remove("bm");
+                layer.insert("refId".into(), Value::from(written.id.as_str()));
+                let masks = Masks {
+                    clip,
+                    reveal: false,
+                };
+                this.add_masks(node, &mut layer, &place, masks);
+                inner.layers.push(Value::Object(layer));
+                Ok(())
+            })?;
+            let index = comp.index();
+            let transform = super::groups::anchored(transform, origin);
+            let mut layer =
+                self.composition_layer(node, &asset, area, &transform, index, parent_index);
+            self.add_masks(node, &mut layer, &|_| Place::moved(origin), Masks::REVEAL);
+            self.add_effects(node, &mut layer);
+            comp.layers.push(Value::Object(layer));
+            return Ok(());
+        }
+
+        // The outline is drawn above the picture, by a layer of its own.
+        if !outline.is_empty() {
+            let index = comp.index();
+            let mut layer = self.layer(node, 4, index, parent_index, &transform);
+            layer.insert("nm".into(), Value::from(format!("{} outline", node.name())));
+            layer.insert("shapes".into(), Value::Array(outline));
+            self.add_masks(node, &mut layer, &|_| Place::default(), Masks::REVEAL);
+            comp.layers.push(Value::Object(layer));
+        }
+        // The picture's own layer turns and scales the picture's pixels:
+        // its anchor and scale take the fit in.
+        let mut picture = transform;
         let anchor = |frame: f64| {
-            let (width, height) = self.size(id, frame);
+            let (width, height) = size(frame);
             let (scale, shift) = placement(frame);
             let inverse = |value: f64, scale: f64| if scale > 0.0 { value / scale } else { 0.0 };
             vec![
@@ -332,33 +418,12 @@ impl Converter<'_> {
             let (scale, _) = placement(frame);
             vec![layer * scale[0], layer * scale[1]]
         };
-        transform.anchor = timeline.fit(&anchor, &hints, tolerance::LENGTH / 10.0, length + 1);
-        transform.scale = timeline.fit(&scale, &hints, tolerance::SCALE / 10.0, 5);
-
+        picture.anchor = timeline.fit(&anchor, &hints, tolerance::LENGTH / 10.0, length + 1);
+        picture.scale = timeline.fit(&scale, &hints, tolerance::SCALE / 10.0, 5);
         let index = comp.index();
-        let mut layer = self.layer(node, 2, index, parent_index, &transform);
+        let mut layer = self.layer(node, 2, index, parent_index, &picture);
         layer.insert("refId".into(), Value::from(written.id.as_str()));
-        // A picture that reaches past its box, or a box with round
-        // corners, is cut to the box.
-        let radius = self.survey.iter().any(|frame| {
-            timeline
-                .radii(id, *frame)
-                .iter()
-                .any(|radius| *radius > 0.0)
-        });
-        let masks = Masks {
-            clip: radius || fit == ImageFit::Cover,
-            reveal: true,
-        };
-        let place = |frame: f64| {
-            let (scale, shift) = placement(frame);
-            let inverse = |scale: f64| if scale > 0.0 { 1.0 / scale } else { 0.0 };
-            Place {
-                scale: [inverse(scale[0]), inverse(scale[1])],
-                offset: [-shift[0] * inverse(scale[0]), -shift[1] * inverse(scale[1])],
-            }
-        };
-        self.add_masks(node, &mut layer, &place, masks);
+        self.add_masks(node, &mut layer, &place, Masks { clip, reveal: true });
         comp.layers.push(Value::Object(layer));
         Ok(())
     }

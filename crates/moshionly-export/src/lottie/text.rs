@@ -309,6 +309,7 @@ impl<'a> Converter<'a> {
             &|_| super::groups::Place::default(),
             super::groups::Masks::REVEAL,
         );
+        self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
     }
 
@@ -656,6 +657,7 @@ impl<'a> Converter<'a> {
             &|_| super::groups::Place::moved(origin),
             super::groups::Masks::REVEAL,
         );
+        self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
         Ok(())
     }
