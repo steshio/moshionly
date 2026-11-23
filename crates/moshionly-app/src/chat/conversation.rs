@@ -287,6 +287,12 @@ impl Conversation {
     /// Adds one event of the running answer. Events that arrive when no
     /// answer is running are ignored: they belong to a turn that is over.
     pub fn apply(&mut self, event: &ChatEvent) {
+        self.apply_named(event, &|_| None);
+    }
+
+    /// Like [`apply`](Self::apply), with tool calls summarised by the names
+    /// of the nodes they mention, as `name_of` finds them.
+    pub fn apply_named(&mut self, event: &ChatEvent, name_of: tool_summary::NameOf<'_>) {
         let provider = self.turn_provider.clone();
         let Some(answer) = self.running_answer() else {
             return;
@@ -313,7 +319,7 @@ impl Conversation {
                     id: id.clone(),
                     name: name.clone(),
                     title: tool_summary::title(name),
-                    summary: tool_summary::describe(name, input),
+                    summary: tool_summary::describe_with(name, input, name_of),
                     input: input.clone(),
                     state: ToolState::Running,
                     result: None,

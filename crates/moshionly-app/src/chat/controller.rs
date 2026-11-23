@@ -145,6 +145,8 @@ enum Update {
 /// The turn that is running.
 struct Turn {
     id: u64,
+    /// The document's tools, for naming the nodes a tool call mentions.
+    tools: Tools,
     cancel: CancellationToken,
     /// Stop was pressed; the provider is cleaning up.
     stopping: bool,
@@ -393,10 +395,18 @@ impl Controller {
         if settings == *self.registry.settings() {
             return true;
         }
-        // Models depend on the address and key, so changed providers are asked again.
+        // The models a provider offers depend on how it is reached, not on
+        // which model is chosen or whether it is offered: ask again only
+        // when something else changed.
+        let reach = |settings: &AiSettings, id: &str| {
+            let mut provider = settings.provider(id).clone();
+            provider.model = None;
+            provider.enabled = true;
+            provider
+        };
         let before = self.registry.settings().clone();
         self.models
-            .retain(|id, _| before.provider(id) == settings.provider(id));
+            .retain(|id, _| reach(&before, id) == reach(&settings, id));
         *self.registry.settings_mut() = settings;
         if let Some(path) = &self.settings_file {
             match self.registry.settings().save_to(path) {
@@ -554,6 +564,7 @@ impl Controller {
         });
         self.turn = Some(Turn {
             id: turn,
+            tools: tools.clone(),
             cancel,
             stopping: false,
             _watch: watch,
@@ -656,7 +667,17 @@ impl Controller {
                 self.models.insert(provider, list);
             }
             Update::Event { turn, event } => {
-                if self.is_current(turn) {
+                let Some(running) = self.turn.as_ref().filter(|running| running.id == turn) else {
+                    return;
+                };
+                if matches!(event, ChatEvent::ToolCallStarted { .. }) {
+                    let document = running.tools.session().document();
+                    let name_of = |id: &str| {
+                        let node = document.get(&id.into())?;
+                        Some(node.name().to_owned()).filter(|name| !name.is_empty())
+                    };
+                    self.conversation.apply_named(&event, &name_of);
+                } else {
                     self.conversation.apply(&event);
                 }
             }

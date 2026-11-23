@@ -8,7 +8,7 @@
 //! - [`status`] makes a [`ProviderStatus`] for any known provider id.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -73,6 +73,7 @@ impl Step {
 struct Seen {
     requests: Mutex<Vec<ChatRequest>>,
     stopped: AtomicBool,
+    turns: AtomicUsize,
 }
 
 /// Marks a turn as stopped when its work is dropped before it finished,
@@ -99,14 +100,21 @@ pub struct ScriptedProvider {
     info: ProviderInfo,
     capabilities: Capabilities,
     models: Vec<ModelInfo>,
-    script: Vec<Step>,
+    /// One script per turn; the last one plays again for later turns.
+    scripts: Vec<Vec<Step>>,
     seen: Arc<Seen>,
 }
 
 impl ScriptedProvider {
     /// A provider that takes the name and abilities of the known provider
-    /// `id` (any name for an unknown one) and plays `script`.
+    /// `id` (any name for an unknown one) and plays `script` every turn.
     pub fn new(id: &str, script: Vec<Step>) -> Self {
+        Self::with_scripts(id, vec![script])
+    }
+
+    /// A provider that plays the first script on the first turn, the
+    /// second on the second, and the last one on every turn after.
+    pub fn with_scripts(id: &str, scripts: Vec<Vec<Step>>) -> Self {
         let known = known_providers()
             .into_iter()
             .find(|descriptor| descriptor.info.id == id);
@@ -133,7 +141,7 @@ impl ScriptedProvider {
             info,
             capabilities,
             models: vec![ModelInfo::new("scripted", "Scripted model")],
-            script,
+            scripts,
             seen: Arc::default(),
         }
     }
@@ -161,7 +169,12 @@ impl ScriptedProvider {
         events: &EventSender,
         cancel: &CancellationToken,
     ) -> Result<StopReason, AiError> {
-        for step in &self.script {
+        let turn = self.seen.turns.fetch_add(1, Ordering::AcqRel);
+        let script = match self.scripts.get(turn).or_else(|| self.scripts.last()) {
+            Some(script) => script.as_slice(),
+            None => &[],
+        };
+        for step in script {
             if cancel.is_cancelled() {
                 return Ok(self.stopped());
             }

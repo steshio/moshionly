@@ -29,19 +29,30 @@ pub fn title(name: &str) -> String {
     known.to_owned()
 }
 
+/// Finds the name a node is shown with from its id, when it has one.
+pub type NameOf<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// A few words saying what a call to `name` with `input` was asked to do.
-/// Empty when the arguments say nothing worth showing.
+/// Empty when the arguments say nothing worth showing. Node ids are shown
+/// as they are; see [`describe_with`] to show names instead.
 pub fn describe(name: &str, input: &Value) -> String {
+    describe_with(name, input, &|_| None)
+}
+
+/// Like [`describe`], with the nodes the call names shown by the names
+/// `name_of` finds for their ids.
+pub fn describe_with(name: &str, input: &Value, name_of: NameOf<'_>) -> String {
+    let node = |key: &str| string(input, key).map(|id| node_name(id, name_of));
     let text = match name {
-        "apply_edits" => edits(input),
-        "screenshot" => screenshot(input),
+        "apply_edits" => edits(input, name_of),
+        "screenshot" => screenshot(input, name_of),
         "evaluate" => evaluate(input),
-        "query_nodes" => query(input),
-        "get_node" => string(input, "id").map(quoted).unwrap_or_default(),
+        "query_nodes" => query(input, name_of),
+        "get_node" => node("id").unwrap_or_default(),
         "get_schema" => string(input, "type").map(str::to_owned).unwrap_or_default(),
         "list_fonts" => string(input, "query").map(quoted).unwrap_or_default(),
         "import_image" => string(input, "source").map(file_name).unwrap_or_default(),
-        "export" => export(input),
+        "export" => export(input, name_of),
         "get_overview" | "undo_last_agent_change" => String::new(),
         _ => generic(input),
     };
@@ -59,14 +70,18 @@ fn generic_title(name: &str) -> String {
     }
 }
 
-fn edits(input: &Value) -> String {
+fn edits(input: &Value, name_of: NameOf<'_>) -> String {
     if let Some(label) = string(input, "label") {
         return label.to_owned();
     }
     let Some(operations) = input.get("operations").and_then(Value::as_array) else {
         return String::new();
     };
-    let described: Vec<String> = operations.iter().take(3).map(operation).collect();
+    let described: Vec<String> = operations
+        .iter()
+        .take(3)
+        .map(|op| operation(op, name_of))
+        .collect();
     let mut text = described.join(", ");
     let rest = operations.len().saturating_sub(described.len());
     if rest > 0 {
@@ -79,7 +94,7 @@ fn edits(input: &Value) -> String {
 }
 
 /// One operation of `apply_edits` in two or three words.
-fn operation(operation: &Value) -> String {
+fn operation(operation: &Value, name_of: NameOf<'_>) -> String {
     let op = string(operation, "op").unwrap_or("change");
     let what = operation
         .get("node")
@@ -88,7 +103,7 @@ fn operation(operation: &Value) -> String {
                 .map(quoted)
                 .or_else(|| string(node, "type").map(str::to_owned))
         })
-        .or_else(|| string(operation, "id").map(quoted))
+        .or_else(|| string(operation, "id").map(|id| node_name(id, name_of)))
         .or_else(|| {
             let count = operation.get("ids").and_then(Value::as_array)?.len();
             Some(format!("{count} nodes"))
@@ -99,10 +114,10 @@ fn operation(operation: &Value) -> String {
     }
 }
 
-fn screenshot(input: &Value) -> String {
+fn screenshot(input: &Value, name_of: NameOf<'_>) -> String {
     let subject = string(input, "layer")
-        .map(|layer| format!("layer {}", quoted(layer)))
-        .or_else(|| string(input, "artboard").map(quoted));
+        .map(|layer| format!("layer {}", node_name(layer, name_of)))
+        .or_else(|| string(input, "artboard").map(|id| node_name(id, name_of)));
     let times = times(input);
     match (subject, times) {
         (Some(subject), Some(times)) => format!("{subject} at {times}"),
@@ -129,7 +144,7 @@ fn evaluate(input: &Value) -> String {
     text
 }
 
-fn query(input: &Value) -> String {
+fn query(input: &Value, name_of: NameOf<'_>) -> String {
     let mut words = Vec::new();
     let types = strings(input, "type");
     if !types.is_empty() {
@@ -141,20 +156,20 @@ fn query(input: &Value) -> String {
         words.push(format!("named {}", quoted(name)));
     }
     if let Some(target) = string(input, "target") {
-        words.push(format!("on {}", quoted(target)));
+        words.push(format!("on {}", node_name(target, name_of)));
     }
     if let Some(artboard) = string(input, "artboard") {
-        words.push(format!("in {}", quoted(artboard)));
+        words.push(format!("in {}", node_name(artboard, name_of)));
     }
     words.join(" ")
 }
 
-fn export(input: &Value) -> String {
+fn export(input: &Value, name_of: NameOf<'_>) -> String {
     let format = string(input, "format").map(str::to_uppercase);
     let target = string(input, "file_name")
         .or_else(|| string(input, "path").map(file_name_str))
         .map(str::to_owned)
-        .or_else(|| string(input, "artboard").map(quoted));
+        .or_else(|| string(input, "artboard").map(|id| node_name(id, name_of)));
     match (format, target) {
         (Some(format), Some(target)) => format!("{format} of {target}"),
         (Some(format), None) => format,
@@ -241,6 +256,14 @@ fn count(value: &Value, key: &str) -> Option<usize> {
 
 fn quoted(text: &str) -> String {
     format!("“{text}”")
+}
+
+/// A node in quotes: its name when `name_of` knows it, else its id.
+fn node_name(id: &str, name_of: NameOf<'_>) -> String {
+    match name_of(id) {
+        Some(name) if !name.trim().is_empty() => quoted(name.trim()),
+        _ => quoted(id),
+    }
 }
 
 fn file_name(path: &str) -> String {
@@ -379,6 +402,31 @@ mod tests {
             "MP4 of “Launch”"
         );
         assert_eq!(describe("get_overview", &json!({})), "");
+    }
+
+    #[test]
+    fn nodes_are_shown_by_name_when_known() {
+        let name_of = |id: &str| (id == "a1").then(|| "Launch".to_owned());
+        assert_eq!(
+            describe_with(
+                "screenshot",
+                &json!({ "artboard": "a1", "time": 0 }),
+                &name_of
+            ),
+            "“Launch” at 0 ms"
+        );
+        assert_eq!(
+            describe_with("get_node", &json!({ "id": "zz" }), &name_of),
+            "“zz”"
+        );
+        assert_eq!(
+            describe_with(
+                "apply_edits",
+                &json!({ "operations": [{ "op": "update", "id": "a1" }] }),
+                &name_of
+            ),
+            "update “Launch”"
+        );
     }
 
     #[test]
