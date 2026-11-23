@@ -7,7 +7,7 @@ use moshionly_core::io::{self, Asset, AssetError};
 use serde_json::json;
 
 use super::args::Args;
-use super::files::{free_path, safe_name, split_name};
+use super::files::{safe_name, split_name, write_new};
 use super::{Context, ToolDef, input_schema};
 use crate::tool::{ToolError, ToolOutput};
 
@@ -182,9 +182,7 @@ fn store(folder: &Path, stem: &str, extension: &str, bytes: &[u8]) -> Result<Pat
     if std::fs::read(&same).is_ok_and(|existing| existing == bytes) {
         return Ok(same);
     }
-    let path = free_path(folder, stem, Some(extension));
-    std::fs::write(&path, bytes).map_err(|error| failed(&path, error))?;
-    Ok(path)
+    write_new(folder, stem, Some(extension), bytes).map_err(|(path, error)| failed(&path, error))
 }
 
 fn capitalised(text: &str) -> String {

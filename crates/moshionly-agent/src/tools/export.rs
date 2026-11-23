@@ -7,7 +7,7 @@ use serde_json::json;
 
 use super::args::Args;
 use super::common::{self, number};
-use super::files::{free_path, safe_name, split_name};
+use super::files::{Reserved, reserve, reserve_free, safe_name, split_name};
 use super::{Context, ToolDef, input_schema};
 use crate::host::{ExportFormat, ExportOptions, ExportRequest, HostError};
 use crate::tool::{ToolError, ToolOutput};
@@ -122,7 +122,9 @@ fn run(context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
         .read(|session| (session.snapshot(), session.path().map(ToOwned::to_owned)));
     let artboard = artboard(&document, args)?;
     let options = options(args, format)?;
-    let path = destination(
+    // Held until the export is done, so a call running at the same time
+    // picks another name.
+    let reserved = destination(
         context,
         args,
         &document,
@@ -136,7 +138,7 @@ fn run(context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
             document: &document,
             project_file: project_file.as_deref(),
             artboard: &artboard,
-            path: &path,
+            path: reserved.path(),
             format,
             options,
         },
@@ -225,7 +227,7 @@ fn options(args: &Args, format: ExportFormat) -> Result<ExportOptions, ToolError
 }
 
 /// Where the export goes: a free name in the exports folder, or the path
-/// given when the host allows that.
+/// given when the host allows that. The path is held for this export.
 fn destination(
     context: &Context<'_>,
     args: &Args,
@@ -233,7 +235,7 @@ fn destination(
     artboard: &NodeId,
     format: ExportFormat,
     project_file: Option<&Path>,
-) -> Result<PathBuf, ToolError> {
+) -> Result<Reserved, ToolError> {
     let extension = format.extension();
     if let Some(path) = args.string("path")? {
         if !context.config.export_anywhere {
@@ -250,17 +252,16 @@ fn destination(
                 "\"path\" should be an absolute path, such as /Users/me/Desktop/teaser.mp4.",
             ));
         }
-        if path.exists() {
-            return Err(ToolError::argument(
+        let shown = path.display().to_string();
+        return reserve(path).ok_or_else(|| {
+            ToolError::argument(
                 "path",
                 format!(
-                    "\"{}\" already exists, and exports never replace a file. Choose another \
-                     name.",
-                    path.display()
+                    "\"{shown}\" already exists or is being written, and exports never \
+                     replace a file. Choose another name."
                 ),
-            ));
-        }
-        return Ok(path);
+            )
+        });
     }
     let folder = match (&context.config.export_dir, project_file) {
         (Some(folder), _) => folder.clone(),
@@ -291,7 +292,7 @@ fn destination(
             source,
         })
     })?;
-    Ok(free_path(&folder, stem, extension))
+    Ok(reserve_free(&folder, stem, extension))
 }
 
 #[cfg(test)]
@@ -383,6 +384,77 @@ mod tests {
         let seen = exporter.seen.lock().unwrap();
         assert_eq!(seen[0].1.fps, 60.0);
         assert_eq!(seen[1].1.fps, 30.0);
+    }
+
+    /// Starts a second export of its own while it writes the first, as a
+    /// call running at the same time would.
+    #[derive(Default)]
+    struct OverlappingExporter {
+        tools: Mutex<Option<Tools>>,
+        second: Mutex<Option<serde_json::Value>>,
+    }
+
+    impl Exporter for OverlappingExporter {
+        fn formats(&self) -> Vec<ExportFormat> {
+            vec![ExportFormat::Mp4]
+        }
+
+        fn export(
+            &self,
+            request: &ExportRequest<'_>,
+            _: &mut dyn FnMut(ExportProgress),
+        ) -> Result<Exported, HostError> {
+            let tools = self.tools.lock().unwrap().take();
+            if let Some(tools) = tools {
+                let second = call(
+                    &tools,
+                    "export",
+                    json!({ "artboard": "scene", "format": "mp4" }),
+                );
+                *self.second.lock().unwrap() = Some(second);
+            }
+            std::fs::write(request.path, request.path.to_string_lossy().as_bytes()).map_err(
+                |source| HostError::Io {
+                    path: request.path.to_owned(),
+                    source,
+                },
+            )?;
+            Ok(Exported {
+                path: request.path.to_owned(),
+                bytes: 0,
+                frames: 1,
+            })
+        }
+    }
+
+    #[test]
+    fn exports_at_the_same_time_get_names_of_their_own() {
+        let dir = TempDir::new("export-overlap");
+        let exporter = Arc::new(OverlappingExporter::default());
+        let session = Session::with_path(demo_document(), dir.path().join("project.moshi"));
+        let tools = Tools::new(
+            SessionHandle::new(session),
+            Host::new().with_exporter(exporter.clone()),
+        );
+        *exporter.tools.lock().unwrap() = Some(tools.clone());
+
+        let first = call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "mp4" }),
+        );
+        let second = exporter.second.lock().unwrap().take().unwrap();
+        let first_path = dir.path().join("exports/Launch.mp4");
+        let second_path = dir.path().join("exports/Launch 2.mp4");
+        assert_eq!(first["path"], first_path.to_string_lossy().as_ref());
+        assert_eq!(second["path"], second_path.to_string_lossy().as_ref());
+        // Each file holds what its own export wrote.
+        for path in [first_path, second_path] {
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                path.to_string_lossy()
+            );
+        }
     }
 
     #[test]
