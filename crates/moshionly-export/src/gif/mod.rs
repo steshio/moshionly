@@ -19,7 +19,9 @@
 //!
 //! Frame delays are whole hundredths of a second with the rounding carried
 //! from frame to frame (see [`crate::FrameTimes::centisecond_delays`]), so the GIF
-//! lasts as long as the animation.
+//! lasts as long as the animation. A still that lasts longer than one GIF
+//! frame can show, 655.35 seconds, carries on over frames that change
+//! nothing.
 
 mod dither;
 mod palette;
@@ -183,9 +185,14 @@ struct FrameWriter<W: Write> {
     shown: Option<Vec<u8>>,
     /// The last frame's stored part, waiting for its final delay.
     pending: Option<gif::Frame<'static>>,
-    /// The delay of the pending frame, in hundredths of a second.
-    pending_delay: u32,
+    /// The delay of the pending frame, in hundredths of a second. May be
+    /// longer than one GIF frame can show; see [`MAX_DELAY`].
+    pending_delay: u64,
 }
+
+/// The longest one GIF frame can show, in hundredths of a second: 655.35
+/// seconds. A longer still is shown on several frames.
+const MAX_DELAY: u64 = u16::MAX as u64;
 
 impl<W: Write> FrameWriter<W> {
     fn new(mut encoder: Encoder<W>, plan: &Plan, transparent: u8) -> Result<Self, ExportError> {
@@ -214,7 +221,7 @@ impl<W: Write> FrameWriter<W> {
     /// hundredths of a second.
     fn push(&mut self, indices: Vec<u8>, delay: u32) -> Result<(), ExportError> {
         if self.shown.as_ref() == Some(&indices) {
-            self.pending_delay += delay;
+            self.pending_delay += u64::from(delay);
             return Ok(());
         }
         self.flush().map_err(gif_error)?;
@@ -224,7 +231,7 @@ impl<W: Write> FrameWriter<W> {
             (Some(shown), false) => self.changed_part(shown, &indices),
         };
         self.pending = Some(frame);
-        self.pending_delay = delay;
+        self.pending_delay = u64::from(delay);
         self.shown = Some(indices);
         Ok(())
     }
@@ -236,12 +243,48 @@ impl<W: Write> FrameWriter<W> {
         writer.flush()
     }
 
+    /// Writes the pending frame with its delay.
+    ///
+    /// A delay longer than one frame can show is split: the frame shows
+    /// for as long as one frame can and is kept, and the rest is carried by
+    /// frames over the same rectangle with only see-through pixels, which
+    /// change nothing. The last of them is disposed of as the frame itself
+    /// would have been, so a transparent GIF still clears it.
     fn flush(&mut self) -> Result<(), gif::EncodingError> {
         let Some(mut frame) = self.pending.take() else {
             return Ok(());
         };
-        frame.delay = self.pending_delay.min(u32::from(u16::MAX)) as u16;
-        self.encoder.write_frame(&frame)
+        let mut rest = self.pending_delay;
+        if rest <= MAX_DELAY {
+            frame.delay = rest as u16;
+            return self.encoder.write_frame(&frame);
+        }
+        let dispose = frame.dispose;
+        frame.delay = MAX_DELAY as u16;
+        frame.dispose = DisposalMethod::Keep;
+        self.encoder.write_frame(&frame)?;
+        rest -= MAX_DELAY;
+        let pixels = usize::from(frame.width) * usize::from(frame.height);
+        let mut more = gif::Frame {
+            left: frame.left,
+            top: frame.top,
+            width: frame.width,
+            height: frame.height,
+            buffer: Cow::Owned(vec![self.transparent; pixels]),
+            transparent: Some(self.transparent),
+            dispose: DisposalMethod::Keep,
+            ..gif::Frame::default()
+        };
+        while rest > 0 {
+            let delay = rest.min(MAX_DELAY);
+            rest -= delay;
+            more.delay = delay as u16;
+            if rest == 0 {
+                more.dispose = dispose;
+            }
+            self.encoder.write_frame(&more)?;
+        }
+        Ok(())
     }
 
     /// For a transparent GIF: the rectangle around the visible pixels,
@@ -466,6 +509,41 @@ mod tests {
         // A frame with nothing visible is one see-through pixel.
         assert_eq!((frames[1].width, frames[1].height), (1, 1));
         assert_eq!(&*frames[1].buffer, [3]);
+    }
+
+    #[test]
+    fn a_still_longer_than_one_frame_can_show_keeps_its_length() {
+        // 800 seconds of one picture: one GIF frame shows at most 655.35.
+        let frames = written(false, &[(&FIRST, 40_000), (&FIRST, 40_000), (&SECOND, 3)]);
+        let delays: Vec<u16> = frames.iter().map(|frame| frame.delay).collect();
+        assert_eq!(delays, [65_535, 14_465, 3]);
+        assert_eq!(frames[0].dispose, DisposalMethod::Keep);
+        // The rest is carried by a frame that changes nothing.
+        let rest = &frames[1];
+        assert_eq!(rest.transparent, Some(3));
+        assert!(rest.buffer.iter().all(|&index| index == 3));
+        assert_eq!(rest.dispose, DisposalMethod::Keep);
+
+        // A transparent GIF keeps the picture until the rest has been
+        // shown, then clears the same rectangle as the frame would have.
+        #[rustfmt::skip]
+        let shape: [u8; 12] = [
+            3, 3, 3, 3,
+            3, 1, 2, 3,
+            3, 3, 3, 3,
+        ];
+        let empty = [3; 12];
+        let frames = written(true, &[(&shape, 70_000), (&shape, 70_000), (&empty, 2)]);
+        let delays: Vec<u16> = frames.iter().map(|frame| frame.delay).collect();
+        assert_eq!(delays, [65_535, 65_535, 8_930, 2]);
+        let area = |frame: &gif::Frame| (frame.left, frame.top, frame.width, frame.height);
+        assert_eq!(frames[0].dispose, DisposalMethod::Keep);
+        for rest in &frames[1..3] {
+            assert_eq!(area(rest), area(&frames[0]));
+            assert!(rest.buffer.iter().all(|&index| index == 3));
+        }
+        assert_eq!(frames[1].dispose, DisposalMethod::Keep);
+        assert_eq!(frames[2].dispose, DisposalMethod::Background);
     }
 
     #[test]

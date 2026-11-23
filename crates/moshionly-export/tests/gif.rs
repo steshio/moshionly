@@ -240,3 +240,37 @@ fn a_colour_seen_for_only_a_few_frames_keeps_its_exact_colour() {
         assert_eq!(timeline[frame][at..at + 3], expected, "frame {frame}");
     }
 }
+
+#[test]
+fn a_still_longer_than_one_gif_frame_can_show_lasts_as_long_as_planned() {
+    // 700 seconds of the same picture, at one frame a second. One GIF
+    // frame can show for at most 655.35 seconds.
+    for fill in [r##","fill":"#0D99FF""##, ""] {
+        let document = Arc::new(
+            io::parse(&format!(
+                r#"{{"format":"moshionly","version":1,"name":"Still","nodes":[
+                {{"id":"board","parent":null,"index":"a0","type":"artboard","name":"Board",
+                 "width":8,"height":8,"duration":700000}},
+                {{"id":"dot","parent":"board","index":"a0","type":"rect","name":"Dot",
+                 "x":2,"y":2,"width":4,"height":4{fill}}}
+            ]}}"#
+            ))
+            .unwrap(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("still.gif");
+        let settings = Settings::default().with_frame_rate(FrameRate::new(1, 1).unwrap());
+        let job = ExportJob::new(document, NodeId::from("board"), Format::Gif, &path)
+            .with_settings(settings)
+            .with_renderer(common::renderer());
+        let exported = common::run(&job).0.unwrap();
+        assert_eq!(exported.duration_ms, Some(700_000.0));
+        let gif = decode(&path);
+        assert_eq!(gif.total_delay(), 70_000, "fill {fill:?}");
+        let first = &gif.shown[0].0;
+        assert!(
+            gif.shown.iter().all(|(picture, _)| picture == first),
+            "the picture never changes, fill {fill:?}"
+        );
+    }
+}
