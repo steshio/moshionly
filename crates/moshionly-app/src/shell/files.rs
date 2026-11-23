@@ -64,10 +64,7 @@ impl Shell {
     /// Carries out `action`, asking about unsaved changes first when there
     /// are some.
     pub fn request(&mut self, action: FileAction) {
-        self.finish_text_edit();
-        if self.pen.is_some() {
-            self.finish_pen(false);
-        }
+        self.finish_work_in_progress();
         if self.editor.has_unsaved_changes() {
             self.pending = Some(action);
         } else {
@@ -79,13 +76,29 @@ impl Shell {
     /// asks about the unsaved changes and closes it later itself (see
     /// [`ShellOutput::close_window`](super::ShellOutput::close_window)).
     pub fn may_close(&mut self) -> bool {
-        if self.closing || !self.editor.has_unsaved_changes() {
+        if self.closing {
+            return true;
+        }
+        // Words being typed and a path being drawn are not in the document
+        // yet: put them there first, so they count as changes to save.
+        self.finish_work_in_progress();
+        if !self.editor.has_unsaved_changes() {
             return true;
         }
         if self.pending.is_none() {
             self.request(FileAction::Close);
         }
         false
+    }
+
+    /// Puts what is being made on the canvas into the document: a drag in
+    /// progress, the words being typed, the path being drawn with the pen.
+    fn finish_work_in_progress(&mut self) {
+        self.end_canvas_drag();
+        self.finish_text_edit();
+        if self.pen.is_some() {
+            self.finish_pen(false);
+        }
     }
 
     /// Answers the open question about unsaved changes, as the prompt's

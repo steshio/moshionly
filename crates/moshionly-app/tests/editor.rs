@@ -824,3 +824,50 @@ fn undo_in_the_middle_of_a_drag_ends_the_drag_as_one_step() {
     );
     assert_eq!(editor.redo_label().as_deref(), Some("Redo Move"));
 }
+
+/// The words of a text layer, as the document has them.
+fn content(harness: &Harness<'_, Shell>, id: &str) -> String {
+    let document = harness.state().editor().document().clone();
+    moshionly_app::editor::inspect::text_of(document.get(&NodeId::from(id)).unwrap())
+        .unwrap()
+        .content
+        .clone()
+}
+
+#[test]
+fn closing_keeps_words_still_being_typed() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    // The title starts at 288, 412 on the artboard and is about 357 by 77.
+    let title = screen(&harness, pos2(288.0 + 100.0, 412.0 + 38.0));
+    double_click(&mut harness, title);
+    assert!(harness.state().is_editing_text());
+    harness.event(egui::Event::Text(" soon".to_owned()));
+    harness.run();
+    assert!(!harness.state().editor().has_unsaved_changes());
+    // The words are kept before deciding: now there is something to save.
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    assert!(content(&harness, "title").contains("soon"));
+}
+
+#[test]
+fn closing_keeps_a_path_still_being_drawn() {
+    let mut harness = harness();
+    harness.key_press(Key::P);
+    harness.run();
+    for world in [pos2(100.0, 100.0), pos2(200.0, 50.0)] {
+        let at = screen(&harness, world);
+        click(&mut harness, at);
+    }
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    assert_eq!(layers_of(&harness, moshionly_core::NodeType::Path).len(), 1);
+}
