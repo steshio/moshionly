@@ -5,10 +5,10 @@
 //! thin layers over those two functions, so an agent gets the same tools
 //! whichever way it arrives.
 //!
-//! Each tool lives in its own module as a [`ToolDef`]: a name, a description
+//! Each tool lives in its own module as a `ToolDef`: a name, a description
 //! written for a model, a JSON Schema for its input and a function that does
 //! the work. Adding a tool is writing such a module and listing it in
-//! [`TOOLS`].
+//! `TOOLS`.
 
 mod apply;
 mod args;
