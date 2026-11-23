@@ -10,11 +10,14 @@
 //!
 //! - [`conversation`]: the messages, built up from a provider's events.
 //! - [`tool_summary`]: a few readable words for each tool call.
+//! - [`executor`]: the agent tools as API providers call them.
 
 pub mod conversation;
+pub mod executor;
 pub mod tool_summary;
 
 pub use conversation::{
     AnswerState, Author, ChatError, Conversation, Message, Part, ProviderSession, ToolCall,
     ToolState, Usage,
 };
+pub use executor::AgentTools;

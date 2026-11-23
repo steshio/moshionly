@@ -17,6 +17,7 @@ name = "moshionly"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "0.1.92"
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "clipboard",
@@ -35,8 +36,10 @@ rfd = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "sync", "time"] }
