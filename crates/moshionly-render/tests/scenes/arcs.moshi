@@ -1,0 +1,12 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Arcs",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Arcs","width":320,"height":120,"fill":"#FFFFFF"},
+    {"id":"pie","parent":"board","index":"a0","type":"ellipse","name":"Three quarters","x":16,"y":16,"width":88,"height":88,"sweep":270,"fill":"#FDCB6E"},
+    {"id":"ring","parent":"board","index":"a1","type":"ellipse","name":"Ring","x":116,"y":16,"width":88,"height":88,"inner_radius":0.6,"fill":"#00B894"},
+    {"id":"piece","parent":"board","index":"a2","type":"ellipse","name":"Piece of a ring","x":216,"y":16,"width":88,"height":88,"start_angle":200,"sweep":140,"inner_radius":0.7,"fill":"#E84393",
+     "stroke":{"paint":"#2D3436","width":2}}
+  ]
+}

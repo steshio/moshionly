@@ -1,0 +1,11 @@
+{
+  "format": "moshionly",
+  "version": 1,
+  "name": "Blur",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Blur","width":320,"height":120,"fill":"#FFFFFF"},
+    {"id":"sharp","parent":"board","index":"a0","type":"star","name":"Sharp","x":16,"y":16,"width":88,"height":88,"fill":"#6C5CE7"},
+    {"id":"soft","parent":"board","index":"a1","type":"star","name":"Soft","x":116,"y":16,"width":88,"height":88,"fill":"#6C5CE7","blur":4},
+    {"id":"blurry","parent":"board","index":"a2","type":"star","name":"Blurry","x":216,"y":16,"width":88,"height":88,"fill":"#6C5CE7","blur":16}
+  ]
+}
