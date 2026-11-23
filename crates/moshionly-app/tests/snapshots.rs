@@ -465,6 +465,76 @@ fn shell_with_chat() {
     }
 }
 
+/// The Animate tab with the title's letter-by-letter action selected: its
+/// timing, easing curve and settings, with the timeline below and the
+/// canvas in the middle of the animation.
+#[test]
+fn animate_tab() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = demo_shell();
+        shell.inspector_mut().tab = InspectorTab::Animate;
+        let editor = shell.editor_mut();
+        editor
+            .selection
+            .select(moshionly_core::NodeId::from("title"));
+        editor.set_actions([moshionly_core::NodeId::from("titlein")]);
+        editor.set_playhead(900.0);
+        let (path, image) = snapshot("animate", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// A move made on the canvas: its path drawn over the card, and its values
+/// and overshooting easing in the Animate tab.
+#[test]
+fn animate_move() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = demo_shell();
+        shell.inspector_mut().tab = InspectorTab::Animate;
+        let editor = shell.editor_mut();
+        editor.selection.select(moshionly_core::NodeId::from("dot"));
+        editor.set_playhead(2000.0);
+        let added = editor
+            .add_actions(moshionly_core::NodeType::Move, 0.0)
+            .expect("a move is added");
+        let id = added[0].clone();
+        editor
+            .apply(
+                "Set the move",
+                &[
+                    moshionly_core::Edit::set(
+                        id.clone(),
+                        "to",
+                        serde_json::json!({"x": -380, "y": -200}),
+                    ),
+                    moshionly_core::Edit::set(
+                        id.clone(),
+                        "easing",
+                        serde_json::json!({"type": "overshoot", "intensity": 60}),
+                    ),
+                ],
+            )
+            .expect("the move is set");
+        editor.set_playhead(2400.0);
+        let (path, image) = snapshot("animate-move", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
 /// The canvas on its own: two artboards without pictures, and one of every
 /// overlay.
 #[test]
