@@ -1052,20 +1052,89 @@ async function convertFrame(node, container, m, run) {
   await convertChildren(node, inside, run);
 }
 
-/** A Figma group: a group whose box is the bounds of its children. */
+/**
+ * A Figma group: a group whose box is the bounds of its children. A group
+ * whose bottom layer is its only mask (what Figma's "Use as mask" makes)
+ * is a mask group itself.
+ */
 async function convertGroup(node, container, m, run) {
   const placement = place(m, ownBox(node));
   if (placement.skewed) return flatten(node, container, run, 'it is skewed');
-  const group = newLayer('group', node, run, container, placement);
+  const children = node.children || [];
+  const masked = children.length > 0 && isActiveMask(children[0]) && children.filter(isActiveMask).length === 1;
+  const group = newLayer(masked ? 'mask_group' : 'group', node, run, container, placement);
   styleLayer(group, node, run, placement);
   run.emit(group);
-  await convertChildren(node, containerFor(group, container, placement), run);
+  if (masked) noteMask(children[0], run);
+  await convertChildren(node, containerFor(group, container, placement), run, masked);
 }
 
-async function convertChildren(node, container, run) {
-  for (const child of node.children || []) {
-    await convertLayer(child, container, run);
+/**
+ * Converts the children of `node` into `container`, bottom first.
+ *
+ * In Figma a mask hides everything above it in the same parent. Here each
+ * mask starts a mask group that holds the mask (its first child, which
+ * Moshionly uses as the mask) and every sibling above it, up to the next
+ * mask. `masked` says the container already is the mask group of the first
+ * child.
+ */
+async function convertChildren(node, container, run, masked) {
+  let target = container;
+  const children = node.children || [];
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (isActiveMask(child) && !(masked && index === 0)) {
+      target = emitMaskGroup(child, container, run);
+    }
+    await convertLayer(child, target, run);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Masks
+// ---------------------------------------------------------------------------
+
+/** Whether `node` masks the layers above it. A hidden mask masks nothing. */
+function isActiveMask(node) {
+  return node.isMask === true && node.visible !== false;
+}
+
+function noteMask(mask, run) {
+  if (mask.maskType === 'LUMINANCE') {
+    run.note(mask, 'This mask uses brightness in Figma; Moshionly masks by transparency, so dark parts still show.');
+  }
+}
+
+/**
+ * A mask group for `mask` and the layers above it, in `container`. Its box
+ * is the upright box around the mask, so the layers it holds keep their
+ * places.
+ */
+function emitMaskGroup(mask, container, run) {
+  const m = relativeMatrix(container, mask);
+  const box = ownBox(mask);
+  const corners = [
+    [0, 0],
+    [box.width, 0],
+    [0, box.height],
+    [box.width, box.height],
+  ].map(([x, y]) => applyMatrix(m, x, y));
+  const xs = corners.map((point) => point[0]);
+  const ys = corners.map((point) => point[1]);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  const placement = place(translation(left, top), {
+    x: 0,
+    y: 0,
+    width: Math.max(...xs) - left,
+    height: Math.max(...ys) - top,
+  });
+  const group = newLayer('mask_group', mask, run, container, placement, 'mask');
+  group.name = (mask.name || 'Mask') + ' group';
+  group.source_id = run.sourceId(mask, 'mask');
+  run.emit(group);
+  noteMask(mask, run);
+  return containerFor(group, container, placement);
 }
 
 // ---------------------------------------------------------------------------
@@ -2169,6 +2238,9 @@ async function convertSelection(selection, options) {
   const roots = selectionRoots(selection);
   run.total = roots.reduce((sum, node) => sum + countNodes(node), 0);
   for (const node of roots) {
+    if (isActiveMask(node)) {
+      run.note(node, 'This layer masks others in Figma; select what holds it to bring the mask along.');
+    }
     if (FRAME_TYPES.has(node.type) && isOnCanvas(node)) {
       await convertArtboard(node, run);
     } else {
