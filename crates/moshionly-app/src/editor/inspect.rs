@@ -159,6 +159,37 @@ pub fn resize_all(
         .collect()
 }
 
+/// The edits that stretch the contents of the groups among `nodes` the
+/// way [`resize_all`] resizes them, for groups that stretch what is in them
+/// (see [`scales_contents`](super::transform::scales_contents)). `document`
+/// is where the contents are read from: settle the text in it first.
+pub fn stretch_contents(
+    document: &Document,
+    nodes: &[(&Node, Frame)],
+    value: f64,
+    height: bool,
+    keep_proportions: bool,
+) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    for (node, frame) in nodes {
+        if !super::transform::scales_contents(node) {
+            continue;
+        }
+        let old = if height { frame.height } else { frame.width };
+        if old <= 0.0 {
+            continue;
+        }
+        let factor = value.max(0.0) / old;
+        let (sx, sy) = match (height, keep_proportions) {
+            (_, true) => (factor, factor),
+            (false, false) => (factor, 1.0),
+            (true, false) => (1.0, factor),
+        };
+        edits.extend(super::transform::scale_contents(document, &node.id, sx, sy));
+    }
+    edits
+}
+
 /// A number with the noise of arithmetic rounded away, at a hundredth.
 pub fn tidy(value: f64) -> f64 {
     let rounded = (value * 100.0).round() / 100.0;

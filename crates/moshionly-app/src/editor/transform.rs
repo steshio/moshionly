@@ -9,8 +9,8 @@
 //! Positions are in world (canvas) coordinates, angles in degrees clockwise.
 
 use egui::{Pos2, Rect, Vec2, pos2, vec2};
-use moshionly_core::model::AutoSize;
-use moshionly_core::{Affine, Document, Edit, NodeId, NodeType, Point};
+use moshionly_core::model::{AutoSize, NodeData};
+use moshionly_core::{Affine, Document, Edit, Family, Node, NodeId, NodeType, Point};
 use serde_json::{Map, Value};
 
 use super::inspect::{text_of, tidy};
@@ -44,6 +44,68 @@ pub struct Item {
     pub parent: Affine,
     /// The text box rule, for text layers.
     pub auto_size: Option<AutoSize>,
+    /// Whether resizing it scales what is inside it (see
+    /// [`scales_contents`]).
+    pub scales_contents: bool,
+}
+
+/// Whether resizing `node` scales what is inside it. A group that does not
+/// clip behaves like a Figma group: its contents stretch with it. A group
+/// that clips behaves like a Figma frame: its box changes and its contents
+/// stay as they are. A mask group stretches like a group.
+pub fn scales_contents(node: &Node) -> bool {
+    match &node.data {
+        NodeData::Group(group) => !group.clip,
+        NodeData::MaskGroup(_) => true,
+        _ => false,
+    }
+}
+
+/// The edits that stretch everything inside `parent` by `sx` across and
+/// `sy` down its own axes, as its box is stretched: positions and sizes,
+/// all the way down, while font sizes and stroke widths stay. A layer that
+/// is turned is stretched along its own axes as nearly as a box can be.
+/// Text whose box hugs its words keeps its size, which the words decide,
+/// and moves with its centre; settle it first so that centre is the one
+/// drawn.
+pub fn scale_contents(document: &Document, parent: &NodeId, sx: f64, sy: f64) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    for child in document.children(parent, Family::Layer) {
+        let Some(node) = document.get(child) else {
+            continue;
+        };
+        let Some(layer) = node.layer() else {
+            continue;
+        };
+        let center = layer.center();
+        let center = Point::new(center.x * sx, center.y * sy);
+        let (sin, cos) = layer.rotation.to_radians().sin_cos();
+        let along = (sx * cos).hypot(sy * sin);
+        let across = (sx * sin).hypot(sy * cos);
+        let hugs = text_of(node).is_some_and(|text| text.auto_size == AutoSize::WidthAndHeight);
+        let (width, height) = if hugs {
+            (layer.width, layer.height)
+        } else {
+            (
+                (layer.width * along).max(MIN_SIZE),
+                (layer.height * across).max(MIN_SIZE),
+            )
+        };
+        edits.push(Edit::update(
+            child.clone(),
+            [
+                ("x", Value::from(tidy(center.x - width / 2.0))),
+                ("y", Value::from(tidy(center.y - height / 2.0))),
+                ("width", Value::from(tidy(width))),
+                ("height", Value::from(tidy(height))),
+            ],
+        ));
+        if document.children(child, Family::Layer).is_empty() {
+            continue;
+        }
+        edits.extend(scale_contents(document, child, along, across));
+    }
+    edits
 }
 
 impl Item {
@@ -74,6 +136,7 @@ impl Item {
             origin,
             parent,
             auto_size: text_of(node).map(|text| text.auto_size),
+            scales_contents: scales_contents(node),
         })
     }
 
@@ -140,13 +203,44 @@ impl Item {
         )
     }
 
+    /// The `width` and `height` that make the layer look `to` big.
+    fn local_size(&self, to: &WorldBox) -> (f64, f64) {
+        let scale = self.world_scale().max(1e-9);
+        (
+            (to.size.0 / scale).max(MIN_SIZE),
+            (to.size.1 / scale).max(MIN_SIZE),
+        )
+    }
+
+    /// The edits that give the layer the box `to` on the canvas, keeping
+    /// its rotation: its own, and for a group that stretches its contents,
+    /// theirs (see [`scales_contents`]).
+    fn resized_to(
+        &self,
+        document: &Document,
+        to: &WorldBox,
+        changed_width: bool,
+        changed_height: bool,
+    ) -> Vec<Edit> {
+        let mut edits = vec![self.placed(to, changed_width, changed_height)];
+        if self.scales_contents {
+            let (width, height) = self.local_size(to);
+            let factor = |new: f64, old: f64| if old > 0.0 { new / old } else { 1.0 };
+            edits.extend(scale_contents(
+                document,
+                &self.id,
+                factor(width, self.width),
+                factor(height, self.height),
+            ));
+        }
+        edits
+    }
+
     /// The edit that gives the layer the box `to` on the canvas, keeping its
     /// rotation. A text box that hugged its text stops doing so on the
     /// sides that were dragged.
     fn placed(&self, to: &WorldBox, changed_width: bool, changed_height: bool) -> Edit {
-        let scale = self.world_scale().max(1e-9);
-        let width = (to.size.0 / scale).max(MIN_SIZE);
-        let height = (to.size.1 / scale).max(MIN_SIZE);
+        let (width, height) = self.local_size(to);
         let (x, y) = self.position_for(to.center, width, height);
         let mut patch = Map::new();
         patch.insert("x".into(), tidy(x).into());
@@ -309,10 +403,12 @@ pub fn resized(
     )
 }
 
-/// The edits that resize `items` from their box `start` to `to`. A single
-/// layer takes the box as it is; several are stretched with it, each about
-/// its own axes.
+/// The edits that resize `items` of `document` from their box `start` to
+/// `to`. A single layer takes the box as it is; several are stretched with
+/// it, each about its own axes. A group that does not clip stretches its
+/// contents with it (see [`scales_contents`]).
 pub fn resize_edits(
+    document: &Document,
     items: &[Item],
     start: &WorldBox,
     to: &WorldBox,
@@ -326,7 +422,7 @@ pub fn resize_edits(
         let (from, into) = (start.bounds(), to.bounds());
         return items
             .iter()
-            .map(|item| {
+            .flat_map(|item| {
                 let own = item.world_box();
                 let c = own.center;
                 let center = Point::new(
@@ -341,11 +437,11 @@ pub fn resize_edits(
                     size: (own.size.0 * along, own.size.1 * across),
                     rotation: own.rotation,
                 };
-                item.placed(&placed, changed.0, changed.1)
+                item.resized_to(document, &placed, changed.0, changed.1)
             })
             .collect();
     };
-    vec![only.placed(to, changed.0, changed.1)]
+    only.resized_to(document, to, changed.0, changed.1)
 }
 
 /// The angle in degrees from `pivot` to `point`, clockwise from the x axis.
@@ -508,7 +604,7 @@ mod tests {
             ResizeMode::default(),
         );
         assert!(w && h);
-        let doc = apply(&resize_edits(&[r], &start, &to, (w, h)));
+        let doc = apply(&resize_edits(&document(), &[r], &start, &to, (w, h)));
         assert_eq!(props(&doc, "r"), (100.0, 100.0, 250.0, 120.0, 0.0));
     }
 
@@ -523,7 +619,7 @@ mod tests {
             ResizeMode::default(),
         );
         assert!(w && !h);
-        let doc = apply(&resize_edits(&[r], &start, &to, (w, h)));
+        let doc = apply(&resize_edits(&document(), &[r], &start, &to, (w, h)));
         assert_eq!(props(&doc, "r"), (60.0, 100.0, 240.0, 100.0, 0.0));
     }
 
@@ -538,6 +634,7 @@ mod tests {
         let (to, ..) = resized(&start, Anchor::BottomRight, vec2(200.0, 0.0), keep);
         assert_eq!(to.size, (400.0, 200.0));
         let doc = apply(&resize_edits(
+            &document(),
             std::slice::from_ref(&r),
             &start,
             &to,
@@ -551,6 +648,7 @@ mod tests {
         };
         let (to, ..) = resized(&start, Anchor::Right, vec2(50.0, 0.0), centre);
         let doc = apply(&resize_edits(
+            &document(),
             std::slice::from_ref(&r),
             &start,
             &to,
@@ -560,7 +658,7 @@ mod tests {
 
         // An edge with Shift grows the other side evenly.
         let (to, ..) = resized(&start, Anchor::Right, vec2(200.0, 0.0), keep);
-        let doc = apply(&resize_edits(&[r], &start, &to, (true, true)));
+        let doc = apply(&resize_edits(&document(), &[r], &start, &to, (true, true)));
         assert_eq!(props(&doc, "r"), (100.0, 50.0, 400.0, 200.0, 0.0));
     }
 
@@ -574,7 +672,7 @@ mod tests {
             vec2(-260.0, 0.0),
             ResizeMode::default(),
         );
-        let doc = apply(&resize_edits(&[r], &start, &to, (true, false)));
+        let doc = apply(&resize_edits(&document(), &[r], &start, &to, (true, false)));
         assert_eq!(props(&doc, "r"), (40.0, 100.0, 60.0, 100.0, 0.0));
     }
 
@@ -591,7 +689,7 @@ mod tests {
             ResizeMode::default(),
         );
         assert!(w && !h);
-        let doc = apply(&resize_edits(&[inner], &start, &to, (w, h)));
+        let doc = apply(&resize_edits(&document(), &[inner], &start, &to, (w, h)));
         let (x, y, width, height, _) = props(&doc, "in");
         // 40 on the canvas is 20 in the doubled group.
         assert!(
@@ -618,7 +716,7 @@ mod tests {
             vec2(290.0, 0.0),
             ResizeMode::default(),
         );
-        let doc = apply(&resize_edits(&items, &start, &to, (w, h)));
+        let doc = apply(&resize_edits(&document(), &items, &start, &to, (w, h)));
         let (x, _, width, ..) = props(&doc, "r");
         assert!(close(width, 400.0), "{width}");
         assert!(close(x, 190.0), "{x}");
@@ -634,7 +732,13 @@ mod tests {
             vec2(50.0, 0.0),
             ResizeMode::default(),
         );
-        let doc = apply(&resize_edits(std::slice::from_ref(&t), &start, &to, (w, h)));
+        let doc = apply(&resize_edits(
+            &document(),
+            std::slice::from_ref(&t),
+            &start,
+            &to,
+            (w, h),
+        ));
         let text = text_of(doc.get(&NodeId::from("t")).unwrap()).unwrap();
         assert_eq!(text.auto_size, AutoSize::Height);
         let (to, w, h) = resized(
@@ -643,9 +747,84 @@ mod tests {
             vec2(50.0, 50.0),
             ResizeMode::default(),
         );
-        let doc = apply(&resize_edits(&[t], &start, &to, (w, h)));
+        let doc = apply(&resize_edits(&document(), &[t], &start, &to, (w, h)));
         let text = text_of(doc.get(&NodeId::from("t")).unwrap()).unwrap();
         assert_eq!(text.auto_size, AutoSize::Fixed);
+    }
+
+    /// A group that does not clip, holding a rect, a turned rect and a
+    /// nested group with a rect; and a group that clips, holding a rect.
+    fn groups() -> Document {
+        io::parse(
+            r##"{"format":"moshionly","version":1,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","width":1000,"height":1000},
+            {"id":"g","parent":"ab","index":"a0","type":"group","x":100,"y":100,"width":200,"height":100},
+            {"id":"a","parent":"g","index":"a0","type":"rect","x":0,"y":0,"width":100,"height":50,"stroke":{"paint":"#000000","width":3}},
+            {"id":"turned","parent":"g","index":"a1","type":"rect","x":120,"y":40,"width":40,"height":20,"rotation":90},
+            {"id":"inner","parent":"g","index":"a2","type":"group","x":100,"y":50,"width":100,"height":50},
+            {"id":"deep","parent":"inner","index":"a0","type":"ellipse","x":50,"y":0,"width":50,"height":50},
+            {"id":"frame","parent":"ab","index":"a1","type":"group","x":500,"y":100,"width":200,"height":100,"clip":true},
+            {"id":"kept","parent":"frame","index":"a0","type":"rect","x":10,"y":10,"width":100,"height":50}
+            ]}"##,
+        )
+        .unwrap()
+    }
+
+    fn resize_by(doc: &Document, ids: &[&str], anchor: Anchor, travel: Vec2) -> Document {
+        let items: Vec<Item> = ids
+            .iter()
+            .map(|id| Item::of(doc, &NodeId::from(*id)).unwrap())
+            .collect();
+        let start = box_of(&items).unwrap();
+        let (to, w, h) = resized(&start, anchor, travel, ResizeMode::default());
+        let mut after = doc.clone();
+        after
+            .apply(&resize_edits(doc, &items, &start, &to, (w, h)))
+            .unwrap();
+        after
+    }
+
+    #[test]
+    fn resizing_a_group_stretches_what_is_in_it() {
+        let doc = groups();
+        // Twice as wide and half again as high.
+        let after = resize_by(&doc, &["g"], Anchor::BottomRight, vec2(200.0, 50.0));
+        assert_eq!(props(&after, "g"), (100.0, 100.0, 400.0, 150.0, 0.0));
+        assert_eq!(props(&after, "a"), (0.0, 0.0, 200.0, 75.0, 0.0));
+        // The stroke keeps its width.
+        let stroke = after
+            .get(&NodeId::from("a"))
+            .unwrap()
+            .data
+            .stroke()
+            .cloned();
+        assert_eq!(stroke.map(|s| s.width), Some(3.0));
+        // A turned layer stretches along its own axes: its width runs down.
+        let (x, y, width, height, rotation) = props(&after, "turned");
+        assert_eq!((width, height, rotation), (60.0, 40.0, 90.0));
+        assert_eq!((x + width / 2.0, y + height / 2.0), (280.0, 75.0));
+        // All the way down.
+        assert_eq!(props(&after, "inner"), (200.0, 75.0, 200.0, 75.0, 0.0));
+        assert_eq!(props(&after, "deep"), (100.0, 0.0, 100.0, 75.0, 0.0));
+    }
+
+    #[test]
+    fn resizing_a_group_that_clips_leaves_what_is_in_it() {
+        let doc = groups();
+        let after = resize_by(&doc, &["frame"], Anchor::Right, vec2(100.0, 0.0));
+        assert_eq!(props(&after, "frame"), (500.0, 100.0, 300.0, 100.0, 0.0));
+        assert_eq!(props(&after, "kept"), props(&doc, "kept"));
+    }
+
+    #[test]
+    fn groups_stretch_their_contents_in_a_selection_too() {
+        let doc = groups();
+        // Both groups, 100 to 700 wide: twice as wide is 1300.
+        let after = resize_by(&doc, &["g", "frame"], Anchor::Right, vec2(600.0, 0.0));
+        assert_eq!(props(&after, "g").2, 400.0);
+        assert_eq!(props(&after, "a").2, 200.0);
+        assert_eq!(props(&after, "frame").2, 400.0);
+        assert_eq!(props(&after, "kept"), props(&doc, "kept"));
     }
 
     #[test]

@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 use super::{Bind, numeric, text};
 use crate::{
     editor::{
-        inspect::{Inspected, artboard_of, resize_all, set_all, shared, text_of, tidy},
+        inspect::{
+            Inspected, artboard_of, resize_all, set_all, shared, stretch_contents, text_of, tidy,
+        },
         settle::{Frame, is_auto_sized, settle_edit},
     },
     theme::icons,
@@ -397,12 +399,26 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
             Field::Y => bind.field(&response, "Move", || {
                 settled(set_all(&ids, "y", tidy(value)))
             }),
-            Field::Width => bind.field(&response, "Resize", || {
-                settled(resize_all(&framed, value, false, keep))
-            }),
-            Field::Height => bind.field(&response, "Resize", || {
-                settled(resize_all(&framed, value, true, keep))
-            }),
+            Field::Width | Field::Height => {
+                let height = matches!(field, Field::Height);
+                // A group that does not clip stretches what is in it; the
+                // text in it is settled first, so it moves with its words.
+                let inside = response.response.changed().then(|| {
+                    let edits = bind.editor.settle_edits(&ids, true);
+                    let mut working = (**bind.editor.document()).clone();
+                    let ok = working.apply(&edits).is_ok();
+                    (edits, working, ok)
+                });
+                bind.field(&response, "Resize", || match inside {
+                    Some((settle, working, true)) => [
+                        settle,
+                        resize_all(&framed, value, height, keep),
+                        stretch_contents(&working, &framed, value, height, keep),
+                    ]
+                    .concat(),
+                    _ => settled(resize_all(&framed, value, height, keep)),
+                });
+            }
             Field::Rotation => bind.field(&response, "Rotate", || {
                 settled(set_all(&rotatable, "rotation", tidy(normal_angle(value))))
             }),

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use egui::{Modifiers, Pos2, Rect, Vec2};
-use moshionly_core::{EditError, Family, NodeId, Point, build};
+use moshionly_core::{Document, EditError, Family, NodeId, Point, build};
 
 use super::Editor;
 use super::selection::is_held;
@@ -47,6 +47,9 @@ pub enum Drag {
         from: WorldBox,
         /// What the handle snaps to.
         targets: SnapTargets,
+        /// The document as the drag found it: what groups being resized
+        /// hold is stretched from there at every step.
+        document: Arc<Document>,
     },
     /// Turning about the centre.
     Rotate {
@@ -88,12 +91,13 @@ impl Editor {
     }
 
     /// Opens a gesture and gives the auto-sized text the drag works on the
-    /// box it is drawn in, so that the drag starts from what is on screen.
+    /// box it is drawn in, so that the drag starts from what is on screen;
+    /// with `inside`, the text inside it too, which a resize may stretch.
     /// Returns false, with nothing changed, when that was refused.
-    fn begin_drag_gesture(&mut self, summary: &str) -> bool {
+    fn begin_drag_gesture(&mut self, summary: &str, inside: bool) -> bool {
         self.begin_gesture(summary);
         let ids = self.drag_ids();
-        if self.settle(summary, &ids, false).is_err() {
+        if self.settle(summary, &ids, inside).is_err() {
             let _ = self.cancel_gesture();
             return false;
         }
@@ -170,7 +174,7 @@ impl Editor {
             }
             // The copy is kept even where it was made.
             self.drag_start = None;
-        } else if !self.begin_drag_gesture("Move") {
+        } else if !self.begin_drag_gesture("Move", false) {
             return None;
         }
         let items = self.drag_items();
@@ -192,11 +196,11 @@ impl Editor {
         if self.drag_items().is_empty() {
             return None;
         }
-        let summary = match handle {
-            Handle::Resize(_) => "Resize",
-            Handle::Rotate(_) => "Rotate",
+        let (summary, inside) = match handle {
+            Handle::Resize(_) => ("Resize", true),
+            Handle::Rotate(_) => ("Rotate", false),
         };
-        if !self.begin_drag_gesture(summary) {
+        if !self.begin_drag_gesture(summary, inside) {
             return None;
         }
         let items = self.drag_items();
@@ -209,6 +213,7 @@ impl Editor {
                     items,
                     from,
                     targets,
+                    document: Arc::clone(&self.document),
                 }
             }),
             Handle::Rotate(_) => {
@@ -280,6 +285,7 @@ impl Editor {
                 items,
                 from,
                 targets,
+                document,
             } => {
                 let mut travel = world - *start;
                 let mut guides = Vec::new();
@@ -297,7 +303,7 @@ impl Editor {
                     from_center: modifiers.alt,
                 };
                 let (to, w, h) = resized(from, *anchor, travel, mode);
-                self.apply("Resize", &resize_edits(items, from, &to, (w, h)))?;
+                self.apply("Resize", &resize_edits(document, items, from, &to, (w, h)))?;
                 Ok(guides)
             }
             Drag::Rotate {
@@ -500,6 +506,28 @@ mod tests {
             .unwrap();
         editor.end_drag();
         assert_eq!(frame(&editor, "loose").2, 300.0);
+    }
+
+    #[test]
+    fn a_group_stretches_its_contents_once_however_long_the_drag() {
+        let mut editor = editor();
+        editor.selection.select(id("card"));
+        // The card does not clip: what is in it stretches with it.
+        let drag = editor
+            .begin_handle(Handle::Resize(Anchor::Right), pos2(500.0, 250.0))
+            .unwrap();
+        for x in [600.0, 700.0, 900.0] {
+            editor
+                .drag_to(&drag, pos2(x, 250.0), Modifiers::CTRL, 1.0)
+                .unwrap();
+        }
+        editor.end_drag();
+        // 400 wide to 800: the background too, not more.
+        assert_eq!(frame(&editor, "card").2, 800.0);
+        assert_eq!(frame(&editor, "bg").2, 800.0);
+        assert_eq!(frame(&editor, "dot"), (40.0, 20.0, 100.0, 50.0, 0.0));
+        editor.undo().unwrap();
+        assert_eq!(frame(&editor, "bg").2, 400.0);
     }
 
     #[test]

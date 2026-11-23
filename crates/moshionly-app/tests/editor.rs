@@ -1335,3 +1335,68 @@ fn a_group_made_around_text_encloses_the_words() {
         Some("Undo Group")
     );
 }
+
+#[test]
+fn a_group_resized_from_a_handle_stretches_its_contents() {
+    let mut harness = harness();
+    // A plain group around the title and the dot, made with the keyboard.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("raised"), NodeId::from("dot")]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let group = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    let before = drawn(&mut harness, group.as_str());
+    let dot = drawn(&mut harness, "dot");
+    // Its bottom-right handle, out by half its width and height.
+    let corner = screen(&harness, before.right_bottom());
+    let to = screen(&harness, before.right_bottom() + before.size() / 2.0);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::CTRL));
+    drag(&mut harness, corner, to);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run();
+    let after = drawn(&mut harness, group.as_str());
+    assert!(
+        (after.width() - before.width() * 1.5).abs() < 2.0,
+        "{before:?} {after:?}"
+    );
+    // The dot grew with it, from the group's corner.
+    let grown = drawn(&mut harness, "dot");
+    assert!(
+        (grown.width() - dot.width() * 1.5).abs() < 2.0,
+        "{dot:?} {grown:?}"
+    );
+    // One step.
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Resize")
+    );
+    // Typing a width does the same.
+    let wider = format!("{}", (after.width() * 2.0).round());
+    type_into(&mut harness, "Width", &wider);
+    let twice = drawn(&mut harness, "dot");
+    assert!(
+        (twice.width() - grown.width() * 2.0).abs() < 3.0,
+        "{grown:?} {twice:?}"
+    );
+
+    // The card clips: resizing it leaves what is inside as it was.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("card"));
+    harness.run();
+    let accent = drawn(&mut harness, "accent");
+    type_into(&mut harness, "Width", "900");
+    assert_eq!(drawn(&mut harness, "accent"), accent);
+}
