@@ -25,12 +25,37 @@ pub(crate) struct Outline {
     /// Whether every piece of the outline is closed. Only a closed outline
     /// has an inside and an outside for a stroke to sit on.
     pub closed: bool,
+    /// For an outline with closed and open pieces, the closed ones and the
+    /// open ones apart: a stroke keeps to its side of the first and is
+    /// centred on the second. `None` when the pieces are all of one kind.
+    pub split: Option<Box<(Outline, Outline)>>,
+}
+
+impl Outline {
+    /// An outline whose pieces are all closed, or all open.
+    pub fn new(path: sk::Path, closed: bool) -> Self {
+        Self {
+            path,
+            closed,
+            split: None,
+        }
+    }
+
+    /// The parts a stroke follows, each all closed or all open: the outline
+    /// itself, or its closed and its open pieces.
+    pub fn parts(&self) -> impl Iterator<Item = &Outline> {
+        let (first, second) = match &self.split {
+            Some(split) => (&split.0, Some(&split.1)),
+            None => (self, None),
+        };
+        std::iter::once(first).chain(second)
+    }
 }
 
 /// The outline of the shape a node draws, or `None` for a node that is not
 /// a shape (a group or a text). An image counts as its rounded box.
 pub(crate) fn outline(node: &SceneNode) -> Option<Outline> {
-    let closed = |path: sk::Path| Outline { path, closed: true };
+    let closed = |path: sk::Path| Outline::new(path, true);
     Some(match &node.content {
         Content::Rect { radii, .. } | Content::Image { radii, .. } => {
             closed(rect(node.width, node.height, radii))
@@ -161,38 +186,56 @@ pub(crate) fn star(width: f64, height: f64, points: u32, inner_radius: f64) -> s
 /// sitting on its anchor.
 pub(crate) fn pen(data: &PathData) -> Outline {
     let point = |pair: [f64; 2]| sk::Point::new(pair[0] as f32, pair[1] as f32);
-    let mut builder = sk::PathBuilder::new_with_fill_type(match data.fill_rule {
-        FillRule::NonZero => sk::PathFillType::Winding,
-        FillRule::EvenOdd => sk::PathFillType::EvenOdd,
-    });
-    let mut closed = !data.subpaths.is_empty();
+    let builder = || {
+        sk::PathBuilder::new_with_fill_type(match data.fill_rule {
+            FillRule::NonZero => sk::PathFillType::Winding,
+            FillRule::EvenOdd => sk::PathFillType::EvenOdd,
+        })
+    };
+    // The whole outline, and its closed and its open pieces apart.
+    let (mut all, mut shut, mut open) = (builder(), builder(), builder());
+    let (mut any_shut, mut any_open) = (false, false);
     for subpath in &data.subpaths {
         let Some(first) = subpath.anchors.first() else {
             continue;
         };
-        builder.move_to(point(first.point));
-        let following = subpath.anchors.iter().skip(1);
-        // A closed piece ends with the segment back to its first anchor.
-        let closing = subpath.closed.then_some(first);
-        for (from, to) in subpath.anchors.iter().zip(following.chain(closing)) {
-            match (from.handle_out, to.handle_in) {
-                (None, None) => builder.line_to(point(to.point)),
-                (handle_out, handle_in) => builder.cubic_to(
-                    point(handle_out.unwrap_or(from.point)),
-                    point(handle_in.unwrap_or(to.point)),
-                    point(to.point),
-                ),
-            };
-        }
-        if subpath.closed {
-            builder.close();
+        let kind = if subpath.closed {
+            any_shut = true;
+            &mut shut
         } else {
-            closed = false;
+            any_open = true;
+            &mut open
+        };
+        for builder in [&mut all, kind] {
+            builder.move_to(point(first.point));
+            let following = subpath.anchors.iter().skip(1);
+            // A closed piece ends with the segment back to its first anchor.
+            let closing = subpath.closed.then_some(first);
+            for (from, to) in subpath.anchors.iter().zip(following.chain(closing)) {
+                match (from.handle_out, to.handle_in) {
+                    (None, None) => builder.line_to(point(to.point)),
+                    (handle_out, handle_in) => builder.cubic_to(
+                        point(handle_out.unwrap_or(from.point)),
+                        point(handle_in.unwrap_or(to.point)),
+                        point(to.point),
+                    ),
+                };
+            }
+            if subpath.closed {
+                builder.close();
+            }
         }
     }
+    let closed = !data.subpaths.is_empty() && !any_open;
     Outline {
-        path: builder.detach(),
+        path: all.detach(),
         closed,
+        split: (any_shut && any_open).then(|| {
+            Box::new((
+                Outline::new(shut.detach(), true),
+                Outline::new(open.detach(), false),
+            ))
+        }),
     }
 }
 
@@ -371,6 +414,28 @@ mod tests {
 
         let nothing = pen(&PathData::default());
         assert!(nothing.path.is_empty() && !nothing.closed);
+        assert!(closed.split.is_none() && open.split.is_none());
+    }
+
+    #[test]
+    fn closed_and_open_pieces_are_also_kept_apart() {
+        let mut line = triangle(false);
+        line.anchors.truncate(2);
+        let mixed = pen(&PathData {
+            subpaths: vec![triangle(true), line],
+            fill_rule: FillRule::NonZero,
+        });
+        assert!(!mixed.closed);
+        assert_eq!(
+            mixed.path.count_verbs(),
+            7,
+            "the closed piece, then the line"
+        );
+        let parts: Vec<&Outline> = mixed.parts().collect();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].closed && !parts[1].closed);
+        assert_eq!(parts[0].path.count_verbs(), 5);
+        assert_eq!(parts[1].path.count_verbs(), 2, "move, line");
     }
 
     #[test]

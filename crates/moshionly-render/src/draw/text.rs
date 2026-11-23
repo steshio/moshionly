@@ -184,10 +184,7 @@ fn stroke_pieces(
             }
         }
     }
-    let shape = Outline {
-        path: builder.detach(),
-        closed: true,
-    };
+    let shape = Outline::new(builder.detach(), true);
     stroke::draw(canvas, &shape, outline, opacity);
 }
 

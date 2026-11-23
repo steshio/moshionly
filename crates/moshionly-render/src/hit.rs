@@ -168,7 +168,11 @@ impl Geometry<'_> {
                     Precision::Exact => stroke::area(&outline, stroke)
                         .map(|area| rect(&area.compute_tight_bounds())),
                     Precision::Quick => {
-                        Some(outset(&shape(), stroke_reach(stroke, outline.closed)))
+                        let reach = outline
+                            .parts()
+                            .map(|part| stroke_reach(stroke, part.closed))
+                            .fold(0.0, f64::max);
+                        Some(outset(&shape(), reach))
                     }
                 });
                 union(filled, stroked)
@@ -234,10 +238,10 @@ fn touches(node: &SceneNode, point: Point, reach: f64) -> bool {
             let inside = outline.path.contains(at);
             match (fill, stroke) {
                 (Some(_), _) if inside => true,
-                (_, Some(stroke)) => {
-                    let wide = widened(stroke, reach, outline.closed);
-                    stroke::area(&outline, &wide).is_some_and(|area| area.contains(at))
-                }
+                (_, Some(stroke)) => outline.parts().any(|part| {
+                    let wide = widened(stroke, reach, part.closed);
+                    stroke::area(part, &wide).is_some_and(|area| area.contains(at))
+                }),
                 // A shape that draws nothing is still found by its outline,
                 // so it can be selected.
                 (None, None) => inside,
