@@ -15,7 +15,7 @@ mod warn;
 
 use serde_json::{Value, json};
 
-use super::args::{Args, closest};
+use super::args::{Args, closest, short_name};
 use super::{Context, ToolDef, input_schema};
 use crate::session::Origin;
 use crate::tool::{EditFailure, ToolError, ToolOutput};
@@ -336,7 +336,8 @@ fn run_operation(batch: &mut Batch, index: usize, value: &Value) -> Result<(), T
         return Err(ToolError::argument(
             generic.field("op"),
             format!(
-                "\"{name}\" is not an operation.{hint} The operations are: {}.",
+                "\"{}\" is not an operation.{hint} The operations are: {}.",
+                short_name(&name),
                 names.join(", ")
             ),
         ));

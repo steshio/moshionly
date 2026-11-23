@@ -11,7 +11,7 @@ use moshionly_core::validate::animation_applies_to;
 use moshionly_core::{Family, Node, NodeId, NodeType, build, schema};
 use serde_json::{Map, Value, json};
 
-use super::args::{Args, closest};
+use super::args::{Args, closest, short_name};
 use super::{Context, ToolDef, input_schema};
 use crate::tool::{ToolError, ToolOutput};
 
@@ -74,8 +74,9 @@ fn run(_context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
     Err(ToolError::argument(
         "type",
         format!(
-            "\"{name}\" is not a node type or a value type.{hint} The node types are: \
+            "\"{}\" is not a node type or a value type.{hint} The node types are: \
              {node_types}. The value types are: {}.",
+            short_name(&name),
             blocks
                 .iter()
                 .map(|block| block.name)

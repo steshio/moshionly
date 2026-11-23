@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use moshionly_core::{Document, Family, Node, NodeId, NodeType, schema};
 use serde_json::{Map, Value, json};
 
-use super::args::{Args, closest};
+use super::args::{Args, closest, short_name};
 use super::common::{self, STRING_LIMIT, number, shorten_strings};
 use super::{Context, ToolDef, input_schema};
 use crate::tool::{ToolError, ToolOutput};
@@ -255,7 +255,8 @@ pub(crate) fn node_type(name: &str) -> Result<NodeType, ToolError> {
         ToolError::argument(
             "type",
             format!(
-                "\"{name}\" is not a node type.{hint} The types are: {}.",
+                "\"{}\" is not a node type.{hint} The types are: {}.",
+                short_name(name),
                 names.join(", ")
             ),
         )
@@ -304,8 +305,9 @@ impl Fields {
                 return Err(ToolError::argument(
                     "fields",
                     format!(
-                        "\"{name}\" is not a field of any node type.{hint} Use get_schema with \
+                        "\"{}\" is not a field of any node type.{hint} Use get_schema with \
                          a type to see its fields; the computed fields are {}.",
+                        short_name(name),
                         COMPUTED
                             .iter()
                             .map(|(name, _)| *name)

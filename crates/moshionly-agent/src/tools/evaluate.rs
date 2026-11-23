@@ -6,7 +6,7 @@ use moshionly_core::model::AutoSize;
 use moshionly_core::{NodeData, NodeId};
 use serde_json::{Map, Value, json};
 
-use super::args::{Args, closest};
+use super::args::{Args, closest, short_name};
 use super::common::{self, number};
 use super::{Context, ToolDef, input_schema};
 use crate::tool::{ToolError, ToolOutput};
@@ -198,8 +198,9 @@ fn properties(args: &Args) -> Result<Vec<Property>, ToolError> {
                 ToolError::argument(
                     "properties",
                     format!(
-                        "\"{name}\" is not a property that can be read over time.{hint} The \
+                        "\"{}\" is not a property that can be read over time.{hint} The \
                          properties are: {}.",
+                        short_name(name),
                         PROPERTY_NAMES.join(", ")
                     ),
                 )

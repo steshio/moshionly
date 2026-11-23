@@ -201,7 +201,7 @@ impl Tools {
         match TOOLS.iter().find(|def| def.name == name) {
             Some(def) => self.run(def, &arguments),
             None => ToolError::UnknownTool {
-                name: name.to_owned(),
+                name: args::short_name(name).into_owned(),
                 tools: TOOLS.iter().map(|def| def.name).collect(),
             }
             .to_output(),

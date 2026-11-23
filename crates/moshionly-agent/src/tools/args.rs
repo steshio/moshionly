@@ -6,6 +6,7 @@
 //! the others with a message that names the argument, says what it holds and
 //! what would be accepted.
 
+use std::borrow::Cow;
 use std::ops::RangeInclusive;
 
 use serde_json::{Map, Value};
@@ -77,6 +78,7 @@ impl Args {
             let hint = closest(unknown, allowed)
                 .map(|name| format!(" Did you mean \"{name}\"?"))
                 .unwrap_or_default();
+            let unknown = short_name(unknown);
             let owner = if self.path.is_empty() {
                 "an argument of this tool".to_owned()
             } else {
@@ -88,7 +90,7 @@ impl Args {
                 format!("It takes: {}.", allowed.join(", "))
             };
             return Err(ToolError::argument(
-                self.field(unknown),
+                self.field(&unknown),
                 format!("\"{unknown}\" is not {owner}.{hint} {takes}"),
             ));
         }
@@ -307,6 +309,20 @@ pub(crate) fn shown(value: &Value) -> String {
     short
 }
 
+/// The longest name that is compared with the known ones or repeated whole
+/// in a message. Real names are far shorter: a longer one is a mistake, and
+/// comparing or repeating it would only cost time and memory.
+const NAME_LIMIT: usize = 64;
+
+/// A name the caller gave, as it is repeated in a message: cut short when it
+/// is longer than any real name.
+pub(crate) fn short_name(name: &str) -> Cow<'_, str> {
+    match name.char_indices().nth(NAME_LIMIT) {
+        None => Cow::Borrowed(name),
+        Some((end, _)) => Cow::Owned(format!("{}…", &name[..end])),
+    }
+}
+
 /// Number of slips between two short words, where a slip is a letter
 /// added, dropped or replaced, or two neighbouring letters swapped.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -333,6 +349,9 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// The candidate a misspelt `word` most likely meant, when one is close.
 pub(crate) fn closest<'c>(word: &str, candidates: &[&'c str]) -> Option<&'c str> {
+    if word.chars().nth(NAME_LIMIT).is_some() {
+        return None;
+    }
     let word = word.to_lowercase();
     candidates
         .iter()
@@ -507,5 +526,21 @@ mod tests {
         assert_eq!(closest("target_id", &["target", "type"]), Some("target"));
         assert_eq!(closest("zzz", &["name", "parent"]), None);
         assert_eq!(closest("x", &["y"]), None);
+    }
+
+    #[test]
+    fn a_huge_unknown_name_is_neither_compared_nor_repeated_whole() {
+        let huge = format!("target{}", "x".repeat(100_000));
+        assert_eq!(closest(&huge, &["target", "type"]), None);
+
+        let error = Args::new(&json!({ huge.clone(): 1 }), ALLOWED).unwrap_err();
+        let ToolError::Argument { field, message } = &error else {
+            panic!("{error:?}");
+        };
+        assert!(field.chars().count() <= 65, "{field}");
+        assert!(message.len() < 300, "{} characters", message.len());
+        assert!(message.starts_with("\"targetxxx"), "{message}");
+        assert!(message.contains("…\" is not an argument of this tool."));
+        assert_eq!(short_name("depth"), "depth");
     }
 }
