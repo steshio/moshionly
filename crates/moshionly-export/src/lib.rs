@@ -76,7 +76,9 @@ pub use ffmpeg::Ffmpeg;
 pub use format::{Format, SizeLimits};
 pub use job::{ExportJob, Exported};
 pub use progress::{CancelToken, Phase, Progress};
-pub use settings::{Loop, Moment, Moments, Plan, Quality, Settings, SettingsError, Size};
+pub use settings::{
+    Loop, MAX_FRAMES, Moment, Moments, Plan, Quality, Settings, SettingsError, Size,
+};
 pub use timing::{FrameRate, FrameTimes, TimingError};
 
 /// What is behind the layers: the artboard's own fill, nothing, or a colour.

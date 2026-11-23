@@ -14,6 +14,12 @@ use thiserror::Error;
 use crate::format::{Format, SizeLimits};
 use crate::timing::{FrameRate, FrameTimes, TimingError};
 
+/// The most frames one export may have: a million, which is over nine hours
+/// at 30 frames per second. More than that is almost certainly a mistake,
+/// such as a duration with extra zeros, and is refused before anything is
+/// drawn or written.
+pub const MAX_FRAMES: u64 = 1_000_000;
+
 /// How big the exported frames are. Proportions are always kept.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Size {
@@ -362,11 +368,14 @@ impl Settings {
                 });
             }
         }
-        Ok(Moments::Frames(FrameTimes::new(
-            start,
-            end,
-            self.frame_rate,
-        )?))
+        let times = FrameTimes::new(start, end, self.frame_rate)?;
+        if times.len() > MAX_FRAMES {
+            return Err(SettingsError::TooManyFrames {
+                frames: times.len(),
+                max: MAX_FRAMES,
+            });
+        }
+        Ok(Moments::Frames(times))
     }
 }
 
@@ -425,7 +434,9 @@ impl Moments {
         }
     }
 
-    /// Every moment, in order.
+    /// Every moment, in order. One entry for every frame, so at most
+    /// [`MAX_FRAMES`] for a checked plan; writers ask for moments one at a
+    /// time with [`get`](Self::get) instead.
     pub fn to_vec(&self) -> Vec<Moment> {
         (0..self.len())
             .filter_map(|index| self.get(index))
@@ -568,6 +579,17 @@ pub enum SettingsError {
     /// The frame rate or the range cannot be used.
     #[error(transparent)]
     Timing(#[from] TimingError),
+    /// The export would have more than [`MAX_FRAMES`] frames.
+    #[error(
+        "this export would have {frames} frames, and at most {max} can be written; shorten the \
+         time range or lower the frame rate"
+    )]
+    TooManyFrames {
+        /// How many frames the settings ask for. Saturates at `u64::MAX`.
+        frames: u64,
+        /// The most there may be: [`MAX_FRAMES`].
+        max: u64,
+    },
     /// A GIF was asked to play zero times.
     #[error("a GIF must play at least once; choose once, a number of times, or forever")]
     NoPlays,
@@ -618,6 +640,17 @@ mod tests {
                 {{"id":"box","parent":"board","index":"a0","type":"rect","name":"Box",
                  "width":10,"height":10,"fill":"#FF0000"}}
             ]}}"##
+        ))
+        .unwrap()
+    }
+
+    /// A document whose artboard lasts `duration_ms`.
+    fn lasting(duration_ms: f64) -> Document {
+        io::parse(&format!(
+            r#"{{"format":"moshionly","version":1,"name":"Long","nodes":[
+                {{"id":"board","parent":null,"index":"a0","type":"artboard","name":"Board",
+                 "width":100,"height":100,"duration":{duration_ms}}}
+            ]}}"#
         ))
         .unwrap()
     }
@@ -795,6 +828,61 @@ mod tests {
             plan_for(backwards, Format::Mp4),
             Err(SettingsError::Timing(TimingError::EmptyRange { .. }))
         ));
+    }
+
+    #[test]
+    fn exports_with_too_many_frames_are_refused() {
+        let board = NodeId::from("board");
+        // A million frames is the most: 40 000 seconds at 25 fps.
+        let most = Settings::default().with_frame_rate(FrameRate::FPS_25);
+        let plan = most.plan(Format::Mp4, &lasting(40_000_000.0), &board);
+        assert_eq!(plan.unwrap().frame_count(), MAX_FRAMES);
+        let error = most
+            .plan(Format::Mp4, &lasting(40_000_040.0), &board)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            SettingsError::TooManyFrames {
+                frames: MAX_FRAMES + 1,
+                max: MAX_FRAMES
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("shorten the time range or lower the frame rate"),
+            "{error}"
+        );
+
+        // A duration with extra zeros, and one too long to count.
+        let typo = Settings::default().plan(Format::Gif, &lasting(1e13), &board);
+        assert!(
+            matches!(
+                typo,
+                Err(SettingsError::TooManyFrames {
+                    frames: 300_000_000_000,
+                    ..
+                })
+            ),
+            "{typo:?}"
+        );
+        let endless = Settings::default().plan(Format::PngSequence, &lasting(1e300), &board);
+        assert!(
+            matches!(
+                endless,
+                Err(SettingsError::TooManyFrames {
+                    frames: u64::MAX,
+                    ..
+                })
+            ),
+            "{endless:?}"
+        );
+        // A still is one frame however long the artboard.
+        let still = Settings::default().with_still(Some(1e299));
+        assert!(still.plan(Format::Png, &lasting(1e300), &board).is_ok());
+        // A shorter range of a long artboard is fine.
+        let part = Settings::default().with_range(Some(0.0), Some(10_000.0));
+        assert!(part.plan(Format::Mp4, &lasting(1e13), &board).is_ok());
     }
 
     #[test]

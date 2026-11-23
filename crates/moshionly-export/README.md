@@ -78,7 +78,10 @@ its own size, 30 frames per second, on its own background.
   | ProRes | 4444, coarser quantiser | 4444 | 4444 XQ |
 
 - **Moments**: for a single PNG, the moment to capture or the design at rest;
-  for everything else, an optional start and end.
+  for everything else, an optional start and end. An export has at most a
+  million frames (`MAX_FRAMES`, over nine hours at 30 fps); more is refused
+  before anything is written, since it is almost certainly a mistake such
+  as a duration with extra zeros.
 - **GIF**: how many times it plays (forever by default, once, or a number of
   times) and whether it is dithered (on by default).
 
@@ -96,8 +99,10 @@ the end.
 Frames are rendered on several worker threads, each a pure function of the
 document and its moment, so the result does not depend on the number of
 cores. They reach the encoder strictly in order, and workers may run only a
-bounded number of frames ahead, so memory stays bounded however long the
-export. Per-frame work such as compressing PNGs or converting colours also
+bounded number of frames ahead. Each frame's moment is worked out when it
+is drawn, never listed in advance, so memory stays bounded however long the
+export: the only thing kept for every frame is the MP4 index, four bytes a
+frame. Per-frame work such as compressing PNGs or converting colours also
 runs on the workers.
 
 The file is written into a hidden temporary file beside the destination

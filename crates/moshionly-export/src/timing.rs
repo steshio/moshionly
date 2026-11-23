@@ -170,7 +170,8 @@ impl FrameRate {
     }
 
     /// How many frames it takes to cover `span_ms` milliseconds: every
-    /// frame that starts before the end. At least 1.
+    /// frame that starts before the end. At least 1, and `u64::MAX` for a
+    /// span too long to count: the count saturates, it never wraps.
     pub fn frames_in(self, span_ms: f64) -> u64 {
         let frames =
             span_ms.max(0.0) * f64::from(self.numerator) / (1000.0 * f64::from(self.denominator));
@@ -182,6 +183,11 @@ impl FrameRate {
         } else {
             frames.ceil()
         };
+        // Also catches an infinite count, from a span near `f64::MAX`. The
+        // count is never NaN: a NaN span counts as no time at all.
+        if count >= u64::MAX as f64 {
+            return u64::MAX;
+        }
         (count as u64).max(1)
     }
 }
@@ -277,7 +283,13 @@ impl FrameTimes {
 
     /// Every moment, in order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = f64> + '_ {
-        (0..self.count as usize).map(|index| self.start_ms + self.rate.time_of(index as u64))
+        (0..self.indexable()).map(|index| self.start_ms + self.rate.time_of(index as u64))
+    }
+
+    /// The frames an iterator can count, which is all of them except
+    /// where `usize` is too small.
+    fn indexable(&self) -> usize {
+        usize::try_from(self.count).unwrap_or(usize::MAX)
     }
 
     /// How long the frames play for, in milliseconds: the number of frames
@@ -292,7 +304,7 @@ impl FrameTimes {
     /// its true end, so the error never builds up and the delays add up to
     /// the length of the whole export, rounded to a hundredth.
     pub fn centisecond_delays(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
-        (0..self.count as usize).map(|index| self.delay_of(index as u64))
+        (0..self.indexable()).map(|index| self.delay_of(index as u64))
     }
 
     /// The display time of frame `index` in hundredths of a second, as
@@ -366,6 +378,14 @@ mod tests {
         // Never no frames at all.
         let times = FrameTimes::whole(1.0, FrameRate::FPS_30).unwrap();
         assert_eq!(times.len(), 1);
+
+        // A span too long to count saturates instead of wrapping.
+        assert_eq!(FrameRate::FPS_30.frames_in(1e13), 300_000_000_000);
+        assert_eq!(FrameRate::FPS_30.frames_in(f64::MAX), u64::MAX);
+        assert_eq!(
+            FrameRate::new(1000, 1).unwrap().frames_in(f64::MAX),
+            u64::MAX
+        );
     }
 
     #[test]
