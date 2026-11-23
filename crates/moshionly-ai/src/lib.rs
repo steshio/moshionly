@@ -27,6 +27,7 @@ mod keys;
 mod paths;
 mod provider;
 pub mod redact;
+mod settings;
 mod tool;
 
 pub use api::anthropic::{
@@ -48,6 +49,7 @@ pub use provider::{
     ToolTransport,
 };
 pub use redact::ApiKey;
+pub use settings::{AiSettings, ProviderSettings, SETTINGS_FILE, SettingsError};
 pub use tool::{ToolContent, ToolExecutor, ToolOutput, ToolSpec};
 
 /// The token used to cancel a request, re-exported so that callers do not
