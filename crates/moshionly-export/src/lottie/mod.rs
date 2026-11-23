@@ -10,10 +10,14 @@
 //! | Module | What it does |
 //! |---|---|
 //! | `fit` | Keyframes that follow a value over time within a tolerance |
-//! | `timeline` | Layer properties over time, and where they change |
-//! | `layers` | The layer tree as Lottie layers |
-//! | `shapes` | Outlines: rectangles, arcs, stars, pen paths |
-//! | `paint` | Fills and strokes: colours and gradients |
+//! | `timeline`, `scenes`, `clock` | Values over time, where they change, and frames |
+//! | `layers` | The layer tree as Lottie layers; shapes and their paint |
+//! | `groups` | Null layers, precompositions, clips, masks and track mattes |
+//! | `text`, `svg` | Letters as outlines from the renderer, and pieces that move |
+//! | `images` | Pictures inside the file or beside it |
+//! | `effects` | Drop shadows and blurs |
+//! | `shapes`, `paint` | Outlines; fills and strokes in colours and gradients |
+//! | `warnings` | What could not be exported exactly, by layer |
 //! | `props`, `json` | Writing properties and numbers compactly |
 
 mod clock;

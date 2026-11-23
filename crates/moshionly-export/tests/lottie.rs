@@ -697,3 +697,36 @@ fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
     );
     assert_eq!(layer(&lottie["layers"], "Badge")["ty"], 4);
 }
+
+#[test]
+fn size_and_background_settings_are_kept() {
+    use moshionly_export::Background;
+    // Twice the size: the composition doubles, and one layer that draws
+    // nothing scales everything.
+    let (lottie, exported) = export(Settings::default().with_scale(2.0));
+    assert_eq!((exported.width, exported.height), (2160, 2160));
+    assert_eq!(
+        (lottie["w"].as_u64(), lottie["h"].as_u64()),
+        (Some(2160), Some(2160))
+    );
+    let size = layer(&lottie["layers"], "Size");
+    assert_eq!(size["ty"], 3);
+    assert_eq!(size["ks"]["s"]["k"], serde_json::json!([200, 200]));
+    for layer in lottie["layers"].as_array().unwrap() {
+        if layer["nm"] != "Size" {
+            assert_eq!(layer["parent"], size["ind"], "{}", layer["nm"]);
+        }
+    }
+    // The artboard's fill is the bottom layer, unless the export is clear.
+    let (lottie, _) = export(Settings::default());
+    let last = lottie["layers"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["nm"], "Background");
+    let (lottie, _) = export(Settings::default().with_background(Background::Transparent));
+    assert!(
+        lottie["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|layer| layer["nm"] != "Background")
+    );
+}
