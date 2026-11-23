@@ -16,11 +16,15 @@
 //! |---|---|
 //! | [`session`] | [`Session`] and [`SessionHandle`]: the open document, its undo history, and who changed what |
 //! | [`host`] | [`Host`]: what the embedding app supplies, as traits: [`FrameSource`], [`Exporter`], [`FontSource`] |
+//! | [`tools`] | [`Tools`]: every tool, with `list` and `call` |
+//! | [`tool`] | What a tool looks like from outside: [`ToolSpec`], [`ToolOutput`], [`ToolError`] |
 
 #![warn(missing_docs)]
 
 pub mod host;
 pub mod session;
+pub mod tool;
+pub mod tools;
 
 pub use host::{
     ExportFormat, ExportOptions, ExportProgress, ExportRequest, Exported, Exporter, FontFamily,
@@ -29,3 +33,5 @@ pub use host::{
 pub use session::{
     Change, ChangeKind, Origin, Session, SessionHandle, SessionSaveError, Step, Subscription,
 };
+pub use tool::{EditFailure, ToolContent, ToolError, ToolOutput, ToolSpec};
+pub use tools::{Tools, ToolsConfig};
