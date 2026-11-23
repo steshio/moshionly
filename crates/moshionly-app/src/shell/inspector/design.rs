@@ -17,7 +17,7 @@ use crate::{
     theme::icons,
     widgets::{
         ColorField, ColorResponse, Dropdown, IconButton, NumericResponse, Rgba, control_row, pair,
-        property_row, section, slider_with_value,
+        property_row, section, slider_with_value_mixed,
     },
 };
 
@@ -152,6 +152,9 @@ fn artboard_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>)
         .as_ref()
         .and_then(|b| b.value().as_ref().and_then(Paint::as_solid));
     let has_background = background.as_ref().is_some_and(|b| b.value().is_some());
+    // Artboards with different backgrounds show one mixed colour.
+    let mixed_background = background.as_ref().is_some_and(|b| b.is_mixed());
+    let size_mixed = size.as_ref().is_some_and(|size| size.is_mixed());
     let mut open = bind.state.open.artboard;
     section(
         ui,
@@ -161,6 +164,7 @@ fn artboard_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>)
         |ui| {
             property_row(ui, "Size", |ui| {
                 if Dropdown::new(&mut preset, "Artboard size", &options)
+                    .mixed(size_mixed)
                     .show(ui)
                     .changed()
                 {
@@ -185,10 +189,11 @@ fn artboard_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>)
             }
             property_row(ui, "Background", |ui| {
                 ui.horizontal(|ui| {
-                    if let Some(color) = solid {
-                        let mut picked = rgba(color);
+                    if solid.is_some() || mixed_background {
+                        let mut picked = rgba(solid.unwrap_or(Color::WHITE));
                         let response = ColorField::new(&mut picked, "Background")
                             .width((ui.available_width() - 32.0).max(80.0))
+                            .mixed(mixed_background)
                             .show(ui);
                         color_change = Some((response, picked));
                     } else if has_background {
@@ -446,16 +451,18 @@ fn appearance_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_
         |_| {},
         |ui| {
             property_row(ui, "Opacity", |ui| {
-                slid = Some(slider_with_value(
+                slid = Some(slider_with_value_mixed(
                     ui,
                     &mut value,
                     "Opacity",
                     0.0..=100.0,
                     "%",
+                    opacity.is_mixed(),
                 ));
             });
             property_row(ui, "Blend", |ui| {
                 blended = Dropdown::new(&mut mode, "Blend mode", &BLENDS)
+                    .mixed(blend.is_mixed())
                     .show(ui)
                     .changed();
             });
@@ -556,7 +563,30 @@ fn fill_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     let Some(fills) = fills else {
         return;
     };
-    let current = fills.value().clone();
+    let filled: Vec<&Node> = inspected
+        .nodes()
+        .iter()
+        .copied()
+        .filter(|node| ids.contains(&node.id))
+        .collect();
+    // Layers without a fill: "Add fill" gives them one and leaves the
+    // others' alone.
+    let unfilled: Vec<moshionly_core::NodeId> = filled
+        .iter()
+        .filter(|node| node.data.fill().is_none())
+        .map(|node| node.id.clone())
+        .collect();
+    let all_solid = filled
+        .iter()
+        .all(|node| matches!(node.data.fill(), Some(Paint::Solid(_))));
+    // Fills that differ only in colour show one mixed colour; any other
+    // difference shows only the kind, as mixed, until one is chosen.
+    let mixed = fills.is_mixed();
+    let current = if mixed {
+        filled.iter().find_map(|node| node.data.fill().cloned())
+    } else {
+        fills.value().clone()
+    };
     let mut changes: Vec<FillChange> = Vec::new();
     let mut toggled = None;
     let mut open = bind.state.open.fill;
@@ -565,7 +595,7 @@ fn fill_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
         "Fill",
         &mut open,
         |ui| {
-            let (icon, tip, change) = if current.is_some() {
+            let (icon, tip, change) = if unfilled.is_empty() {
                 (icons::MINUS, "Remove fill", FillChange::Remove)
             } else {
                 (icons::PLUS, "Add fill", FillChange::Add)
@@ -577,25 +607,31 @@ fn fill_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
                 toggled = Some(change);
             }
         },
-        |ui| {
-            if let Some(paint) = &current {
-                paint_rows(ui, "Fill", paint, &mut changes);
+        |ui| match &current {
+            Some(paint) if !mixed || all_solid => {
+                paint_rows(ui, "Fill", paint, mixed, &mut changes);
             }
+            Some(_) => {
+                kind_row(ui, None, &mut changes);
+                quiet_note(ui, "The selected layers have different fills.");
+            }
+            None => {}
         },
     );
     bind.state.open.fill = open;
     changes.extend(toggled);
     for change in changes {
         match change {
-            FillChange::Add => bind.apply("Add fill", &set_all(&ids, "fill", hex(rgba(NEW_FILL)))),
+            FillChange::Add => {
+                bind.apply("Add fill", &set_all(&unfilled, "fill", hex(rgba(NEW_FILL))))
+            }
             FillChange::Remove => bind.apply("Remove fill", &set_all(&ids, "fill", Value::Null)),
             FillChange::Kind(kind) => {
-                if let Some(paint) = &current {
-                    bind.apply(
-                        "Change fill",
-                        &set_all(&ids, "fill", value_of(&converted(paint, kind))),
-                    );
-                }
+                let from = current.clone().unwrap_or(Paint::Solid(NEW_FILL));
+                bind.apply(
+                    "Change fill",
+                    &set_all(&ids, "fill", value_of(&converted(&from, kind))),
+                );
             }
             FillChange::Solid(response, color) => {
                 bind.color(&response, "Change fill", || {
@@ -614,27 +650,53 @@ fn fill_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     }
 }
 
-/// The rows that edit a paint: its kind, and its colour or the colours of
-/// its gradient stops.
-fn paint_rows(ui: &mut Ui, name: &str, paint: &Paint, changes: &mut Vec<FillChange>) {
-    let mut kind = match paint {
+/// The kind of a paint.
+fn kind_of(paint: &Paint) -> PaintKind {
+    match paint {
         Paint::Solid(_) => PaintKind::Solid,
         Paint::Gradient(Gradient::LinearGradient(_)) => PaintKind::Linear,
         Paint::Gradient(Gradient::RadialGradient(_)) => PaintKind::Radial,
-    };
+    }
+}
+
+/// The row choosing a paint's kind; `None` when the layers differ.
+fn kind_row(ui: &mut Ui, kind: Option<PaintKind>, changes: &mut Vec<FillChange>) {
+    let mut chosen = kind.unwrap_or(PaintKind::Solid);
     control_row(ui, |ui| {
-        if Dropdown::new(&mut kind, "Paint", &PAINT_KINDS)
+        if Dropdown::new(&mut chosen, "Paint", &PAINT_KINDS)
             .icon(icons::PAINT_BUCKET)
+            .mixed(kind.is_none())
             .show(ui)
             .changed()
         {
-            changes.push(FillChange::Kind(kind));
+            changes.push(FillChange::Kind(chosen));
         }
     });
+}
+
+/// A line of quiet text in a section.
+fn quiet_note(ui: &mut Ui, text: &str) {
+    let theme = crate::theme::Theme::of(ui);
+    ui.add_space(theme.space.xs);
+    ui.label(
+        egui::RichText::new(text)
+            .font(theme.body())
+            .color(theme.color.text_secondary),
+    );
+    ui.add_space(theme.space.xs);
+}
+
+/// The rows that edit a paint: its kind, and its colour or the colours of
+/// its gradient stops. `mixed` says the layers have solid paints of
+/// different colours.
+fn paint_rows(ui: &mut Ui, name: &str, paint: &Paint, mixed: bool, changes: &mut Vec<FillChange>) {
+    kind_row(ui, Some(kind_of(paint)), changes);
     match paint {
         Paint::Solid(color) => {
             let mut picked = rgba(*color);
-            let response = control_row(ui, |ui| ColorField::new(&mut picked, name).show(ui));
+            let response = control_row(ui, |ui| {
+                ColorField::new(&mut picked, name).mixed(mixed).show(ui)
+            });
             changes.push(FillChange::Solid(response, picked));
         }
         Paint::Gradient(gradient) => {
@@ -716,10 +778,24 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
             .filter(|node| ids.contains(&node.id))
             .map(|node| node.data.stroke().cloned()),
     );
-    let Some(strokes) = strokes else {
+    if strokes.is_none() {
         return;
-    };
-    let current: Option<Stroke> = strokes.value().clone();
+    }
+    // A stroke's colour, width and position are changed on the layers that
+    // have one; "Add stroke" gives one to the layers that have none.
+    let stroked =
+        inspected.ids_where(|node| ids.contains(&node.id) && node.data.stroke().is_some());
+    let unstroked: Vec<moshionly_core::NodeId> = ids
+        .iter()
+        .filter(|id| !stroked.contains(id))
+        .cloned()
+        .collect();
+    let current: Option<Stroke> = inspected
+        .nodes()
+        .iter()
+        .find_map(|node| node.data.stroke().cloned());
+    let colors = inspected.read(|node| node.data.stroke()?.paint.as_solid());
+    let positions = inspected.read(|node| node.data.stroke().map(|s| s.position));
     let widths = inspected.number(|node| node.data.stroke().map(|s| s.width));
     let mut changes: Vec<StrokeChange> = Vec::new();
     let mut toggled = None;
@@ -729,7 +805,7 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
         "Stroke",
         &mut open,
         |ui| {
-            let (icon, tip, change) = if current.is_some() {
+            let (icon, tip, change) = if unstroked.is_empty() {
                 (icons::MINUS, "Remove stroke", StrokeChange::Remove)
             } else {
                 (icons::PLUS, "Add stroke", StrokeChange::Add)
@@ -745,10 +821,13 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
             let Some(stroke) = &current else {
                 return;
             };
-            if let Paint::Solid(color) = &stroke.paint {
-                let mut picked = rgba(*color);
-                let response =
-                    control_row(ui, |ui| ColorField::new(&mut picked, "Stroke").show(ui));
+            if let Some(colors) = &colors {
+                let mut picked = rgba(*colors.value());
+                let response = control_row(ui, |ui| {
+                    ColorField::new(&mut picked, "Stroke")
+                        .mixed(colors.is_mixed())
+                        .show(ui)
+                });
                 changes.push(StrokeChange::Color(response, picked));
             }
             if let Some(widths) = &widths {
@@ -765,6 +844,7 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
             let mut position = stroke.position;
             property_row(ui, "Position", |ui| {
                 if Dropdown::new(&mut position, "Stroke position", &POSITIONS)
+                    .mixed(positions.as_ref().is_some_and(|p| p.is_mixed()))
                     .show(ui)
                     .changed()
                 {
@@ -779,20 +859,28 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
         match change {
             StrokeChange::Add => bind.apply(
                 "Add stroke",
-                &set_all(&ids, "stroke", value_of(&Stroke::solid(Color::BLACK, 1.0))),
+                &set_all(
+                    &unstroked,
+                    "stroke",
+                    value_of(&Stroke::solid(Color::BLACK, 1.0)),
+                ),
             ),
             StrokeChange::Remove => {
                 bind.apply("Remove stroke", &set_all(&ids, "stroke", Value::Null))
             }
             StrokeChange::Color(response, color) => bind.color(&response, "Change stroke", || {
-                set_all(&ids, "stroke", json!({ "paint": hex(color) }))
+                set_all(&stroked, "stroke", json!({ "paint": hex(color) }))
             }),
             StrokeChange::Width(response, width) => bind.field(&response, "Change stroke", || {
-                set_all(&ids, "stroke", json!({ "width": tidy(width.max(0.0)) }))
+                set_all(&stroked, "stroke", json!({ "width": tidy(width.max(0.0)) }))
             }),
             StrokeChange::Position(position) => bind.apply(
                 "Change stroke",
-                &set_all(&ids, "stroke", json!({ "position": value_of(&position) })),
+                &set_all(
+                    &stroked,
+                    "stroke",
+                    json!({ "position": value_of(&position) }),
+                ),
             ),
         }
     }
@@ -812,20 +900,40 @@ enum EffectChange {
 /// Shadow and blur.
 fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     let ids = inspected.ids_where(|node| node.node_type() != NodeType::Artboard);
-    let layers: Vec<&LayerProps> = inspected
+    let layers: Vec<(&moshionly_core::NodeId, &LayerProps)> = inspected
         .nodes()
         .iter()
         .filter(|node| ids.contains(&node.id))
-        .filter_map(|node| node.layer())
+        .filter_map(|node| Some((&node.id, node.layer()?)))
         .collect();
     if layers.is_empty() {
         return;
     }
-    let shadow: Option<Shadow> = layers.first().and_then(|l| l.shadow);
-    let shadow_part = |read: fn(&Shadow) -> f64| {
-        shared(layers.iter().filter_map(|l| l.shadow.as_ref().map(read)))
+    // A shadow's or a blur's values are changed on the layers that have
+    // one; the + buttons give one to the layers that have none.
+    let with = |has: fn(&LayerProps) -> bool| -> (Vec<moshionly_core::NodeId>, Vec<moshionly_core::NodeId>) {
+        let (yes, no): (Vec<_>, Vec<_>) = layers.iter().partition(|(_, layer)| has(layer));
+        (
+            yes.into_iter().map(|(id, _)| (*id).clone()).collect(),
+            no.into_iter().map(|(id, _)| (*id).clone()).collect(),
+        )
     };
-    let blur = shared(layers.iter().map(|l| l.blur).filter(|b| *b > 0.0));
+    let (shadowed, unshadowed) = with(|layer| layer.shadow.is_some());
+    let (blurred, unblurred) = with(|layer| layer.blur > 0.0);
+    let shadow: Option<Shadow> = layers.iter().find_map(|(_, l)| l.shadow);
+    let shadow_part = |read: fn(&Shadow) -> f64| {
+        shared(
+            layers
+                .iter()
+                .filter_map(|(_, l)| l.shadow.as_ref().map(read)),
+        )
+    };
+    let shadow_colors = shared(
+        layers
+            .iter()
+            .filter_map(|(_, l)| l.shadow.as_ref().map(|s| s.color)),
+    );
+    let blur = shared(layers.iter().map(|(_, l)| l.blur).filter(|b| *b > 0.0));
     let mut changes: Vec<EffectChange> = Vec::new();
     let mut add_menu = (false, false);
     let mut open = bind.state.open.effects;
@@ -834,7 +942,7 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
         "Effects",
         &mut open,
         |ui| {
-            if shadow.is_none()
+            if !unshadowed.is_empty()
                 && ui
                     .add(
                         IconButton::new(icons::PLUS)
@@ -845,7 +953,7 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
             {
                 add_menu.0 = true;
             }
-            if blur.is_none()
+            if !unblurred.is_empty()
                 && ui
                     .add(
                         IconButton::new(icons::DROP)
@@ -864,6 +972,7 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
                         let mut picked = rgba(shadow.color);
                         let response = ColorField::new(&mut picked, "Shadow colour")
                             .width((ui.available_width() - 32.0).max(80.0))
+                            .mixed(shadow_colors.as_ref().is_some_and(|c| c.is_mixed()))
                             .show(ui);
                         changes.push(EffectChange::ShadowColor(response, picked));
                         if ui
@@ -976,7 +1085,7 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
             EffectChange::AddShadow => {
                 bind.apply(
                     "Add shadow",
-                    &set_all(&ids, "shadow", value_of(&Shadow::default())),
+                    &set_all(&unshadowed, "shadow", value_of(&Shadow::default())),
                 );
             }
             EffectChange::RemoveShadow => {
@@ -984,7 +1093,7 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
             }
             EffectChange::ShadowColor(response, color) => {
                 bind.color(&response, "Change shadow", || {
-                    set_all(&ids, "shadow", json!({ "color": hex(color) }))
+                    set_all(&shadowed, "shadow", json!({ "color": hex(color) }))
                 })
             }
             EffectChange::Shadow(response, field, value) => {
@@ -994,13 +1103,13 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
                     value
                 };
                 bind.field(&response, "Change shadow", || {
-                    set_all(&ids, "shadow", json!({ field: tidy(value) }))
+                    set_all(&shadowed, "shadow", json!({ field: tidy(value) }))
                 });
             }
-            EffectChange::AddBlur => bind.apply("Add blur", &set_all(&ids, "blur", 4.0)),
+            EffectChange::AddBlur => bind.apply("Add blur", &set_all(&unblurred, "blur", 4.0)),
             EffectChange::RemoveBlur => bind.apply("Remove blur", &set_all(&ids, "blur", 0.0)),
             EffectChange::Blur(response, value) => bind.field(&response, "Change blur", || {
-                set_all(&ids, "blur", tidy(value.max(0.0)))
+                set_all(&blurred, "blur", tidy(value.max(0.0)))
             }),
         }
     }

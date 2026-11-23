@@ -373,7 +373,15 @@ impl<'a> NumericField<'a> {
                     );
                 }
             }
-            response.widget_info(|| egui::WidgetInfo::drag_value(ui.is_enabled(), *self.value));
+            response.widget_info(|| {
+                let mut info = egui::WidgetInfo::drag_value(ui.is_enabled(), *self.value);
+                if self.mixed {
+                    // Screen readers say "Mixed", not the first layer's value.
+                    info.value = None;
+                    info.current_text_value = Some("Mixed".to_owned());
+                }
+                info
+            });
             response = response.accessible_name(self.name);
         }
 

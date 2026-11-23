@@ -14,7 +14,7 @@ use crate::{
     theme::{Theme, icons},
     widgets::{
         ButtonKind, Dropdown, NumericResponse, TextButton, control_row, pair, property_row,
-        section, segmented,
+        section, segmented_mixed,
     },
 };
 
@@ -147,6 +147,7 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
             control_row(ui, |ui| {
                 if Dropdown::new(&mut family_index, "Font", &family_options)
                     .icon(icons::TEXT_AA)
+                    .mixed(family.as_ref().is_some_and(|f| f.is_mixed()))
                     .show(ui)
                     .changed()
                     && let Some(name) = names.get(family_index)
@@ -161,6 +162,7 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
                     ui,
                     |ui| {
                         weighed = Dropdown::new(&mut weight_value, "Weight", &weight_options)
+                            .mixed(weight.as_ref().is_some_and(|w| w.is_mixed()))
                             .show(ui)
                             .changed();
                     },
@@ -215,12 +217,14 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
                 ));
             }
             control_row(ui, |ui| {
-                if segmented(ui, &mut align_value, &ALIGNS).changed() {
+                let mixed = align.as_ref().is_some_and(|a| a.is_mixed());
+                if segmented_mixed(ui, &mut align_value, &ALIGNS, mixed).changed() {
                     changes.push(TextChange::Align(align_value));
                 }
             });
             property_row(ui, "Case", |ui| {
                 if Dropdown::new(&mut case_value, "Letter case", &CASES)
+                    .mixed(case.as_ref().is_some_and(|c| c.is_mixed()))
                     .show(ui)
                     .changed()
                 {
@@ -229,6 +233,7 @@ pub(super) fn text_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspect
             });
             property_row(ui, "Resizing", |ui| {
                 if Dropdown::new(&mut sizing_value, "Text resizing", &SIZING)
+                    .mixed(sizing.as_ref().is_some_and(|s| s.is_mixed()))
                     .show(ui)
                     .changed()
                 {
@@ -309,6 +314,7 @@ pub(super) fn image_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspec
             });
             property_row(ui, "Fill", |ui| {
                 fitted = Dropdown::new(&mut fit_value, "Image fill", &FITS)
+                    .mixed(fit.is_mixed())
                     .show(ui)
                     .changed();
             });

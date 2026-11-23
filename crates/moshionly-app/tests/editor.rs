@@ -709,7 +709,7 @@ fn mixed_values_show_as_mixed_and_set_every_layer() {
     // The two texts differ in size: the field says so.
     assert!(harness.query_by_label("Font size").is_some());
     let field = harness.get_by_label("Font size");
-    assert_eq!(field.accesskit_node().value().as_deref(), None);
+    assert_eq!(field.accesskit_node().value().as_deref(), Some("Mixed"));
     type_into(&mut harness, "Font size", "30");
     let document = harness.state().editor().document().clone();
     for id in ["title", "raised"] {
@@ -1136,4 +1136,99 @@ fn ungrouping_nested_groups_selects_only_what_is_left() {
     assert!(!editor.document().contains(&inner));
     assert!(!editor.document().contains(&outer));
     assert_eq!(selection(&harness), ["card"]);
+}
+
+#[test]
+fn colours_menus_and_sliders_show_mixed_values_too() {
+    use moshionly_core::Edit;
+    let mut harness = harness();
+    // The title and the raised amount differ in weight and fill already;
+    // make their opacity and blend differ, and stroke only the title.
+    harness
+        .state_mut()
+        .editor_mut()
+        .apply(
+            "Set up",
+            &[
+                Edit::set("title", "opacity", 50.0),
+                Edit::set("raised", "blend_mode", "multiply"),
+                Edit::set(
+                    "title",
+                    "stroke",
+                    serde_json::json!({ "paint": "#000000", "width": 2 }),
+                ),
+            ],
+        )
+        .unwrap();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    assert!(harness.query_by_label("Weight: Mixed").is_some());
+    assert!(harness.query_by_label("Blend mode: Mixed").is_some());
+    assert_eq!(
+        field(&harness, "Opacity")
+            .accesskit_node()
+            .value()
+            .as_deref(),
+        Some("Mixed")
+    );
+    let fill_hex = || {
+        harness
+            .get_all_by_label("Hex colour")
+            .next()
+            .expect("the fill's hex")
+            .accesskit_node()
+            .value()
+            .map(|value| value.to_string())
+    };
+    assert_eq!(fill_hex().as_deref(), Some("Mixed"));
+
+    // A colour typed into the mixed fill sets both.
+    harness
+        .get_all_by_label("Hex colour")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_all_by_label("Hex colour")
+        .next()
+        .unwrap()
+        .type_text("FF0000");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    for id in ["title", "raised"] {
+        let fill = document
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .fill()
+            .cloned();
+        assert_eq!(
+            fill,
+            Some(moshionly_core::model::Paint::Solid(
+                moshionly_core::Color::rgb(255, 0, 0)
+            )),
+            "{id}"
+        );
+    }
+
+    // A stroke's width changes where there is a stroke, and adds none.
+    type_into(&mut harness, "Stroke width", "4");
+    let document = harness.state().editor().document().clone();
+    let stroke = |id: &str| {
+        document
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .stroke()
+            .cloned()
+    };
+    assert_eq!(stroke("title").map(|s| s.width), Some(4.0));
+    assert_eq!(stroke("raised"), None);
 }

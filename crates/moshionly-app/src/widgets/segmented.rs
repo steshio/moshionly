@@ -15,6 +15,17 @@ pub fn segmented<T: PartialEq + Copy>(
     value: &mut T,
     options: &[(T, &str)],
 ) -> Response {
+    segmented_mixed(ui, value, options, false)
+}
+
+/// A [`segmented`] control that can say the layers being edited differ
+/// (`mixed`): then no option is raised, and choosing any sets it for all.
+pub fn segmented_mixed<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    value: &mut T,
+    options: &[(T, &str)],
+    mixed: bool,
+) -> Response {
     let theme = Theme::of(ui);
     let c = &theme.color;
     let height = theme.size.control + 4.0;
@@ -34,7 +45,7 @@ pub fn segmented<T: PartialEq + Copy>(
             Vec2::new(width, inner.height()),
         );
         let cell_response = ui.interact(cell, response.id.with(index), Sense::click());
-        let selected = *value == *option;
+        let selected = !mixed && *value == *option;
         if selected {
             paint::shadows(
                 ui.painter(),

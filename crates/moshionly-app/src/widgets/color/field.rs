@@ -76,6 +76,7 @@ pub struct ColorField<'a> {
     name: &'a str,
     width: Option<f32>,
     id_salt: Option<egui::IdSalt>,
+    mixed: bool,
 }
 
 impl<'a> ColorField<'a> {
@@ -87,7 +88,16 @@ impl<'a> ColorField<'a> {
             name,
             width: None,
             id_salt: None,
+            mixed: false,
         }
+    }
+
+    /// Says that the layers being edited have different colours: the field
+    /// shows "Mixed" until a colour is picked or typed, which sets it for
+    /// all.
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// A fixed width instead of the available width.
@@ -134,7 +144,11 @@ impl<'a> ColorField<'a> {
                 format!("{} colour", self.name),
             )
         });
-        paint_swatch(ui, swatch_rect, *self.color);
+        if self.mixed {
+            paint_mixed_swatch(ui, swatch_rect);
+        } else {
+            paint_swatch(ui, swatch_rect, *self.color);
+        }
 
         // Opacity on the right, behind a hairline.
         let opacity_width = 52.0;
@@ -156,6 +170,7 @@ impl<'a> ColorField<'a> {
                     .range(0.0..=100.0)
                     .width(opacity_width)
                     .id_salt(id.with("opacity"))
+                    .mixed(self.mixed)
                     .show(ui)
             })
             .inner;
@@ -170,7 +185,7 @@ impl<'a> ColorField<'a> {
             egui::pos2(swatch_rect.right() + theme.space.sm, rect.top()),
             egui::pos2(opacity_rect.left() - theme.space.xs, rect.bottom()),
         );
-        let hex = hex_text(ui, id.with("hex"), hex_rect, self.color);
+        let hex = hex_text(ui, id.with("hex"), hex_rect, self.color, self.mixed);
         out.changed |= hex.changed;
         out.finished |= hex.finished;
 
@@ -207,7 +222,28 @@ pub(super) fn hex_input(ui: &mut Ui, id: egui::Id, color: &mut Rgba, width: f32)
         egui::pos2(prefix.right(), rect.top()),
         egui::pos2(rect.right() - theme.space.sm, rect.bottom()),
     );
-    hex_text(ui, id, text_rect, color)
+    hex_text(ui, id, text_rect, color, false)
+}
+
+/// Paints the swatch of colours that differ: two halves, light and dark,
+/// split across, standing for "several".
+fn paint_mixed_swatch(ui: &Ui, rect: Rect) {
+    let theme = Theme::of(ui);
+    let radius = theme.radius.xs;
+    ui.painter()
+        .rect_filled(rect, radius, theme.color.checker_light);
+    let corner = [rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    ui.painter().add(egui::Shape::convex_polygon(
+        corner.to_vec(),
+        theme.color.checker_dark,
+        Stroke::NONE,
+    ));
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, theme.color.border_strong.gamma_multiply(0.6)),
+        StrokeKind::Inside,
+    );
 }
 
 /// The typing state of a hex field, kept in egui's temporary memory.
@@ -220,7 +256,7 @@ struct HexEditing {
 /// Hex digits that become an editor when clicked. Enter or focus loss
 /// applies a valid colour, Escape or an invalid one keeps the old colour.
 /// Alpha is only replaced when eight digits are typed.
-fn hex_text(ui: &mut Ui, id: egui::Id, rect: Rect, color: &mut Rgba) -> ColorResponse {
+fn hex_text(ui: &mut Ui, id: egui::Id, rect: Rect, color: &mut Rgba, mixed: bool) -> ColorResponse {
     let theme = Theme::of(ui);
     let c = &theme.color;
     let mut out = ColorResponse::default();
@@ -229,22 +265,26 @@ fn hex_text(ui: &mut Ui, id: egui::Id, rect: Rect, color: &mut Rgba) -> ColorRes
 
     if editing.is_none() && response.clicked() {
         editing = Some(HexEditing {
-            buffer: color.hex_rgb(),
+            buffer: if mixed {
+                String::new()
+            } else {
+                color.hex_rgb()
+            },
             select_all: true,
         });
     }
 
     let Some(mut edit) = editing else {
-        response
-            .widget_info(|| WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), "Hex colour"));
-        paint::text_in(
-            ui,
-            rect,
-            Align2::LEFT_CENTER,
-            &color.hex_rgb(),
-            theme.body(),
-            c.text,
-        );
+        let (shown, ink) = if mixed {
+            ("Mixed".to_owned(), c.text_secondary)
+        } else {
+            (color.hex_rgb(), c.text)
+        };
+        response.widget_info(|| WidgetInfo {
+            current_text_value: Some(shown.clone()),
+            ..WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), "Hex colour")
+        });
+        paint::text_in(ui, rect, Align2::LEFT_CENTER, &shown, theme.body(), ink);
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
@@ -285,7 +325,7 @@ fn hex_text(ui: &mut Ui, id: egui::Id, rect: Rect, color: &mut Rgba) -> ColorRes
         let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
         if !cancelled
             && let Some(next) = apply_hex(*color, &edit.buffer)
-            && next != *color
+            && (next != *color || mixed)
         {
             *color = next;
             out.changed = true;
