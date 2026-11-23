@@ -11,6 +11,7 @@ use std::process::Command;
 
 use moshionly_export::{
     Background, CancelToken, ExportError, Ffmpeg, Format, FrameRate, Quality, Settings,
+    availability_with,
 };
 
 /// Whether ffmpeg and ffprobe are both here; prints why not.
@@ -227,4 +228,49 @@ fn a_missing_ffmpeg_is_explained_before_anything_is_written() {
     assert!(error.to_string().contains("install ffmpeg"), "{error}");
     assert!(reports.is_empty());
     assert!(common::names_in(dir.path()).is_empty());
+}
+
+/// A shell script standing in for ffmpeg, in `dir`. Waits until the system
+/// lets it run: on Linux a script just written can briefly be "busy" while
+/// another test starts a program.
+#[cfg(unix)]
+fn stand_in(dir: &Path, script: &str) -> Ffmpeg {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("ffmpeg");
+    std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..50 {
+        match Command::new(&path).arg("-version").output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => break,
+        }
+    }
+    Ffmpeg::at(path)
+}
+
+#[test]
+#[cfg(unix)]
+fn an_ffmpeg_that_cannot_run_is_not_called_incomplete() {
+    // What Homebrew's ffmpeg does after an upgrade removed a library.
+    let dir = tempfile::tempdir().unwrap();
+    let broken = stand_in(
+        dir.path(),
+        "echo 'dyld[4242]: Library not loaded: /opt/homebrew/opt/x265/lib/libx265.215.dylib' >&2\n\
+         exit 134",
+    );
+    let reason = broken.check(Format::WebM).unwrap_err();
+    assert!(!reason.contains("built without"), "{reason}");
+    assert!(reason.contains("failed to run"), "{reason}");
+    assert!(reason.contains("134"), "{reason}");
+    assert!(reason.contains("Library not loaded"), "{reason}");
+    assert!(reason.contains("reinstall"), "{reason}");
+    let entries = availability_with(Some(&broken));
+    let prores = entries
+        .iter()
+        .find(|entry| entry.format == Format::ProRes)
+        .unwrap();
+    let missing = prores.missing.as_deref().unwrap();
+    assert!(missing.contains("Library not loaded"), "{missing}");
 }

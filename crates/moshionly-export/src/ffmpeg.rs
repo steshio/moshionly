@@ -39,6 +39,10 @@ const USUAL_PLACES: [&str; 5] = [
 /// How much of what `ffmpeg` prints on failure is kept for the message.
 const MESSAGE_BYTES: usize = 2000;
 
+/// How much of what a broken `ffmpeg` prints is kept when it cannot even
+/// list its encoders, for a menu to show beside a greyed-out format.
+const BROKEN_BYTES: usize = 400;
+
 /// An installed `ffmpeg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ffmpeg {
@@ -79,7 +83,9 @@ impl Ffmpeg {
             .and_then(|encoders| encoders.check(&self.path, format))
     }
 
-    /// The encoders this `ffmpeg` was built with.
+    /// The encoders this `ffmpeg` was built with, or why it could not say:
+    /// it cannot be started, or it starts and fails, for example because an
+    /// upgrade removed a library it needs.
     pub(crate) fn encoders(&self) -> Result<Encoders, String> {
         let output = Command::new(&self.path)
             .args(["-hide_banner", "-encoders"])
@@ -92,6 +98,21 @@ impl Ffmpeg {
                     INSTALL_HINT
                 )
             })?;
+        if !output.status.success() {
+            let said = String::from_utf8_lossy(&output.stderr);
+            let said = last_words(&said, BROKEN_BYTES);
+            let said = if said.is_empty() {
+                String::new()
+            } else {
+                format!(": {said}")
+            };
+            return Err(format!(
+                "{} failed to run ({}){said}; it may be damaged, so reinstall ffmpeg (on a Mac \
+                 with Homebrew: brew reinstall ffmpeg)",
+                self.path.display(),
+                output.status
+            ));
+        }
         let listing = String::from_utf8_lossy(&output.stdout);
         Ok(Encoders(
             listing
@@ -347,13 +368,9 @@ impl Running {
             .take()
             .and_then(|reader| reader.join().ok())
             .unwrap_or_default();
-        let said = said.trim();
+        let said = last_words(&said, MESSAGE_BYTES);
         let message = if !said.is_empty() {
-            let start = said.len().saturating_sub(MESSAGE_BYTES);
-            let start = (start..said.len())
-                .find(|at| said.is_char_boundary(*at))
-                .unwrap_or(said.len());
-            said[start..].to_owned()
+            said.to_owned()
         } else {
             match status.and_then(|status| status.code()) {
                 Some(code) => format!("ffmpeg stopped with exit code {code}"),
@@ -365,6 +382,17 @@ impl Running {
             message,
         }
     }
+}
+
+/// The end of what a program printed, at most `limit` bytes, without
+/// surrounding blank space.
+fn last_words(said: &str, limit: usize) -> &str {
+    let said = said.trim();
+    let start = said.len().saturating_sub(limit);
+    let start = (start..said.len())
+        .find(|at| said.is_char_boundary(*at))
+        .unwrap_or(said.len());
+    said[start..].trim_start()
 }
 
 impl Drop for Running {
@@ -439,6 +467,17 @@ mod tests {
         assert!(args.contains("-pix_fmt yuva444p10le"), "{args}");
         assert!(args.contains("-alpha_bits 16"), "{args}");
         assert!(args.contains("-f mov"), "{args}");
+    }
+
+    #[test]
+    fn only_the_last_words_are_kept() {
+        assert_eq!(last_words("  all is well \n", 100), "all is well");
+        assert_eq!(last_words("first line\nlast line", 9), "last line");
+        // Never in the middle of a character: "é" is two bytes.
+        assert_eq!(last_words("café", 1), "");
+        assert_eq!(last_words("café", 2), "é");
+        assert_eq!(last_words("café", 3), "fé");
+        assert_eq!(last_words("", 10), "");
     }
 
     #[test]
