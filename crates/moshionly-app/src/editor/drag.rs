@@ -4,6 +4,8 @@
 //! step. Each step is computed from where the drag started, never from the
 //! previous step.
 
+use std::sync::Arc;
+
 use egui::{Modifiers, Pos2, Rect, Vec2};
 use moshionly_core::{EditError, Family, NodeId, Point, build};
 
@@ -66,15 +68,37 @@ impl Editor {
     /// The selected nodes a drag works on: not locked (a locked artboard
     /// included), and not inside another selected node (which carries
     /// them along).
-    fn drag_items(&self) -> Vec<Item> {
+    fn drag_ids(&self) -> Vec<NodeId> {
         let ids = self.selection.ids();
         ids.iter()
             .filter(|id| {
                 !is_held(&self.document, id)
                     && !ids.iter().any(|other| self.document.is_ancestor(other, id))
             })
+            .cloned()
+            .collect()
+    }
+
+    /// The nodes a drag works on, as they are now.
+    fn drag_items(&self) -> Vec<Item> {
+        self.drag_ids()
+            .iter()
             .filter_map(|id| Item::of(&self.document, id))
             .collect()
+    }
+
+    /// Opens a gesture and gives the auto-sized text the drag works on the
+    /// box it is drawn in, so that the drag starts from what is on screen.
+    /// Returns false, with nothing changed, when that was refused.
+    fn begin_drag_gesture(&mut self, summary: &str) -> bool {
+        self.begin_gesture(summary);
+        let ids = self.drag_ids();
+        if self.settle(summary, &ids, false).is_err() {
+            let _ = self.cancel_gesture();
+            return false;
+        }
+        self.drag_start = Some(Arc::clone(&self.document));
+        true
     }
 
     /// What a drag of `items` snaps to: their artboards and every other
@@ -139,8 +163,15 @@ impl Editor {
             }
             self.selection
                 .set(ids.iter().filter_map(|id| copies.get(id).cloned()));
-        } else {
-            self.begin_gesture("Move");
+            let copied = self.drag_ids();
+            if self.settle("Duplicate", &copied, false).is_err() {
+                let _ = self.cancel_gesture();
+                return None;
+            }
+            // The copy is kept even where it was made.
+            self.drag_start = None;
+        } else if !self.begin_drag_gesture("Move") {
+            return None;
         }
         let items = self.drag_items();
         let Some(bounds) = bounds_of(&items) else {
@@ -158,34 +189,41 @@ impl Editor {
 
     /// Starts dragging a handle of the selection box. Opens the gesture.
     pub fn begin_handle(&mut self, handle: Handle, world: Pos2) -> Option<Drag> {
-        let items = self.drag_items();
-        if items.is_empty() {
+        if self.drag_items().is_empty() {
             return None;
         }
-        match handle {
-            Handle::Resize(anchor) => {
-                let from = box_of(&items)?;
+        let summary = match handle {
+            Handle::Resize(_) => "Resize",
+            Handle::Rotate(_) => "Rotate",
+        };
+        if !self.begin_drag_gesture(summary) {
+            return None;
+        }
+        let items = self.drag_items();
+        let drag = match handle {
+            Handle::Resize(anchor) => box_of(&items).map(|from| {
                 let targets = self.snap_targets(&items);
-                self.begin_gesture("Resize");
-                Some(Drag::Resize {
+                Drag::Resize {
                     anchor,
                     start: world,
                     items,
                     from,
                     targets,
-                })
-            }
+                }
+            }),
             Handle::Rotate(_) => {
                 let items: Vec<Item> = items.into_iter().filter(|item| !item.artboard).collect();
-                let pivot = box_of(&items)?.center;
-                self.begin_gesture("Rotate");
-                Some(Drag::Rotate {
+                box_of(&items).map(|pivot| Drag::Rotate {
                     start: world,
                     items,
-                    pivot: Pos2::new(pivot.x as f32, pivot.y as f32),
+                    pivot: Pos2::new(pivot.center.x as f32, pivot.center.y as f32),
                 })
             }
+        };
+        if drag.is_none() {
+            self.commit_gesture();
         }
+        drag
     }
 
     /// Applies one step of a drag with the pointer at `world`. Returns the
@@ -277,8 +315,17 @@ impl Editor {
         }
     }
 
-    /// Ends a drag: whatever it changed becomes one undo step.
+    /// Ends a drag: whatever it changed becomes one undo step. A drag that
+    /// changed nothing but the text it settled leaves no step at all.
     pub fn end_drag(&mut self) {
+        self.sync();
+        let unchanged = self
+            .drag_start
+            .take()
+            .is_some_and(|start| *start == *self.document);
+        if unchanged && self.cancel_gesture().is_ok() {
+            return;
+        }
         self.commit_gesture();
     }
 
@@ -491,6 +538,77 @@ mod tests {
         editor.selection.select(id("loose"));
         editor.nudge(vec2(10.0, 0.0)).unwrap();
         assert_eq!(frame(&editor, "loose").0, 710.0);
+    }
+
+    /// A text layer whose box hugs its words, at 100, 500.
+    fn hugging_text(editor: &mut Editor) -> NodeId {
+        let mut data = build::default_layer(moshionly_core::NodeType::Text).unwrap();
+        if let moshionly_core::model::NodeData::Text(text) = &mut data {
+            text.content = "Hello world this is text".to_owned();
+            text.layer.x = 100.0;
+            text.layer.y = 500.0;
+        }
+        let (text, edits) = build::add_layer(editor.document(), &id("ab"), data).unwrap();
+        editor.apply("Add text", &edits).unwrap();
+        editor.selection.select(text.clone());
+        text
+    }
+
+    #[test]
+    fn resizing_text_that_hugs_its_words_starts_from_what_is_shown() {
+        let mut editor = editor();
+        let text = hugging_text(&mut editor);
+        let shown = editor.box_of(&text).unwrap().bounds();
+        assert!(shown.width() > 150.0, "the words are wider than the hint");
+        // The right handle, where it is drawn, 5 to the right.
+        let handle = pos2(shown.right(), shown.center().y);
+        let drag = editor
+            .begin_handle(Handle::Resize(Anchor::Right), handle)
+            .unwrap();
+        editor
+            .drag_to(&drag, handle + vec2(5.0, 0.0), Modifiers::CTRL, 1.0)
+            .unwrap();
+        editor.end_drag();
+        let after = editor.box_of(&text).unwrap().bounds();
+        assert!(
+            (after.width() - (shown.width() + 5.0)).abs() < 0.5,
+            "{after:?}"
+        );
+        assert!((after.height() - shown.height()).abs() < 0.5, "no wrapping");
+        assert!((after.left() - shown.left()).abs() < 0.5);
+        // Dragging the side keeps the width and lets the height follow.
+        let node = editor.document().get(&text).unwrap();
+        let auto = crate::editor::inspect::text_of(node).unwrap().auto_size;
+        assert_eq!(auto, moshionly_core::model::AutoSize::Height);
+        // One step.
+        editor.undo().unwrap();
+        assert_eq!(editor.box_of(&text).unwrap().bounds(), shown);
+    }
+
+    #[test]
+    fn moving_and_turning_text_work_on_what_is_shown() {
+        let mut editor = editor();
+        let text = hugging_text(&mut editor);
+        let shown = editor.box_of(&text).unwrap().bounds();
+        // A move snaps the box that is drawn, not the hint in the file.
+        let drag = editor.begin_move(shown.center(), false).unwrap();
+        let Drag::Move { bounds, .. } = &drag else {
+            panic!("a move");
+        };
+        assert!((bounds.width() - shown.width()).abs() < 0.5, "{bounds:?}");
+        editor.end_drag();
+        // A turn pivots about the middle of what is drawn.
+        let drag = editor
+            .begin_handle(Handle::Rotate(Anchor::TopRight), shown.right_top())
+            .unwrap();
+        let Drag::Rotate { pivot, .. } = &drag else {
+            panic!("a turn");
+        };
+        assert!((*pivot - shown.center()).length() < 0.5, "{pivot:?}");
+        editor.end_drag();
+        // Nothing moved, and nothing is left to undo but adding the text.
+        assert_eq!(editor.box_of(&text).unwrap().bounds(), shown);
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Add text"));
     }
 
     #[test]

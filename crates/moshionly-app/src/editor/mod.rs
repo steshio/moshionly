@@ -12,6 +12,8 @@
 //! on their own:
 //!
 //! - [`assets`]: the image files a project uses, kept with its file.
+//! - [`settle`]: the box auto-sized text is drawn in, which moving,
+//!   resizing and grouping work on.
 //! - [`selection`]: what a click selects, groups and locks included.
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
 //! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
@@ -33,6 +35,7 @@ pub mod drag;
 pub mod inspect;
 pub mod pen;
 pub mod selection;
+pub mod settle;
 pub mod snap;
 pub mod text;
 pub mod timeline;
@@ -105,8 +108,14 @@ pub struct Editor {
     /// Draws, hit-tests and measures. Shared with the canvas workers.
     renderer: Renderer,
     scenes: HashMap<NodeId, CachedScene>,
+    /// Scenes at rest, for measuring text while the canvas shows another
+    /// moment, with the artboard version each is for.
+    rest_scenes: HashMap<NodeId, (u64, Option<Arc<Scene>>)>,
     /// For each artboard, the revision at which its content last changed.
     versions: HashMap<NodeId, u64>,
+    /// The document as a drag found it, once text was settled: a drag
+    /// that leaves it so makes no undo step.
+    drag_start: Option<Arc<Document>>,
     /// The project file images are found next to.
     project: Option<PathBuf>,
     /// The project file changed since [`take_project_change`](Self::take_project_change)
@@ -137,7 +146,9 @@ impl Editor {
             tool: Tool::default(),
             renderer,
             scenes: HashMap::new(),
+            rest_scenes: HashMap::new(),
             versions: HashMap::new(),
+            drag_start: None,
             project,
             project_changed: false,
         };
@@ -235,6 +246,8 @@ impl Editor {
             self.artboard = self.document.artboards().first().cloned();
         }
         self.scenes
+            .retain(|artboard, _| self.document.contains(artboard));
+        self.rest_scenes
             .retain(|artboard, _| self.document.contains(artboard));
         true
     }
