@@ -5,8 +5,8 @@
 //! the loopback address, and refuses any request that comes from a web
 //! page: agent command-line tools send no `Origin` header, browsers always
 //! do, so a request whose `Origin` is not this server's own is turned away
-//! before it is read. The `Host` header is checked too, which stops a web
-//! page from reaching the port under a domain name of its own (DNS
+//! before its body is read. The `Host` header is checked too, which stops a
+//! web page from reaching the port under a domain name of its own (DNS
 //! rebinding).
 //!
 //! Requests are answered with a single JSON response; the server never
@@ -30,9 +30,10 @@ use std::thread::JoinHandle;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use moshionly_core::NodeId;
 use serde_json::{Value, json};
@@ -122,6 +123,7 @@ impl HttpServer {
             server,
             imports,
             port: address.port(),
+            max_body_bytes: config.max_body_bytes,
             sessions: Mutex::new(Sessions::default()),
         });
         let app = router(state, config.max_body_bytes);
@@ -223,6 +225,7 @@ struct Shared {
     server: McpServer,
     imports: Option<ImportSink>,
     port: u16,
+    max_body_bytes: usize,
     sessions: Mutex<Sessions>,
 }
 
@@ -242,12 +245,13 @@ fn router(state: Arc<Shared>, max_body_bytes: usize) -> Router {
         .with_state(state)
 }
 
-/// Every method on `/mcp`.
+/// Every method on `/mcp`. The request is checked before its body is read,
+/// so a refused one costs nothing.
 async fn mcp(
     State(state): State<Arc<Shared>>,
     method: Method,
     headers: HeaderMap,
-    body: Bytes,
+    request: Request,
 ) -> Response {
     if let Some(refusal) = foreign_host(&headers, state.port) {
         return refusal;
@@ -266,7 +270,10 @@ async fn mcp(
         );
     }
     match method {
-        Method::POST => post(&state, &headers, &body).await,
+        Method::POST => match read_body(request).await {
+            Ok(body) => post(&state, &headers, &body).await,
+            Err(rejection) => rejection.into_response(),
+        },
         Method::DELETE => delete(&state, &headers),
         // Nothing is ever sent unasked, so there is no stream to open.
         _ => not_allowed("POST, DELETE"),
@@ -397,12 +404,14 @@ async fn health(State(state): State<Arc<Shared>>, method: Method, headers: Heade
     with_cors(response, origin.as_deref())
 }
 
-/// `POST /import`: a design from the Figma plugin.
+/// `POST /import`: a design from the Figma plugin. The request is checked
+/// before its body is read, and every answer to an allowed origin carries
+/// the CORS header, so the plugin can show why a design was refused.
 async fn import(
     State(state): State<Arc<Shared>>,
     method: Method,
     headers: HeaderMap,
-    body: Bytes,
+    request: Request,
 ) -> Response {
     let origin = match plugin_origin(&headers, state.port) {
         Ok(origin) => origin,
@@ -410,17 +419,62 @@ async fn import(
     };
     let response = match method {
         Method::OPTIONS => return preflight(&headers, origin.as_deref(), "POST, OPTIONS"),
-        Method::POST => receive(&state, &body),
+        Method::POST => match read_body(request).await {
+            Ok(body) => {
+                // Checking a design is work for a while, so it runs off the
+                // async threads, as tool calls do.
+                let shared = Arc::clone(&state);
+                tokio::task::spawn_blocking(move || receive(&shared, &body))
+                    .await
+                    .unwrap_or_else(|_| {
+                        refuse(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Moshionly failed while reading the design. This is a bug in \
+                             Moshionly."
+                                .to_owned(),
+                        )
+                    })
+            }
+            Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => refuse(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "The design is larger than Moshionly takes ({}). Send fewer layers or \
+                     smaller images.",
+                    size_text(state.max_body_bytes)
+                ),
+            ),
+            Err(rejection) => refuse(
+                rejection.status(),
+                format!("The design could not be read: {}.", rejection.body_text()),
+            ),
+        },
         _ => not_allowed("POST, OPTIONS"),
     };
     with_cors(response, origin.as_deref())
 }
 
+/// The body of a request, read up to the server's size limit.
+async fn read_body(request: Request) -> Result<Bytes, BytesRejection> {
+    Bytes::from_request(request, &()).await
+}
+
+/// A refusal at `/import`, in the form the plugin reads.
+fn refuse(status: StatusCode, message: String) -> Response {
+    json_response(status, &json!({ "ok": false, "error": message }))
+}
+
+/// A size in bytes as a person reads it: `64 MB`, `512 KB`.
+fn size_text(bytes: usize) -> String {
+    const MB: usize = 1024 * 1024;
+    if bytes >= MB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
+}
+
 /// Checks a design and hands it to the app.
 fn receive(state: &Shared, body: &Bytes) -> Response {
-    let refuse = |status: StatusCode, message: String| {
-        json_response(status, &json!({ "ok": false, "error": message }))
-    };
     let Some(sink) = &state.imports else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,

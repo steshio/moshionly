@@ -298,6 +298,24 @@ fn get_has_no_stream_and_bad_bodies_are_refused() {
 }
 
 #[test]
+fn a_foreign_request_is_refused_before_its_body_is_read() {
+    // The body is over the limit: a request whose body was read first
+    // would be answered 413.
+    let (server, inbox, _) = start_with_imports_up_to(64);
+    let body = "x".repeat(200);
+    for (path, headers) in [
+        ("/mcp", [JSON, ("Origin", "https://evil.example")]),
+        ("/mcp", [JSON, ("Host", "evil.example:47821")]),
+        ("/import", [JSON, ("Origin", "https://evil.example")]),
+        ("/import", [JSON, ("Host", "evil.example")]),
+    ] {
+        let reply = send(&server, "POST", path, &headers, &body);
+        assert_eq!(reply.status, 403, "{path} {headers:?}");
+    }
+    assert!(inbox.try_recv().is_err());
+}
+
+#[test]
 fn health_says_what_is_running() {
     let server = start();
     let reply = send(&server, "GET", "/health", &[], "");
@@ -343,6 +361,17 @@ fn start_with_imports() -> (
     std::sync::mpsc::Receiver<crate::import::PendingImport>,
     crate::SessionHandle,
 ) {
+    start_with_imports_up_to(HttpConfig::default().max_body_bytes)
+}
+
+/// Like [`start_with_imports`], taking bodies up to `max_body_bytes`.
+fn start_with_imports_up_to(
+    max_body_bytes: usize,
+) -> (
+    HttpServer,
+    std::sync::mpsc::Receiver<crate::import::PendingImport>,
+    crate::SessionHandle,
+) {
     let session = demo_session();
     let tools = crate::Tools::new(session.clone(), crate::Host::new());
     let (sink, inbox) = ImportSink::new();
@@ -350,7 +379,7 @@ fn start_with_imports() -> (
         McpServer::new(tools),
         HttpConfig {
             port: 0,
-            ..HttpConfig::default()
+            max_body_bytes,
         },
         sink,
     )
@@ -429,6 +458,27 @@ fn a_bad_design_is_refused_with_a_reason_the_plugin_can_show() {
     let reply = send(&server, "POST", "/import", &[JSON], "[1, 2]");
     assert_eq!(reply.status, 400);
     assert!(reply.header("access-control-allow-origin").is_none());
+}
+
+#[test]
+fn a_design_too_large_is_refused_in_a_way_the_plugin_can_read() {
+    let (server, inbox, _) = start_with_imports_up_to(64);
+    let reply = send(
+        &server,
+        "POST",
+        "/import",
+        &[("Origin", "null"), JSON],
+        &envelope().to_string(),
+    );
+    assert_eq!(reply.status, 413);
+    assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
+    assert_eq!(reply.json()["ok"], false);
+    let error = reply.json()["error"].as_str().unwrap().to_owned();
+    assert!(
+        error.starts_with("The design is larger than Moshionly takes (1 KB)"),
+        "{error}"
+    );
+    assert!(inbox.try_recv().is_err());
 }
 
 #[test]
