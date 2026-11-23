@@ -209,6 +209,47 @@ pub(crate) async fn next_chunk(
     }
 }
 
+/// How long a short request, such as listing models, may take in all.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A complete, small response: its status, headers and body text.
+pub(crate) struct Fetched {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub body: String,
+}
+
+/// Sends a short request and reads the whole answer. Used for the calls
+/// that are not chat: listing models and checking a key.
+pub(crate) async fn fetch(
+    request: reqwest::RequestBuilder,
+    key: Option<&ApiKey>,
+) -> Result<Fetched, Failure> {
+    let exchange = async {
+        let response = request
+            .send()
+            .await
+            .map_err(|error| transport_failure(&error, key))?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| transport_failure(&error, key))?;
+        Ok(Fetched {
+            status,
+            headers,
+            body,
+        })
+    };
+    match tokio::time::timeout(FETCH_TIMEOUT, exchange).await {
+        Ok(result) => result,
+        Err(_) => Err(Failure::transient(AiError::network(
+            "the server took too long to answer",
+        ))),
+    }
+}
+
 /// Reads the body of an error response as text, up to a sensible size.
 pub(crate) async fn read_error_body(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
@@ -225,6 +266,13 @@ pub(crate) async fn read_error_body(mut response: reqwest::Response) -> String {
 /// The failure for a request that never got an HTTP answer: no connection,
 /// a timeout, a connection that broke half way.
 pub(crate) fn transport_failure(error: &reqwest::Error, key: Option<&ApiKey>) -> Failure {
+    if error.is_builder() {
+        // A key or address with characters that cannot go into a request.
+        return Failure::permanent(AiError::from_kind(
+            ErrorKind::InvalidRequest,
+            "the request could not be built; check the server address and the API key for stray characters",
+        ));
+    }
     // Without the URL: it is long, and a base URL can carry credentials.
     let mut message = error_chain(error);
     if error.is_timeout() {

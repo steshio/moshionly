@@ -17,18 +17,20 @@
 //! answer arrives as a stream of [`ChatEvent`]s that always ends with
 //! [`ChatEvent::Finished`].
 
+mod api;
 mod chat;
 mod cli;
 mod error;
 mod event;
-// The API providers that use this module arrive in the next commits.
-#[allow(dead_code)]
 mod http;
 mod paths;
 mod provider;
 pub mod redact;
 mod tool;
 
+pub use api::anthropic::{
+    ANTHROPIC_API_URL, ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_ID, Anthropic, AnthropicOptions, Effort,
+};
 pub use chat::{ChatMessage, ChatRequest, ImageData, McpEndpoint, Role};
 pub use cli::claude_code::{CLAUDE_CODE_ID, ClaudeCode, ClaudeCodeOptions};
 pub use cli::codex::{CODEX_ID, Codex, CodexOptions};
