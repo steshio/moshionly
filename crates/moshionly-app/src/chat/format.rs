@@ -58,7 +58,7 @@ pub fn parse(text: &str) -> Vec<Block> {
 
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
+        if opens_code_block(trimmed) {
             flush(&mut paragraph, &mut blocks);
             let mut code = Vec::new();
             for line in lines.by_ref() {
@@ -92,6 +92,14 @@ pub fn parse(text: &str) -> Vec<Block> {
     }
     flush(&mut paragraph, &mut blocks);
     blocks
+}
+
+/// True for a line that opens a code block: three or more backticks, then
+/// at most the name of a language. A line such as ```` ```x``` and more ````
+/// is ordinary text that starts with inline code.
+fn opens_code_block(line: &str) -> bool {
+    let info = line.trim_start_matches('`');
+    line.len() - info.len() >= 3 && !info.contains('`')
 }
 
 /// The text of a heading line, without its `#`s.
@@ -133,7 +141,7 @@ pub fn spans(text: &str) -> Vec<Span> {
     let mut rest = text;
     while let Some(next) = rest.chars().next() {
         let marked = match next {
-            '`' => enclosed(rest, "`").map(|(inner, after)| (Span::Code(inner.to_owned()), after)),
+            '`' => code_span(rest).map(|(inner, after)| (Span::Code(inner.to_owned()), after)),
             '*' if rest.starts_with("**") => {
                 enclosed(rest, "**").map(|(inner, after)| (Span::Bold(inner.to_owned()), after))
             }
@@ -154,8 +162,13 @@ pub fn spans(text: &str) -> Vec<Span> {
                 rest = after;
             }
             None => {
-                plain.push(next);
-                rest = &rest[next.len_utf8()..];
+                // A run of backticks that opens nothing stays as written.
+                let skip = match next {
+                    '`' => backticks(rest),
+                    _ => next.len_utf8(),
+                };
+                plain.push_str(&rest[..skip]);
+                rest = &rest[skip..];
             }
         }
     }
@@ -163,6 +176,31 @@ pub fn spans(text: &str) -> Vec<Span> {
         spans.push(Span::Plain(plain));
     }
     spans
+}
+
+/// When `text` starts with inline code: a run of backticks, some text and
+/// a run of as many backticks on the same line, such as `` `x` `` or
+/// ```` ```x``` ````. Returns that text and what follows.
+fn code_span(text: &str) -> Option<(&str, &str)> {
+    let ticks = backticks(text);
+    let body = &text[ticks..];
+    let mut from = 0;
+    while let Some(found) = body[from..].find('`') {
+        let start = from + found;
+        let run = backticks(&body[start..]);
+        if run == ticks {
+            let inner = &body[..start];
+            return (!inner.is_empty() && !inner.contains('\n'))
+                .then(|| (inner, &body[start + run..]));
+        }
+        from = start + run;
+    }
+    None
+}
+
+/// How many bytes of backticks `text` starts with.
+fn backticks(text: &str) -> usize {
+    text.len() - text.trim_start_matches('`').len()
 }
 
 /// When `text` starts with `marker`, some text, and `marker` again on the
@@ -176,7 +214,7 @@ fn enclosed<'a>(text: &'a str, marker: &str) -> Option<(&'a str, &'a str)> {
         return None;
     }
     let hugs = !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace);
-    if marker != "`" && !hugs {
+    if !hugs {
         return None;
     }
     Some((inner, &body[end + marker.len()..]))
@@ -277,5 +315,36 @@ mod tests {
             parse("```\nstill streaming"),
             vec![Block::Code("still streaming".into())]
         );
+    }
+
+    #[test]
+    fn a_line_that_starts_with_inline_code_is_not_a_code_block() {
+        assert_eq!(
+            parse("```opacity: 0``` fades it out.\nThen move it.\n\nAll done."),
+            vec![
+                Block::Paragraph(vec![
+                    Span::Code("opacity: 0".into()),
+                    plain(" fades it out.\nThen move it."),
+                ]),
+                Block::Paragraph(vec![plain("All done.")]),
+            ]
+        );
+        assert_eq!(
+            parse("```bash npm i```"),
+            vec![Block::Paragraph(vec![Span::Code("bash npm i".into())])]
+        );
+    }
+
+    #[test]
+    fn inline_code_closes_with_as_many_backticks_as_it_opened() {
+        assert_eq!(
+            spans("``a`b`` and `c`"),
+            vec![
+                Span::Code("a`b".into()),
+                plain(" and "),
+                Span::Code("c".into()),
+            ]
+        );
+        assert_eq!(spans("``half` open"), vec![plain("``half` open")]);
     }
 }
