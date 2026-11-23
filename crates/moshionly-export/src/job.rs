@@ -186,11 +186,10 @@ impl ExportJob {
 fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
     match cx.plan.format {
         Format::Png => png::write_still(cx, path),
-        format @ (Format::PngSequence
-        | Format::Gif
-        | Format::Mp4
-        | Format::WebM
-        | Format::ProRes) => Err(ExportError::NotWritten(format)),
+        Format::PngSequence => png::write_sequence(cx, path),
+        format @ (Format::Gif | Format::Mp4 | Format::WebM | Format::ProRes) => {
+            Err(ExportError::NotWritten(format))
+        }
     }
 }
 
@@ -229,6 +228,11 @@ impl<'a> Reporter<'a> {
             frames_done,
             frames_total: self.total,
         });
+    }
+
+    /// The cancellation token, for work that runs on other threads.
+    pub fn cancel_token(&self) -> &CancelToken {
+        self.cancel
     }
 
     /// Fails with [`ExportError::Cancelled`] once the export is cancelled.

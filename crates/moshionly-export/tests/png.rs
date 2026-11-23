@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 
 use moshionly_export::{
-    Background, CancelToken, ExportError, Format, Moment, Phase, Settings, SettingsError,
+    Background, CancelToken, ExportError, Format, FrameRate, Moment, Phase, Settings, SettingsError,
 };
 use moshionly_render::RenderOptions;
 
@@ -106,4 +106,92 @@ fn a_cancelled_or_refused_export_leaves_nothing() {
     assert!(matches!(result, Err(ExportError::Settings(_))));
     assert!(reports.is_empty(), "nothing starts with bad settings");
     assert!(common::names_in(dir.path()).is_empty());
+}
+
+#[test]
+fn a_sequence_holds_every_frame_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("frames");
+    let settings = Settings::default()
+        .with_scale(0.25)
+        .with_frame_rate(FrameRate::new(10, 1).unwrap())
+        .with_range(Some(300.0), Some(1300.0));
+    let job = common::job(Format::PngSequence, &folder, settings);
+    let (result, reports) = common::run(&job);
+    let exported = result.unwrap();
+    assert_eq!(exported.frames, 10);
+    assert_eq!(exported.duration_ms, Some(1000.0));
+    assert_eq!(exported.path, folder);
+    let names = common::names_in(&folder);
+    assert_eq!(names.len(), 10);
+    assert_eq!(names[0], "frame_0000.png");
+    assert_eq!(names[9], "frame_0009.png");
+    assert_eq!(
+        common::names_in(dir.path()),
+        ["frames"],
+        "no temporary folder is left"
+    );
+
+    // Progress counts every frame once, in order.
+    let rendered: Vec<u64> = reports
+        .iter()
+        .filter(|report| report.phase == Phase::Rendering)
+        .map(|report| report.frames_done)
+        .collect();
+    assert_eq!(rendered, (0..=10).collect::<Vec<_>>());
+
+    let options = RenderOptions::new().with_scale(0.25);
+    let mut bytes = 0;
+    for (index, name) in names.iter().enumerate() {
+        let file = fs::read(folder.join(name)).unwrap();
+        bytes += file.len() as u64;
+        let (width, height, pixels) = common::decode_png(&file);
+        assert_eq!((width, height), (270, 270));
+        let time = 300.0 + 100.0 * index as f64;
+        let expected = common::reference(Moment::At(time), &options);
+        assert!(
+            pixels == expected.to_unpremultiplied(),
+            "frame {index} at {time} ms"
+        );
+    }
+    assert_eq!(exported.bytes, bytes);
+}
+
+#[test]
+fn a_sequence_stops_when_cancelled_and_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("frames");
+    let settings = Settings::default().with_scale(0.25);
+    let job = common::job(Format::PngSequence, &folder, settings);
+    let cancel = CancelToken::new();
+    let mut last = 0;
+    let started = std::time::Instant::now();
+    let error = job
+        .run(
+            |progress| {
+                last = progress.frames_done;
+                if progress.frames_done == 3 {
+                    cancel.cancel();
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+    assert!(matches!(error, ExportError::Cancelled), "{error}");
+    assert!(last < 120, "stopped after {last} of 120 frames");
+    assert!(started.elapsed().as_secs() < 30);
+    assert!(
+        common::names_in(dir.path()).is_empty(),
+        "nothing is left behind"
+    );
+}
+
+#[test]
+fn a_sequence_never_writes_into_a_folder_with_files() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("keep.txt"), b"mine").unwrap();
+    let job = common::job(Format::PngSequence, dir.path(), Settings::default());
+    let (result, _) = common::run(&job);
+    assert!(matches!(result, Err(ExportError::FolderNotEmpty(_))));
+    assert_eq!(common::names_in(dir.path()), ["keep.txt"]);
 }

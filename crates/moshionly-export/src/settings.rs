@@ -425,6 +425,13 @@ impl Moments {
         }
     }
 
+    /// Every moment, in order.
+    pub fn to_vec(&self) -> Vec<Moment> {
+        (0..self.len())
+            .filter_map(|index| self.get(index))
+            .collect()
+    }
+
     /// The frame times of an animated export.
     pub fn frames(&self) -> Option<&FrameTimes> {
         match self {

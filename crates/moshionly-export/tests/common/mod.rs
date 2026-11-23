@@ -102,7 +102,9 @@ pub fn psnr(a: &[u8], b: &[u8]) -> f64 {
 
 /// The RGB of straight-alpha RGBA pixels, dropping alpha.
 pub fn rgb_of(rgba: &[u8]) -> Vec<u8> {
-    rgba.chunks_exact(4)
+    let (pixels, _) = rgba.as_chunks::<4>();
+    pixels
+        .iter()
         .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
         .collect()
 }
