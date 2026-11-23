@@ -185,14 +185,28 @@ pub fn drop_target(
 }
 
 /// The edits that move `ids` to where `drop` lands, keeping each layer
-/// where it is on the artboard. Layers dropped into themselves, and drops
-/// that make no sense, give no edits.
+/// where it is on the artboard. A layer inside another one being moved
+/// goes along with it. Layers dropped into themselves, artboards dragged
+/// together with layers, and drops that make no sense give no edits.
 pub fn drop_edits(document: &Document, ids: &[NodeId], drop: &Drop) -> Vec<Edit> {
-    let moving_artboards = ids.iter().any(|id| {
+    let mut moving: Vec<NodeId> = Vec::new();
+    for id in ids {
+        let carried = ids.iter().any(|other| document.is_ancestor(other, id));
+        if document.contains(id) && !carried && !moving.contains(id) {
+            moving.push(id.clone());
+        }
+    }
+    let is_artboard = |id: &NodeId| {
         document
             .get(id)
             .is_some_and(|n| n.node_type() == NodeType::Artboard)
-    });
+    };
+    let artboards = moving.iter().filter(|id| is_artboard(id)).count();
+    if artboards > 0 && artboards < moving.len() {
+        return Vec::new();
+    }
+    let moving_artboards = artboards > 0;
+    let ids = moving.as_slice();
     let Some((parent, place)) = drop_target(document, drop, moving_artboards) else {
         return Vec::new();
     };
@@ -380,6 +394,34 @@ mod tests {
             .apply(&drop_edits(&doc, &[id("ab")], &Drop::Below(id("ab2"))))
             .unwrap();
         assert_eq!(moved.artboards(), [id("ab2"), id("ab")]);
+    }
+
+    #[test]
+    fn a_layer_dragged_with_its_group_stays_in_it() {
+        let doc = document();
+        let id = |text: &str| NodeId::from(text);
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(
+                &doc,
+                &[id("card"), id("bg")],
+                &Drop::Below(id("ab2")),
+            ))
+            .unwrap();
+        assert_eq!(moved.children(&id("ab2"), Family::Layer), [id("card")]);
+        assert_eq!(moved.get(&id("bg")).unwrap().parent, Some(id("card")));
+        // The child first in the selection makes no difference.
+        let mut moved = doc.clone();
+        moved
+            .apply(&drop_edits(
+                &doc,
+                &[id("bg"), id("card")],
+                &Drop::Above(id("top")),
+            ))
+            .unwrap();
+        assert_eq!(moved.get(&id("bg")).unwrap().parent, Some(id("card")));
+        // Artboards and layers are not moved together.
+        assert!(drop_edits(&doc, &[id("ab2"), id("top")], &Drop::Below(id("ab"))).is_empty());
     }
 
     #[test]
