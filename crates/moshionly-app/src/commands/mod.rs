@@ -13,7 +13,7 @@
 mod palette;
 mod shortcut;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use egui::{Context, Event, Key, KeyboardShortcut, Modifiers};
 
@@ -69,6 +69,13 @@ const fn cmd(logical_key: Key) -> Option<KeyboardShortcut> {
 
 const fn shift(logical_key: Key) -> Option<KeyboardShortcut> {
     Some(KeyboardShortcut::new(Modifiers::SHIFT, logical_key))
+}
+
+const fn cmd_alt(logical_key: Key) -> Option<KeyboardShortcut> {
+    Some(KeyboardShortcut::new(
+        Modifiers::COMMAND.plus(Modifiers::ALT),
+        logical_key,
+    ))
 }
 
 const fn cmd_shift(logical_key: Key) -> Option<KeyboardShortcut> {
@@ -134,6 +141,10 @@ commands! {
     Deselect: Edit, "Deselect", None, key(Key::Escape);
     Group: Edit, "Group selection", Some(icons::FOLDER_SIMPLE), cmd(Key::G);
     Ungroup: Edit, "Ungroup", None, cmd_shift(Key::G);
+    BringToFront: Edit, "Bring to front", Some(icons::STACK), cmd_alt(Key::CloseBracket);
+    BringForward: Edit, "Bring forward", None, cmd(Key::CloseBracket);
+    SendBackward: Edit, "Send backward", None, cmd(Key::OpenBracket);
+    SendToBack: Edit, "Send to back", Some(icons::STACK_SIMPLE), cmd_alt(Key::OpenBracket);
 
     ZoomIn: View, "Zoom in", Some(icons::MAGNIFYING_GLASS_PLUS), cmd(Key::Plus);
     ZoomOut: View, "Zoom out", Some(icons::MAGNIFYING_GLASS_MINUS), cmd(Key::Minus);
@@ -187,6 +198,11 @@ impl CommandId {
 #[derive(Clone, Debug, Default)]
 pub struct CommandRegistry {
     disabled: HashSet<CommandId>,
+    /// Names that say more than the fixed one right now: "Undo Move".
+    labels: HashMap<CommandId, String>,
+    /// The text of the last paste event, which the platform hands over
+    /// with ⌘V.
+    pasted: Option<String>,
     /// Space is down and something else has already used it (see
     /// [`triggered`](Self::triggered)).
     space_spent: bool,
@@ -211,6 +227,32 @@ impl CommandRegistry {
         } else {
             self.disabled.insert(id);
         }
+    }
+
+    /// The name to show for `id` right now: the label set with
+    /// [`set_label`](Self::set_label), or the command's own name.
+    pub fn label(&self, id: CommandId) -> &str {
+        self.labels.get(&id).map_or(id.name(), String::as_str)
+    }
+
+    /// Gives a command a name that says more for now, such as "Undo Move",
+    /// or goes back to its own name with `None`.
+    pub fn set_label(&mut self, id: CommandId, label: Option<String>) {
+        match label {
+            Some(label) => {
+                self.labels.insert(id, label);
+            }
+            None => {
+                self.labels.remove(&id);
+            }
+        }
+    }
+
+    /// The text of the most recent paste event, taken once. The platform
+    /// sends the clipboard's text with ⌘V; a paste chosen from a menu has
+    /// none and must read the clipboard itself.
+    pub fn take_pasted(&mut self) -> Option<String> {
+        self.pasted.take()
     }
 
     /// The commands whose shortcuts were pressed this frame, in the order
@@ -259,11 +301,15 @@ impl CommandRegistry {
 
             // The platform turns ⌘X, ⌘C and ⌘V into clipboard events.
             if !typing {
+                let mut pasted = None;
                 input.events.retain(|event| {
                     let id = match event {
                         Event::Cut => CommandId::Cut,
                         Event::Copy => CommandId::Copy,
-                        Event::Paste(_) => CommandId::Paste,
+                        Event::Paste(text) => {
+                            pasted = Some(text.clone());
+                            CommandId::Paste
+                        }
                         _ => return true,
                     };
                     if self.is_enabled(id) {
@@ -271,6 +317,9 @@ impl CommandRegistry {
                     }
                     false
                 });
+                if pasted.is_some() {
+                    self.pasted = pasted;
+                }
             }
 
             // Space: a tap runs the command, a hold pans.
@@ -536,10 +585,24 @@ mod tests {
             frame(&ctx, &mut registry, vec![Event::Copy]),
             [CommandId::Copy]
         );
+        assert_eq!(registry.take_pasted(), None);
         assert_eq!(
             frame(&ctx, &mut registry, vec![Event::Paste("x".to_owned())]),
             [CommandId::Paste]
         );
+        assert_eq!(registry.take_pasted().as_deref(), Some("x"));
+        assert_eq!(registry.take_pasted(), None, "taken once");
+    }
+
+    #[test]
+    fn labels_say_more_than_names() {
+        let mut registry = CommandRegistry::new();
+        assert_eq!(registry.label(CommandId::Undo), "Undo");
+        registry.set_label(CommandId::Undo, Some("Undo Move".to_owned()));
+        assert_eq!(registry.label(CommandId::Undo), "Undo Move");
+        assert_eq!(registry.label(CommandId::Redo), "Redo");
+        registry.set_label(CommandId::Undo, None);
+        assert_eq!(registry.label(CommandId::Undo), "Undo");
     }
 
     #[test]

@@ -292,6 +292,11 @@ impl CanvasRenderer {
         self.pictures.get(artboard)
     }
 
+    /// The latest request for `artboard`.
+    pub fn requested(&self, artboard: &NodeId) -> Option<&RenderKey> {
+        self.requested.get(artboard)
+    }
+
     /// Forgets the pictures of artboards that are not in `document`.
     pub fn retain(&mut self, document: &Document) {
         self.pictures.retain(|id, _| document.contains(id));

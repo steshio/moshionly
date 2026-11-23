@@ -21,6 +21,8 @@ use crate::{
 pub struct TopBar<'a> {
     /// The project's name.
     pub project_name: &'a str,
+    /// Whether the project has changes that are not saved.
+    pub unsaved: bool,
     /// The canvas zoom, where 1 is 100%.
     pub zoom: f32,
     /// Whether the animation is playing.
@@ -84,6 +86,12 @@ pub fn top_bar(ui: &mut Ui, rect: Rect, bar: &TopBar<'_>) -> TopBarOutput {
     left.add_space(theme.space.sm);
 
     let file = caret_button(&mut left, bar.project_name, theme.title(), "Main menu");
+    if bar.unsaved {
+        let (dot, response) = left.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+        left.painter()
+            .circle_filled(dot.center(), 3.0, theme.color.text_secondary);
+        crate::widgets::tooltip(response, "Unsaved changes", None);
+    }
     Popup::menu(&file)
         .frame(popup_frame(&left))
         .gap(theme.space.xs)
@@ -184,7 +192,7 @@ fn command_button(ui: &mut Ui, id: CommandId, commands: &CommandRegistry) -> Res
     ui.add_enabled(
         commands.is_enabled(id),
         IconButton::new(id.icon().unwrap_or(icons::QUESTION))
-            .tooltip(id.name())
+            .tooltip(commands.label(id))
             .shortcut(&shortcut),
     )
 }

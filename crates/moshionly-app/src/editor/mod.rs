@@ -12,8 +12,18 @@
 //! on their own:
 //!
 //! - [`selection`]: what a click selects, groups and locks included.
+//! - [`view`]: where things are on the canvas, hit testing and marquees.
+//! - [`tree`]: the rows of the layer list.
+//! - [`timeline`]: the timeline's rows, from an artboard's animations.
+//! - [`describe`]: the names nodes are shown with.
+//! - [`inspect`]: reading properties across a selection, mixed or not.
 
+pub mod describe;
+pub mod inspect;
 pub mod selection;
+pub mod timeline;
+pub mod tree;
+pub mod view;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -49,7 +59,7 @@ impl Notifier {
 /// A scene kept for hit testing and selection boxes, with what it was
 /// evaluated for.
 struct CachedScene {
-    revision: u64,
+    version: u64,
     time: Option<f64>,
     scene: Option<Arc<Scene>>,
 }
@@ -80,6 +90,8 @@ pub struct Editor {
     /// Draws, hit-tests and measures. Shared with the canvas workers.
     renderer: Renderer,
     scenes: HashMap<NodeId, CachedScene>,
+    /// For each artboard, the revision at which its content last changed.
+    versions: HashMap<NodeId, u64>,
     /// The project file images are found next to.
     project: Option<PathBuf>,
 }
@@ -107,6 +119,7 @@ impl Editor {
             tool: Tool::default(),
             renderer,
             scenes: HashMap::new(),
+            versions: HashMap::new(),
             project,
         };
         editor.artboard = editor.document.artboards().first().cloned();
@@ -146,6 +159,15 @@ impl Editor {
         self.revision
     }
 
+    /// The revision at which the content of `artboard` last changed: what
+    /// its picture depends on.
+    pub fn artboard_version(&self, artboard: &NodeId) -> u64 {
+        self.versions
+            .get(artboard)
+            .copied()
+            .unwrap_or(self.revision)
+    }
+
     /// Catches up with the session: takes the newest document and lets go
     /// of selected and hovered nodes that no longer exist. Returns whether
     /// the document changed.
@@ -157,8 +179,19 @@ impl Editor {
         if revision == self.revision {
             return false;
         }
+        let previous = std::mem::replace(&mut self.document, document);
         self.revision = revision;
-        self.document = document;
+        // Artboards whose content did not change keep their version, so
+        // their pictures are not drawn again.
+        let mut versions = HashMap::new();
+        for artboard in self.document.artboards() {
+            let version = match self.versions.get(artboard) {
+                Some(version) if same_artboard(&previous, &self.document, artboard) => *version,
+                _ => revision,
+            };
+            versions.insert(artboard.clone(), version);
+        }
+        self.versions = versions;
         self.selection.retain_existing(&self.document);
         if self
             .hover
@@ -322,8 +355,9 @@ impl Editor {
     /// per revision and time. `None` when the artboard cannot be evaluated.
     pub fn scene(&mut self, artboard: &NodeId) -> Option<Arc<Scene>> {
         let time = self.view_time();
+        let version = self.artboard_version(artboard);
         if let Some(cached) = self.scenes.get(artboard)
-            && cached.revision == self.revision
+            && cached.version == version
             && cached.time == time
         {
             return cached.scene.clone();
@@ -338,13 +372,34 @@ impl Editor {
         self.scenes.insert(
             artboard.clone(),
             CachedScene {
-                revision: self.revision,
+                version,
                 time,
                 scene: scene.clone(),
             },
         );
         scene
     }
+}
+
+/// Whether an artboard and everything in it are the same in two documents.
+fn same_artboard(a: &Document, b: &Document, artboard: &NodeId) -> bool {
+    use moshionly_core::Family;
+    if a.get(artboard) != b.get(artboard) {
+        return false;
+    }
+    [Family::Layer, Family::Animation]
+        .into_iter()
+        .all(|family| {
+            let mut left = a.walk(artboard, family);
+            let mut right = b.walk(artboard, family);
+            loop {
+                match (left.next(), right.next()) {
+                    (None, None) => return true,
+                    (Some((_, x)), Some((_, y))) if x == y => {}
+                    _ => return false,
+                }
+            }
+        })
 }
 
 /// "Undo Move" from "Undo" and a step summarised as "Move".
@@ -433,6 +488,26 @@ mod tests {
         editor.undo().unwrap();
         assert_eq!(x(&editor), 0.0);
         assert_eq!(editor.undo_label(), None);
+    }
+
+    #[test]
+    fn artboards_keep_their_version_while_others_change() {
+        let mut editor = editor();
+        let first = editor.artboard().cloned().unwrap();
+        let (second, edits) =
+            build::add_artboard(editor.document(), "Scene 2", 500.0, 500.0).unwrap();
+        editor.apply("Add artboard", &edits).unwrap();
+        let before = editor.artboard_version(&first);
+        editor
+            .apply("Rename", &[Edit::set(second.clone(), "name", "Outro")])
+            .unwrap();
+        assert_eq!(editor.artboard_version(&first), before);
+        assert_eq!(editor.artboard_version(&second), editor.revision());
+        let rect = build::default_layer(moshionly_core::NodeType::Rect).unwrap();
+        let (_, edits) = build::add_layer(editor.document(), &first, rect).unwrap();
+        editor.apply("Add rectangle", &edits).unwrap();
+        assert_eq!(editor.artboard_version(&first), editor.revision());
+        assert!(editor.artboard_version(&second) < editor.revision());
     }
 
     #[test]

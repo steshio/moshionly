@@ -83,7 +83,7 @@ impl MoshionlyApp {
             .options_mut(|options| options.zoom_with_keyboard = false);
         let settings = Settings::load(cc.storage);
         theme::set_mode(&cc.egui_ctx, settings.theme);
-        let mut shell = Shell::new(settings);
+        let mut shell = Shell::untitled(settings);
         if cfg!(target_os = "macos") {
             shell.use_top_bar_as_title_bar(MAC_WINDOW_BUTTONS);
         }
@@ -101,7 +101,7 @@ impl MoshionlyApp {
             // document engine and the exporter.
             let chosen = match id {
                 CommandId::OpenProject => dialogs::open_project(),
-                CommandId::SaveAs => dialogs::save_project(self.shell.project_name()),
+                CommandId::SaveAs => dialogs::save_project(&self.shell.project_name()),
                 CommandId::ImportImage => {
                     dialogs::import_images().and_then(|paths| paths.into_iter().next())
                 }
@@ -129,7 +129,7 @@ impl eframe::App for MoshionlyApp {
         let output = self.shell.show(ui);
         self.handle(output);
 
-        let title = window_title(self.shell.project_name());
+        let title = window_title(&self.shell.project_name());
         if title != self.title {
             ui.ctx()
                 .send_viewport_cmd(ViewportCommand::Title(title.clone()));

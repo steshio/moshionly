@@ -1,9 +1,9 @@
 //! A tiny software rasteriser for rounded rectangles.
 //!
 //! The editor draws documents with the render crate. This module only exists
-//! for the two images the app shell makes on its own: the window icon and the
-//! artwork of the sample scene. It fills anti-aliased rounded rectangles
-//! (and, with a radius of half the size, circles) into an RGBA buffer.
+//! for the one image the app makes on its own: the window icon. It fills
+//! anti-aliased rounded rectangles (and, with a radius of half the size,
+//! circles) into an RGBA buffer.
 
 use egui::{Color32, Pos2, Rect, Vec2};
 
