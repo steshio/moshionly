@@ -1202,6 +1202,106 @@ fn tool_cursor(tool: Tool) -> CursorIcon {
 mod tests {
     use super::*;
 
+    fn demo_shell() -> Shell {
+        let demo = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../moshionly-core/examples/demo.moshi"
+        );
+        let session = SessionHandle::open(demo).expect("the demo opens");
+        let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+        Shell::headless(Settings::default(), session, renderer)
+    }
+
+    fn span(shell: &Shell, id: &str) -> (f64, f64) {
+        let document = shell.editor().document();
+        document
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .span()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_drag_of_several_bars_is_one_undo_step() {
+        let mut shell = demo_shell();
+        // A drag reports every moved bar each frame, then its end.
+        for delta in [100.0, 250.0, 300.0] {
+            for (key, start, end) in [("cardfade", 0.0, 500.0), ("cardslide", 0.0, 700.0)] {
+                shell.timeline_event(TimelineEvent::BarMoved {
+                    key: Key::new(key),
+                    start: start + delta,
+                    end: end + delta,
+                });
+            }
+        }
+        shell.timeline_event(TimelineEvent::EditFinished);
+        assert_eq!(span(&shell, "cardfade"), (300.0, 800.0));
+        assert_eq!(span(&shell, "cardslide"), (300.0, 1000.0));
+        assert!(!shell.editor().in_gesture());
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Move action")
+        );
+        shell.editor_mut().undo().unwrap();
+        assert_eq!(span(&shell, "cardfade"), (0.0, 500.0));
+        assert_eq!(span(&shell, "cardslide"), (0.0, 700.0));
+        assert_eq!(shell.editor().undo_label(), None);
+    }
+
+    #[test]
+    fn resizing_a_bar_and_the_scene_are_steps_of_their_own() {
+        let mut shell = demo_shell();
+        for end in [600.0, 900.0] {
+            shell.timeline_event(TimelineEvent::BarResized {
+                key: Key::new("cardfade"),
+                edge: crate::timeline::Edge::End,
+                start: 0.0,
+                end,
+            });
+        }
+        shell.timeline_event(TimelineEvent::EditFinished);
+        for duration in [5000.0, 6500.0] {
+            shell.timeline_event(TimelineEvent::DurationChanged { duration });
+        }
+        shell.timeline_event(TimelineEvent::EditFinished);
+        let artboard = NodeId::from("scene");
+        assert_eq!(
+            moshionly_core::eval::duration_of(shell.editor().document(), &artboard),
+            Some(6500.0)
+        );
+        assert_eq!(span(&shell, "cardfade"), (0.0, 900.0));
+        shell.editor_mut().undo().unwrap();
+        assert_eq!(
+            moshionly_core::eval::duration_of(shell.editor().document(), &artboard),
+            Some(4000.0)
+        );
+        assert_eq!(span(&shell, "cardfade"), (0.0, 900.0), "a step of its own");
+        shell.editor_mut().undo().unwrap();
+        assert_eq!(span(&shell, "cardfade"), (0.0, 500.0));
+    }
+
+    #[test]
+    fn selecting_bars_selects_their_layers_and_shows_the_animate_tab() {
+        let mut shell = demo_shell();
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("dotin"), Key::new("count")],
+        });
+        assert_eq!(
+            shell.editor().selection.ids(),
+            [NodeId::from("dot"), NodeId::from("raised")]
+        );
+        assert_eq!(shell.inspector_tab(), InspectorTab::Animate);
+        // A layer chosen elsewhere lets go of actions that are not its own.
+        shell.editor_mut().selection.select(NodeId::from("dot"));
+        shell.follow_selection();
+        assert_eq!(shell.editor().actions(), [NodeId::from("dotin")]);
+        // Delete then removes the action, not the layer.
+        shell.action_command(BarCommand::Delete);
+        assert!(!shell.editor().document().contains(&NodeId::from("dotin")));
+        assert!(shell.editor().document().contains(&NodeId::from("dot")));
+    }
+
     #[test]
     fn a_new_document_has_nothing_to_save() {
         let session = untitled_session();
