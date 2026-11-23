@@ -22,11 +22,11 @@ impl Availability {
 
 /// Every format, and whether it can be written right now.
 ///
-/// PNG, GIF and MP4 are built in and always available. WebM and ProRes need
-/// an `ffmpeg` with their encoders. It is looked for on every call, since
-/// it may be installed while the app runs; that runs `ffmpeg` once, which
-/// takes a few tens of milliseconds, so call this when a menu opens rather
-/// than every frame.
+/// PNG, GIF, MP4 and Lottie are built in and always available. WebM and
+/// ProRes need an `ffmpeg` with their encoders. It is looked for on every
+/// call, since it may be installed while the app runs; that runs `ffmpeg`
+/// once, which takes a few tens of milliseconds, so call this when a menu
+/// opens rather than every frame.
 pub fn availability() -> Vec<Availability> {
     availability_with(Ffmpeg::locate().as_ref())
 }
