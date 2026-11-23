@@ -63,7 +63,7 @@ pub struct PanelView<'a> {
     pub notice: Option<&'a str>,
 }
 
-/// The composer's height at its smallest, in points.
+/// The fewest lines the composer shows.
 const COMPOSER_MIN_ROWS: usize = 2;
 /// The most lines the composer grows to before it scrolls.
 const COMPOSER_MAX_ROWS: usize = 8;

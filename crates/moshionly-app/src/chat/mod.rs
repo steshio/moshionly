@@ -42,7 +42,9 @@
 //! ```
 //!
 //! While the panel is hidden, call [`Chat::poll`] once a frame instead, so
-//! a turn that is still running keeps reporting.
+//! a turn that is still running keeps reporting. When another document is
+//! opened, [`Chat::new_conversation`] starts the chat over, so the AI does
+//! not carry on about a file that is gone.
 //!
 //! The colours and sizes come from [`crate::theme`] through the `ui`, like
 //! every other widget of the app.
@@ -204,6 +206,15 @@ impl Chat {
         &mut self.draft
     }
 
+    /// Starts over with an empty conversation, stopping an answer that is
+    /// still arriving.
+    pub fn new_conversation(&mut self) {
+        self.controller.new_conversation();
+        self.images.clear();
+        self.attachments.clear();
+        self.notice = None;
+    }
+
     /// Attaches a picture to the next message.
     pub fn attach(&mut self, image: ImageData) {
         self.attachments.push(image);
@@ -305,12 +316,7 @@ impl Chat {
     fn perform(&mut self, action: PanelAction, inputs: &ChatInputs<'_>, output: &mut ChatOutput) {
         match action {
             PanelAction::Close => output.close = true,
-            PanelAction::NewChat => {
-                self.controller.new_conversation();
-                self.images.clear();
-                self.attachments.clear();
-                self.notice = None;
-            }
+            PanelAction::NewChat => self.new_conversation(),
             PanelAction::OpenSettings => self.open_settings(),
             PanelAction::Send(text) => {
                 // A refusal is shown as the notice; the text goes back in the box.
