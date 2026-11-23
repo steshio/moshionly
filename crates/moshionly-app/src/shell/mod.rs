@@ -42,6 +42,7 @@ use crate::{
         Editor,
         actions::ActionError,
         pen::Pen,
+        playback::{Playback, step_frames},
         text::TextEditing,
         timeline::{is_folder, timeline_groups},
         tree::TreeState,
@@ -61,7 +62,10 @@ pub struct Shell {
     inspector: InspectorState,
     toasts: Toasts,
     palette: Palette,
-    playing: bool,
+    /// The playhead tied to the clock while playing.
+    playback: Playback,
+    /// The window's clock, in seconds, as of this frame.
+    now: f64,
     looping: bool,
     snapping: bool,
     timeline: TimelineState,
@@ -179,7 +183,8 @@ impl Shell {
             inspector: InspectorState::default(),
             toasts: Toasts::default(),
             palette: Palette::default(),
-            playing: false,
+            playback: Playback::new(),
+            now: 0.0,
             looping: true,
             snapping: true,
             timeline: TimelineState::default(),
@@ -326,6 +331,7 @@ impl Shell {
             || self.renaming.is_some()
             || self.list_drag.is_some();
 
+        self.now = ctx.input(|i| i.time);
         self.editor.attach(&ctx);
         if self.editor.sync() {
             self.after_document_change();
@@ -353,7 +359,7 @@ impl Shell {
             recent: &recent,
             unsaved: self.editor.has_unsaved_changes(),
             zoom: self.camera.zoom,
-            playing: self.playing,
+            playing: self.playback.is_playing(),
             chat_open: self.settings.panels.chat_open,
             theme_mode: self.settings.theme,
             commands: &self.commands,
@@ -651,7 +657,8 @@ impl Shell {
                 .selected_group(selected_layer.as_ref())
                 .playhead(self.editor.playhead())
                 .duration(duration)
-                .playing(self.playing)
+                .playing(self.playback.is_playing())
+                .follow_playhead(self.playback.is_playing())
                 .looping(self.looping)
                 .snapping(self.snapping)
                 .show(ui, layout.timeline)
@@ -795,8 +802,8 @@ impl Shell {
             .artboard()
             .and_then(|id| moshionly_core::eval::duration_of(self.editor.document(), id))
             .unwrap_or(0.0);
+        self.playback.pause();
         self.editor.set_playhead(end);
-        self.playing = false;
     }
 
     /// Applies edits as one undo step, or says in a toast why not.
@@ -947,8 +954,19 @@ impl Shell {
                 self.editor.selection.clear();
                 self.editor.set_actions([]);
             }
-            CommandId::PlayPause => self.set_playing(!self.playing),
+            CommandId::PlayPause => self.set_playing(!self.playback.is_playing()),
             CommandId::JumpToStart => self.editor.set_playhead(0.0),
+            CommandId::JumpToEnd => self.jump_to_end(),
+            CommandId::PreviousFrame => self.step(-1),
+            CommandId::NextFrame => self.step(1),
+            CommandId::BackTenFrames => self.step(-10),
+            CommandId::AheadTenFrames => self.step(10),
+            CommandId::SwitchMode => {
+                self.inspector.tab = match self.inspector.tab {
+                    InspectorTab::Design => InspectorTab::Animate,
+                    InspectorTab::Animate => InspectorTab::Design,
+                };
+            }
             CommandId::ToggleLoop => self.looping = !self.looping,
             CommandId::ZoomIn => self.camera.zoom_in(),
             CommandId::ZoomOut => self.camera.zoom_out(),
@@ -1027,30 +1045,50 @@ impl Shell {
     }
 
     /// Starts or stops playback. Playing shows the animation, so the
-    /// Animate tab comes forward.
+    /// Animate tab comes forward. Play at the end of the scene starts over.
     fn set_playing(&mut self, playing: bool) {
-        self.playing = playing;
         if playing {
+            let from = self
+                .playback
+                .play(self.now, self.editor.playhead(), self.scene_length());
+            self.editor.set_playhead(from);
             self.inspector.tab = InspectorTab::Animate;
+        } else {
+            self.playback.pause();
         }
     }
 
-    /// Moves the playhead on while playing. At the end of the scene it
-    /// wraps around when looping and stops otherwise.
-    fn advance_playback(&mut self, ctx: &Context) {
-        if !self.playing {
-            return;
-        }
-        let duration = self
-            .editor
+    /// The length of the current scene, in milliseconds.
+    fn scene_length(&self) -> f64 {
+        self.editor
             .artboard()
             .and_then(|id| moshionly_core::eval::duration_of(self.editor.document(), id))
-            .unwrap_or(0.0);
-        let elapsed = f64::from(ctx.input(|i| i.stable_dt)) * 1000.0;
-        let (time, playing) = played(self.editor.playhead(), elapsed, duration, self.looping);
+            .unwrap_or(0.0)
+    }
+
+    /// Pauses and moves the playhead `frames` frames on, or back for a
+    /// negative count.
+    fn step(&mut self, frames: i32) {
+        self.playback.pause();
+        let time = step_frames(self.editor.playhead(), frames, self.scene_length());
         self.editor.set_playhead(time);
-        self.playing = playing;
-        if playing {
+        self.inspector.tab = InspectorTab::Animate;
+    }
+
+    /// Moves the playhead on with the clock while playing. At the end of
+    /// the scene it starts over when looping and stops otherwise.
+    fn advance_playback(&mut self, ctx: &Context) {
+        if !self.playback.is_playing() {
+            return;
+        }
+        let tick = self.playback.tick(
+            self.now,
+            self.editor.playhead(),
+            self.scene_length(),
+            self.looping,
+        );
+        self.editor.set_playhead(tick.time);
+        if tick.playing {
             ctx.request_repaint();
         }
     }
@@ -1112,41 +1150,9 @@ fn tool_cursor(tool: Tool) -> CursorIcon {
     }
 }
 
-/// The time after playing on from `time` for `elapsed` milliseconds in a
-/// scene `duration` long, and whether playback goes on. Past the end, a loop
-/// wraps around; otherwise playback stops at the end.
-fn played(time: f64, elapsed: f64, duration: f64, looping: bool) -> (f64, bool) {
-    if duration <= 0.0 {
-        return (0.0, false);
-    }
-    // Pressing play at the end starts over.
-    let from = if time >= duration { 0.0 } else { time };
-    let next = from + elapsed.max(0.0);
-    if next < duration {
-        (next, true)
-    } else if looping {
-        (next % duration, true)
-    } else {
-        (duration, false)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn playback_runs_to_the_end_and_stops_or_loops() {
-        assert_eq!(played(1000.0, 16.0, 4000.0, false), (1016.0, true));
-        assert_eq!(played(3990.0, 16.0, 4000.0, false), (4000.0, false));
-        assert_eq!(played(3990.0, 16.0, 4000.0, true), (6.0, true));
-        // Play pressed at the end starts from the beginning.
-        assert_eq!(played(4000.0, 16.0, 4000.0, false), (16.0, true));
-        // A scene with no length cannot play.
-        assert_eq!(played(0.0, 16.0, 0.0, true), (0.0, false));
-        // A long stall wraps as many times as needed.
-        assert_eq!(played(0.0, 9000.0, 4000.0, true), (1000.0, true));
-    }
 
     #[test]
     fn a_new_document_has_nothing_to_save() {

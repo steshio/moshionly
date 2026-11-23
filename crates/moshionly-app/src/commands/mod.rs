@@ -155,9 +155,15 @@ commands! {
     ThemeLight: View, "Theme: light", Some(icons::SUN), None;
     ThemeDark: View, "Theme: dark", Some(icons::MOON), None;
     CommandPalette: View, "Command palette", Some(icons::COMMAND), cmd(Key::K);
+    SwitchMode: View, "Switch between Design and Animate", Some(icons::SWAP), key(Key::M);
 
     PlayPause: Playback, "Play or pause", Some(icons::PLAY), key(Key::Space);
     JumpToStart: Playback, "Jump to start", Some(icons::SKIP_BACK), key(Key::Home);
+    JumpToEnd: Playback, "Jump to end", Some(icons::SKIP_FORWARD), key(Key::End);
+    PreviousFrame: Playback, "Previous frame", Some(icons::CARET_LEFT), key(Key::Comma);
+    NextFrame: Playback, "Next frame", Some(icons::CARET_RIGHT), key(Key::Period);
+    BackTenFrames: Playback, "Back ten frames", Some(icons::CARET_DOUBLE_LEFT), shift(Key::Comma);
+    AheadTenFrames: Playback, "Ahead ten frames", Some(icons::CARET_DOUBLE_RIGHT), shift(Key::Period);
     ToggleLoop: Playback, "Loop playback", Some(icons::REPEAT), key(Key::L);
 
     ToolSelect: Tools, "Select", Some(icons::CURSOR), key(Key::V);

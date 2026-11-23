@@ -20,6 +20,7 @@
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
 //! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
 //! - [`drag`]: a drag of the selection as one undo step.
+//! - [`playback`]: the playhead tied to a clock while playing.
 //! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
 //!   typing text on the canvas.
 //! - [`clipboard`]: copying and pasting layers as Moshionly's JSON.
@@ -37,6 +38,7 @@ pub mod describe;
 pub mod drag;
 pub mod inspect;
 pub mod pen;
+pub mod playback;
 pub mod selection;
 pub mod settle;
 pub mod snap;

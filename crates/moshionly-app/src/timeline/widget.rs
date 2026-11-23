@@ -64,6 +64,7 @@ pub struct Timeline<'a> {
     playing: bool,
     looping: bool,
     snapping: bool,
+    follow: bool,
 }
 
 /// What [`Timeline::show`] reports back.
@@ -87,7 +88,15 @@ impl<'a> Timeline<'a> {
             playing: false,
             looping: false,
             snapping: true,
+            follow: false,
         }
+    }
+
+    /// Scrolls along with the playhead so it stays in view, a page at a
+    /// time: for playback.
+    pub fn follow_playhead(mut self, follow: bool) -> Self {
+        self.follow = follow;
+        self
     }
 
     /// The keys of the selected bars.
@@ -146,6 +155,7 @@ impl<'a> Timeline<'a> {
             playing,
             looping,
             snapping,
+            follow,
         } = self;
         let id = ui.make_persistent_id("timeline");
         let mut events = Vec::new();
@@ -183,6 +193,17 @@ impl<'a> Timeline<'a> {
             end,
         );
         clamp_scroll(state, &TimelineLayout::compute(rect, state, theme), content);
+        if follow && state.drag.is_none() {
+            let layout = TimelineLayout::compute(rect, state, theme);
+            let x = layout.scale.x(playhead);
+            state.scroll_x = scroll_to_follow(
+                state.scroll_x,
+                x,
+                layout.tracks.left(),
+                layout.tracks.right(),
+            );
+            clamp_scroll(state, &layout, content);
+        }
         let layout = TimelineLayout::compute(rect, state, theme);
         let s = layout.scale;
 
@@ -833,6 +854,20 @@ pub fn scroll_to_reveal(scroll: f32, view: f32, top: f32, bottom: f32) -> f32 {
     }
 }
 
+/// The horizontal scroll that keeps a playhead at `x` in view in tracks
+/// from `left` to `right`. Nothing moves while it is in view; when it runs
+/// off either side the view turns a page, so it lands near the left again.
+pub fn scroll_to_follow(scroll_x: f32, x: f32, left: f32, right: f32) -> f32 {
+    let width = (right - left).max(0.0);
+    let margin = (width * 0.05).min(24.0);
+    let landing = left + width * 0.1;
+    if x > right - margin || x < left {
+        (scroll_x + x - landing).max(0.0)
+    } else {
+        scroll_x
+    }
+}
+
 /// The size of everything that can be scrolled to: all rows, and time up to
 /// `end` plus half a view of empty room.
 fn content_size(layout: &TimelineLayout, rows: usize, end: f64) -> Vec2 {
@@ -1024,6 +1059,17 @@ mod tests {
         );
         assert_eq!(times_of(&groups, &Key::new("b1")), Some((200.0, 300.0)));
         assert_eq!(times_of(&groups, &Key::new("zz")), None);
+    }
+
+    #[test]
+    fn the_view_follows_the_playhead_a_page_at_a_time() {
+        // Tracks from 100 to 1100, scrolled to 0.
+        assert_eq!(scroll_to_follow(0.0, 600.0, 100.0, 1100.0), 0.0);
+        // Near the right edge: the playhead goes back to 10% in.
+        assert_eq!(scroll_to_follow(0.0, 1090.0, 100.0, 1100.0), 890.0);
+        // Gone off the left (a loop started over): back to the start.
+        assert_eq!(scroll_to_follow(890.0, 20.0, 100.0, 1100.0), 710.0);
+        assert_eq!(scroll_to_follow(50.0, -900.0, 100.0, 1100.0), 0.0);
     }
 
     #[test]

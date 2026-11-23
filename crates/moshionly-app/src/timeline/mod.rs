@@ -34,4 +34,6 @@ pub use scale::{
 };
 pub use snap::{Snapped, Snapper};
 pub use state::TimelineState;
-pub use widget::{Timeline, TimelineOutput, edge_zone, scroll_to_reveal, selection_after_click};
+pub use widget::{
+    Timeline, TimelineOutput, edge_zone, scroll_to_follow, scroll_to_reveal, selection_after_click,
+};
