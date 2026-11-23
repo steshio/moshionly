@@ -8,7 +8,7 @@ use egui::{Modifiers, Pos2, Rect, Vec2};
 use moshionly_core::{EditError, Family, NodeId, Point, build};
 
 use super::Editor;
-use super::selection::is_locked;
+use super::selection::is_held;
 use super::snap::{SnapTargets, snap_point, snap_rect};
 use super::transform::{
     Item, ResizeMode, WorldBox, angle, bounds_of, box_of, locked_to_axis, resize_edits, resized,
@@ -63,13 +63,14 @@ pub fn snaps(modifiers: Modifiers) -> bool {
 }
 
 impl Editor {
-    /// The selected nodes a drag works on: not locked, and not inside
-    /// another selected node (which carries them along).
+    /// The selected nodes a drag works on: not locked (a locked artboard
+    /// included), and not inside another selected node (which carries
+    /// them along).
     fn drag_items(&self) -> Vec<Item> {
         let ids = self.selection.ids();
         ids.iter()
             .filter(|id| {
-                !is_locked(&self.document, id)
+                !is_held(&self.document, id)
                     && !ids.iter().any(|other| self.document.is_ancestor(other, id))
             })
             .filter_map(|id| Item::of(&self.document, id))
@@ -468,6 +469,28 @@ mod tests {
             (110.0, 99.0)
         );
         assert_eq!(editor.undo_label().as_deref(), Some("Undo Nudge"));
+    }
+
+    #[test]
+    fn a_locked_artboard_stays_where_it_is() {
+        let mut editor = editor();
+        editor
+            .apply("Lock", &[moshionly_core::Edit::set("ab", "locked", true)])
+            .unwrap();
+        editor.selection.select(id("ab"));
+        assert!(!editor.nudge(vec2(10.0, 0.0)).unwrap());
+        assert_eq!(frame(&editor, "ab").0, 0.0);
+        assert!(editor.begin_move(pos2(500.0, 500.0), false).is_none());
+        assert!(
+            editor
+                .begin_handle(Handle::Resize(Anchor::Right), pos2(1000.0, 500.0))
+                .is_none()
+        );
+        assert!(!editor.in_gesture());
+        // Its layers still move.
+        editor.selection.select(id("loose"));
+        editor.nudge(vec2(10.0, 0.0)).unwrap();
+        assert_eq!(frame(&editor, "loose").0, 710.0);
     }
 
     #[test]

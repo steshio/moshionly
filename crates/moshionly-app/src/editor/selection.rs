@@ -136,6 +136,18 @@ pub fn is_locked(document: &Document, id: &NodeId) -> bool {
         .any(locked)
 }
 
+/// Whether `id` stays where it is when the selection is moved, resized or
+/// turned: it is locked itself (an artboard too), or something above it
+/// below the artboard is. A locked artboard holds only itself: its layers
+/// can still be picked and moved.
+pub fn is_held(document: &Document, id: &NodeId) -> bool {
+    let own = document
+        .get(id)
+        .and_then(|node| node.layer())
+        .is_some_and(|layer| layer.locked);
+    own || is_locked(document, id)
+}
+
 /// Whether `id` or anything above it below the artboard is hidden: it is
 /// not drawn, so nothing on the canvas picks it.
 pub fn is_hidden(document: &Document, id: &NodeId) -> bool {
@@ -375,13 +387,17 @@ mod tests {
         assert_eq!(pick(&doc, &id("dot"), &[], Pick::Normal), None);
         assert_eq!(pick(&doc, &id("dot"), &[], Pick::Deep), None);
         assert_eq!(pick(&doc, &id("bg"), &[], Pick::Normal), Some(id("card")));
-        // A locked artboard still lets its layers be picked.
+        // A locked artboard still lets its layers be picked, but holds
+        // itself in place.
         doc.apply(&[moshionly_core::Edit::set("ab2", "locked", true)])
             .unwrap();
         assert_eq!(
             pick(&doc, &id("other"), &[], Pick::Normal),
             Some(id("other"))
         );
+        assert!(is_held(&doc, &id("ab2")));
+        assert!(!is_held(&doc, &id("other")));
+        assert!(is_held(&doc, &id("dot")), "inside the locked badge");
     }
 
     #[test]

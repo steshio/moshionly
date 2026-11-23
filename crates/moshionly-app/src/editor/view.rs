@@ -152,7 +152,7 @@ impl Editor {
             // An artboard with nothing in it is picked by its inside.
             self.artboard_at(world).filter(|id| {
                 self.document.children(id, Family::Layer).is_empty()
-                    && !selection::is_locked(&self.document, id)
+                    && !selection::is_held(&self.document, id)
             })
         });
         if let Some(artboard) = self.artboard_at(world) {
@@ -375,6 +375,12 @@ pub(crate) mod tests {
         editor.click(pos2(900.0, 300.0), Modifiers::NONE, 1.0);
         assert!(editor.selection.is_empty());
         assert_eq!(editor.artboard(), Some(&id("ab")));
+        // Nor is a locked one.
+        editor
+            .apply("Lock", &[moshionly_core::Edit::set("ab2", "locked", true)])
+            .unwrap();
+        editor.click(pos2(1300.0, 200.0), Modifiers::NONE, 1.0);
+        assert!(editor.selection.is_empty());
     }
 
     #[test]
