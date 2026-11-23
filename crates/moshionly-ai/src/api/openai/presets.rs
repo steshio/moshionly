@@ -12,7 +12,7 @@ pub struct OpenAiPreset {
     /// The name shown to the user.
     pub name: &'static str,
     /// The address requests go to, up to and including the version segment.
-    /// Empty for [`CUSTOM`], where the user supplies it.
+    /// Empty for the `custom` preset, where the user supplies it.
     pub base_url: &'static str,
     /// The service refuses requests without an API key.
     pub needs_api_key: bool,

@@ -16,6 +16,62 @@
 //! A turn is one call to [`ChatProvider::send`] with a [`ChatRequest`]. The
 //! answer arrives as a stream of [`ChatEvent`]s that always ends with
 //! [`ChatEvent::Finished`].
+//!
+//! The app does not construct providers one by one. A [`ProviderRegistry`]
+//! joins the list of providers with the user's [`AiSettings`] and their API
+//! keys, which live in the OS keychain behind the [`KeyStore`] trait:
+//!
+//! ```no_run
+//! # use std::sync::Arc;
+//! use moshionly_ai::{
+//!     AiSettings, CancellationToken, ChatEvent, ChatRequest, McpEndpoint, ProviderRegistry,
+//!     choose_provider, event_channel,
+//! };
+//!
+//! # async fn demo(
+//! #     tools: Arc<dyn moshionly_ai::ToolExecutor>,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
+//! // The user's choices, and their keys in the OS keychain.
+//! let registry = ProviderRegistry::with_keychain(AiSettings::load().unwrap_or_default());
+//!
+//! // For a settings screen: every provider and whether it can be used now.
+//! let statuses = registry.statuses().await;
+//!
+//! // For the chat: the user's default, or else the first provider that is ready.
+//! let Some(chosen) = choose_provider(registry.settings(), &statuses) else {
+//!     return Ok(()); // nothing is ready; send the user to the settings screen
+//! };
+//! let provider = registry.provider(&chosen.info.id).await?;
+//!
+//! let request = ChatRequest {
+//!     system_prompt: Some("You edit motion designs.".to_owned()),
+//!     // Subscription providers reach the tools through the app's MCP server...
+//!     mcp: Some(McpEndpoint::new("moshionly", "http://127.0.0.1:47821/mcp")),
+//!     // ...and API providers call them in-process.
+//!     tools: Some(tools),
+//!     ..ChatRequest::from_prompt("Fade the title in over half a second")
+//! };
+//!
+//! let (events, mut receiver) = event_channel();
+//! let cancel = CancellationToken::new(); // cancel() stops the turn
+//! tokio::spawn(async move { provider.send(request, events, cancel).await });
+//!
+//! while let Some(event) = receiver.recv().await {
+//!     match event {
+//!         ChatEvent::TextDelta { text } => print!("{text}"),
+//!         ChatEvent::Error { message, .. } => eprintln!("{message}"),
+//!         ChatEvent::Finished { .. } => break,
+//!         _ => {}
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The crate README describes each provider, what has been verified against
+//! the real services, and how to add a provider.
+
+#![warn(missing_docs)]
 
 mod api;
 mod chat;
