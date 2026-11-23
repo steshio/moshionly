@@ -11,6 +11,13 @@
 //! [`TOOLS`].
 
 mod args;
+mod common;
+mod node;
+mod overview;
+mod query;
+mod schema;
+#[cfg(test)]
+pub(crate) mod testing;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -48,7 +55,6 @@ impl Default for ToolsConfig {
 }
 
 /// What a tool gets to work with.
-#[allow(dead_code)] // Read by the tools, which follow.
 pub(crate) struct Context<'a> {
     /// The document the tools read and edit.
     pub session: &'a SessionHandle,
@@ -72,11 +78,15 @@ pub(crate) struct ToolDef {
 
 /// Every tool, in the order they are listed to a model. The order is fixed
 /// so that clients can cache the list.
-const TOOLS: &[&ToolDef] = &[];
+const TOOLS: &[&ToolDef] = &[
+    &overview::GET_OVERVIEW,
+    &query::QUERY_NODES,
+    &node::GET_NODE,
+    &schema::GET_SCHEMA,
+];
 
 /// The JSON Schema of an input object with these properties, of which
 /// `required` have to be given. Other properties are refused.
-#[allow(dead_code)] // Used by the tools, which follow.
 pub(crate) fn input_schema(properties: Value, required: &[&str]) -> Value {
     json!({
         "type": "object",

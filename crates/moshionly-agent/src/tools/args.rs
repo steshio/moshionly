@@ -69,12 +69,14 @@ impl Args {
             } else {
                 format!("a field of \"{}\"", args.path)
             };
+            let takes = if allowed.is_empty() {
+                "It takes no arguments.".to_owned()
+            } else {
+                format!("It takes: {}.", allowed.join(", "))
+            };
             return Err(ToolError::argument(
                 args.field(unknown),
-                format!(
-                    "\"{unknown}\" is not {owner}.{hint} It takes: {}.",
-                    allowed.join(", ")
-                ),
+                format!("\"{unknown}\" is not {owner}.{hint} {takes}"),
             ));
         }
         Ok(args)
