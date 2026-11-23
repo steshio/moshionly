@@ -28,6 +28,7 @@ eframe = { version = "0.37", default-features = false, features = [
 ] }
 egui = "0.37"
 moshionly-agent = { version = "0.1.0", path = "../moshionly-agent" }
+moshionly-ai = { version = "0.1.0", path = "../moshionly-ai" }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
 rfd = "0.18"
