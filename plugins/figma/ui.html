@@ -313,6 +313,17 @@
     showStatus(text, tone);
   }
 
+  /**
+   * Drops a design waiting for "Copy now", with its notes and status, once
+   * the selection or the mode has changed: it no longer matches them.
+   */
+  function discardPrepared() {
+    if (!state.readyToCopy) return;
+    state.readyToCopy = null;
+    showNotes(null);
+    showStatus('');
+  }
+
   async function copyReady() {
     const ready = state.readyToCopy;
     const copied = await MoshionlyDelivery.copyText(ready.json, { document, navigator });
@@ -361,7 +372,11 @@
   view.send.addEventListener('click', () => begin('send'));
   view.copy.addEventListener('click', () => (state.readyToCopy ? copyReady() : begin('copy')));
   for (const input of document.querySelectorAll('input[name="mode"]')) {
-    input.addEventListener('change', () => post({ type: 'set-mode', mode: currentMode() }));
+    input.addEventListener('change', () => {
+      discardPrepared();
+      refreshButtons();
+      post({ type: 'set-mode', mode: currentMode() });
+    });
   }
 
   window.onmessage = async (event) => {
@@ -371,11 +386,16 @@
       case 'selection':
         state.empty = !message.summary || message.summary.empty;
         view.selection.textContent = describeSelection(message.summary);
+        discardPrepared();
         refreshButtons();
         break;
       case 'mode': {
         const input = document.querySelector('input[name="mode"][value="' + message.mode + '"]');
-        if (input) input.checked = true;
+        if (input && !input.checked) {
+          input.checked = true;
+          discardPrepared();
+          refreshButtons();
+        }
         break;
       }
       case 'progress': {

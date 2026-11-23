@@ -1,7 +1,8 @@
 'use strict';
 
 // The panel's delivery code, run outside a browser: sending to a stand-in
-// for the Moshionly app on a free port of this computer, and copying.
+// for the Moshionly app on a free port of this computer, and copying. The
+// whole panel also runs against a stand-in page, for its Copy button.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -173,4 +174,121 @@ test('sizes read well', () => {
   assert.equal(delivery.describeSize(5 * 1024), '5 KB');
   assert.equal(delivery.describeSize(3.25 * 1024 * 1024), '3.3 MB');
   assert.equal(delivery.byteLength('é'), 2);
+});
+
+/**
+ * Both of the panel's scripts from ui.html, run against a small stand-in
+ * for the page, where copying to the clipboard is not allowed.
+ */
+function loadPanel() {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'ui.html'), 'utf8');
+  const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), (match) => match[1]);
+  const element = (extra) =>
+    Object.assign(
+      {
+        textContent: '',
+        hidden: false,
+        disabled: false,
+        className: '',
+        style: {},
+        listeners: {},
+        addEventListener(type, listener) {
+          (this.listeners[type] = this.listeners[type] || []).push(listener);
+        },
+        fire(type) {
+          return Promise.all((this.listeners[type] || []).map((listener) => listener({})));
+        },
+        append() {},
+      },
+      extra,
+    );
+  const elements = new Map();
+  const radios = ['new_artboards', 'replace_matching'].map((value) => {
+    const radio = element({ value });
+    let checked = value === 'new_artboards';
+    Object.defineProperty(radio, 'checked', {
+      get: () => checked,
+      set: (on) => {
+        // Checking one radio button unchecks the others, as in a browser.
+        if (on) for (const other of radios) if (other !== radio) other.checked = false;
+        checked = on;
+      },
+    });
+    return radio;
+  });
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, element());
+      return elements.get(id);
+    },
+    querySelector(selector) {
+      if (selector.endsWith(':checked')) return radios.find((radio) => radio.checked) || null;
+      const value = selector.match(/value="([^"]*)"/);
+      return value ? radios.find((radio) => radio.value === value[1]) || null : null;
+    },
+    querySelectorAll: () => radios,
+    createElement: () => element(),
+    createTextNode: (text) => ({ text }),
+    addEventListener() {},
+    removeEventListener() {},
+    execCommand: () => false,
+  };
+  const posted = [];
+  const window = {};
+  const context = vm.createContext({
+    document,
+    navigator: {},
+    window,
+    parent: { postMessage: (data) => posted.push(JSON.parse(JSON.stringify(data.pluginMessage))) },
+    TextEncoder,
+    setTimeout,
+    clearTimeout,
+  });
+  vm.runInContext(scripts.join('\n'), context);
+  const view = (id) => document.getElementById(id);
+  return {
+    copy: view('copy'),
+    notes: view('notes'),
+    status: view('status'),
+    radios,
+    posted,
+    receive: (message) => window.onmessage({ data: { pluginMessage: message } }),
+  };
+}
+
+test('a design waiting for “Copy now” is dropped when the selection or the mode changes', async () => {
+  const panel = loadPanel();
+  const selection = (name) => ({ type: 'selection', summary: { count: 1, names: [name], more: 0, empty: false, sections: 0 } });
+  const prepare = async () => {
+    await panel.copy.fire('click');
+    assert.equal(panel.posted.at(-1).type, 'convert');
+    await panel.receive({ type: 'converted', purpose: 'copy', json: '{"nodes":[]}', layers: 1, notes: [{ layer_name: 'A', message: 'A note.' }] });
+    assert.equal(panel.copy.textContent, 'Copy now', 'the clipboard refused, so the design waits');
+    assert.equal(panel.notes.hidden, false);
+  };
+  const assertDropped = (why) => {
+    assert.equal(panel.copy.textContent, 'Copy', why);
+    assert.equal(panel.notes.hidden, true, why);
+    assert.equal(panel.status.textContent, '', why);
+  };
+
+  await panel.receive(selection('Frame A'));
+  await prepare();
+  await panel.receive(selection('Frame B'));
+  assertDropped('after the selection changed');
+  await panel.copy.fire('click');
+  assert.equal(panel.posted.at(-1).type, 'convert', 'Copy converts the new selection instead of copying the old design');
+
+  await panel.receive({ type: 'failed', purpose: 'copy', message: 'Stopped.' });
+  await prepare();
+  panel.radios[1].checked = true;
+  await panel.radios[1].fire('change');
+  assertDropped('after the mode changed in the panel');
+  assert.deepEqual(panel.posted.at(-1), { type: 'set-mode', mode: 'replace_matching' });
+
+  await prepare();
+  await panel.receive({ type: 'mode', mode: 'replace_matching' });
+  assert.equal(panel.copy.textContent, 'Copy now', 'the same mode again changes nothing');
+  await panel.receive({ type: 'mode', mode: 'new_artboards' });
+  assertDropped('after the plugin changed the mode');
 });

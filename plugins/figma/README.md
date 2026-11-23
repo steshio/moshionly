@@ -119,7 +119,7 @@ The plugin is plain JavaScript with no build step and no dependencies.
 |---|---|
 | `manifest.json` | What Figma reads. Network access is limited to the Moshionly app on this computer. |
 | `code.js` | Runs in Figma's sandbox. The first part converts nodes to Moshionly layers and only reads node properties, so it works on plain objects shaped like Figma nodes; the end of the file talks to Figma and the panel. |
-| `ui.html` | The panel. Its `delivery` script sends and copies the design, and is tested in Node. |
+| `ui.html` | The panel. Its `delivery` script sends and copies the design. Both its scripts are tested in Node, the panel against a stand-in page. |
 | `fixtures/` | Builders for Figma-like nodes, three whole designs, and the rules check (`check-layers.js` with `core-fields.json`). |
 | `test/` | `node --test` tests. |
 | `acceptance/` | A small Rust tool, outside the Cargo workspace, that checks output with Moshionly's own import code. |
