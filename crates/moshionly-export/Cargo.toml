@@ -13,9 +13,13 @@ authors.workspace = true
 gif = { version = "0.14", default-features = false, features = ["raii_no_panic", "std"] }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
+# Builds OpenH264 from source (BSD-2-Clause). See the README about patents.
+openh264 = "0.9"
 tempfile = "3"
 thiserror = "2"
 
 [dev-dependencies]
 gif = "0.14"
+# Reads written MP4 files back in tests.
+mp4 = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }

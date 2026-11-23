@@ -10,6 +10,7 @@ use crate::error::ExportError;
 use crate::format::Format;
 use crate::frames::FrameSource;
 use crate::gif;
+use crate::mp4;
 use crate::output::Output;
 use crate::png;
 use crate::progress::{CancelToken, Phase, Progress};
@@ -189,9 +190,8 @@ fn write(cx: &mut Context<'_>, path: &Path) -> Result<(), ExportError> {
         Format::Png => png::write_still(cx, path),
         Format::PngSequence => png::write_sequence(cx, path),
         Format::Gif => gif::write(cx, path),
-        format @ (Format::Mp4 | Format::WebM | Format::ProRes) => {
-            Err(ExportError::NotWritten(format))
-        }
+        Format::Mp4 => mp4::write(cx, path),
+        format @ (Format::WebM | Format::ProRes) => Err(ExportError::NotWritten(format)),
     }
 }
 

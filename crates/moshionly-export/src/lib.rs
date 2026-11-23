@@ -21,6 +21,7 @@ pub mod format;
 mod frames;
 mod gif;
 pub mod job;
+mod mp4;
 mod output;
 mod png;
 pub mod progress;
