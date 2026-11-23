@@ -222,6 +222,9 @@ pub(crate) fn menu_body(ui: &mut Ui, add_items: impl FnOnce(&mut Ui)) {
     add_items(ui);
 }
 
+/// The tallest a dropdown's list grows before it scrolls, in points.
+const MAX_LIST_HEIGHT: f32 = 360.0;
+
 /// A dropdown: a field showing the current choice that opens a list of all
 /// choices.
 ///
@@ -346,12 +349,17 @@ impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
             .close_behavior(PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
-                for (option, label) in self.options {
-                    let item = MenuItem::new(label).checked(*option == *self.value);
-                    if ui.add(item).clicked() {
-                        picked = Some(*option);
-                    }
-                }
+                // Long lists, such as the installed fonts, scroll.
+                egui::ScrollArea::vertical()
+                    .max_height(MAX_LIST_HEIGHT)
+                    .show(ui, |ui| {
+                        for (option, label) in self.options {
+                            let item = MenuItem::new(label).checked(*option == *self.value);
+                            if ui.add(item).clicked() {
+                                picked = Some(*option);
+                            }
+                        }
+                    });
             });
         if let Some(option) = picked
             && option != *self.value

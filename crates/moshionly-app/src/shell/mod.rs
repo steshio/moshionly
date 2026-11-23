@@ -384,6 +384,9 @@ impl Shell {
         if let Some(message) = inspected.error {
             self.toasts.push(Toast::error(message));
         }
+        if inspected.replace_image {
+            self.replace_image_dialog();
+        }
 
         self.advance_playback(&ctx);
         self.timeline_panel(ui, &layout);
@@ -462,6 +465,33 @@ impl Shell {
             let paths: Vec<&std::path::Path> =
                 paths.iter().map(std::path::PathBuf::as_path).collect();
             self.import_images(&paths, None);
+        }
+    }
+
+    /// Asks for an image to show in the selected image layers instead.
+    fn replace_image_dialog(&mut self) {
+        let document = std::sync::Arc::clone(self.editor.document());
+        let images: Vec<NodeId> = self
+            .editor
+            .selection
+            .ids()
+            .iter()
+            .filter(|id| {
+                document
+                    .get(id)
+                    .is_some_and(|node| node.node_type() == moshionly_core::NodeType::Image)
+            })
+            .cloned()
+            .collect();
+        let Some(path) = self
+            .dialogs
+            .import_images()
+            .and_then(|paths| paths.into_iter().next())
+        else {
+            return;
+        };
+        if let Err(problem) = self.editor.replace_image(&images, &path) {
+            self.toasts.push(Toast::error(problem));
         }
     }
 

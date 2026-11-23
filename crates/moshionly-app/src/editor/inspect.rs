@@ -4,7 +4,7 @@
 //! all agree the inspector shows the value; when they differ it shows
 //! "Mixed", and setting a value sets it on every one of them.
 
-use moshionly_core::model::NodeData;
+use moshionly_core::model::{AutoSize, NodeData};
 use moshionly_core::{Document, Edit, Node, NodeId, NodeType};
 use serde_json::Value;
 
@@ -134,6 +134,17 @@ pub fn resize_all(nodes: &[&Node], value: f64, height: bool, keep_proportions: b
             if keep_proportions && old > 0.0 {
                 patch.insert(other_field.to_owned(), tidy(other * value / old).into());
             }
+            // Text that hugs its words stops hugging on the side set.
+            if let Some(text) = text_of(node) {
+                let sizing = match (text.auto_size, height || keep_proportions) {
+                    (AutoSize::WidthAndHeight, false) => Some("height"),
+                    (AutoSize::WidthAndHeight | AutoSize::Height, true) => Some("fixed"),
+                    _ => None,
+                };
+                if let Some(sizing) = sizing {
+                    patch.insert("auto_size".to_owned(), sizing.into());
+                }
+            }
             Some(Edit::update(node.id.clone(), patch))
         })
         .collect()
@@ -261,6 +272,25 @@ mod tests {
         let refs: Vec<&Node> = nodes.iter().collect();
         doc.apply(&resize_all(&refs, 50.0, true, false)).unwrap();
         assert_eq!(size(&doc, "a"), (400.0, 50.0));
+    }
+
+    #[test]
+    fn sizing_text_stops_it_hugging_its_words() {
+        let mut doc = document();
+        let text = doc.get(&NodeId::from("t")).unwrap().clone();
+        doc.apply(&resize_all(&[&text], 300.0, false, false))
+            .unwrap();
+        let sized = text_of(doc.get(&NodeId::from("t")).unwrap())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (sized.layer.width, sized.auto_size),
+            (300.0, AutoSize::Height)
+        );
+        let text = doc.get(&NodeId::from("t")).unwrap().clone();
+        doc.apply(&resize_all(&[&text], 80.0, true, false)).unwrap();
+        let sized = text_of(doc.get(&NodeId::from("t")).unwrap()).unwrap();
+        assert_eq!(sized.auto_size, AutoSize::Fixed);
     }
 
     #[test]

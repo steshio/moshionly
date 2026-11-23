@@ -397,6 +397,47 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// Copies an image file into the project's assets folder the way the
+    /// agent's `import_image` tool does, and returns the source to give an
+    /// image layer with the image's size in pixels.
+    pub fn import_file(&self, path: &Path) -> Result<(String, f64, f64), String> {
+        let file = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let tools = Tools::new(self.session.clone(), Host::new());
+        let output = tools.call("import_image", json!({ "source": path.to_string_lossy() }));
+        let text = output.joined_text();
+        if output.is_error {
+            return Err(format!("Could not use {file}: {}", first_sentence(&text)));
+        }
+        let result: Value =
+            serde_json::from_str(&text).map_err(|_| format!("Could not use {file}."))?;
+        match (
+            result["source"].as_str(),
+            result["width"].as_f64(),
+            result["height"].as_f64(),
+        ) {
+            (Some(source), Some(width), Some(height)) => Ok((source.to_owned(), width, height)),
+            _ => Err(format!("Could not use {file}.")),
+        }
+    }
+
+    /// Shows the image at `path` in the image layers `ids`, which keep
+    /// their boxes. One undo step.
+    pub fn replace_image(&mut self, ids: &[NodeId], path: &Path) -> Result<(), String> {
+        let (source, ..) = self.import_file(path)?;
+        let edits: Vec<Edit> = ids
+            .iter()
+            .map(|id| Edit::set(id.clone(), "source", source.clone()))
+            .collect();
+        self.apply("Replace image", &edits)
+            .map(|_| ())
+            .map_err(|error| error.problem.message)
+    }
+}
+
 /// `size` made smaller, keeping its proportions, until it fits in `room`.
 pub fn fitted(size: Vec2, room: Vec2) -> Vec2 {
     if size.x <= 0.0 || size.y <= 0.0 {

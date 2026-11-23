@@ -427,6 +427,10 @@ fn shell() {
     let size = vec2(1440.0, 900.0);
     for variant in Variant::ALL {
         let mut shell = demo_shell();
+        shell
+            .editor_mut()
+            .selection
+            .select(moshionly_core::NodeId::from("title"));
         let (path, image) = snapshot("shell", size, variant, move |ui| {
             shell.show(ui);
         });

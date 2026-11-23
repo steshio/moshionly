@@ -624,3 +624,85 @@ fn dragging_a_row_moves_the_layer_out_of_its_group() {
     let layer = dot.layer().unwrap();
     assert_eq!((layer.x, layer.y), (240.0 + 500.0, 340.0 + 300.0));
 }
+
+/// The first widget named `name` that is not a slider: a slider and its
+/// numeric field share a name.
+fn field<'h>(harness: &'h Harness<'_, Shell>, name: &'h str) -> egui_kittest::Node<'h> {
+    harness
+        .get_all_by_label(name)
+        .find(|node| node.accesskit_node().role() != egui::accesskit::Role::Slider)
+        .unwrap_or_else(|| panic!("no field named {name}"))
+}
+
+/// Types `text` into the numeric field named `name` and presses Enter.
+/// The field is clicked through accessibility, so it may be scrolled out of
+/// view.
+fn type_into(harness: &mut Harness<'_, Shell>, name: &str, text: &str) {
+    field(harness, name).click_accesskit();
+    harness.run();
+    field(harness, name).type_text(text);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+}
+
+#[test]
+fn the_inspector_edits_text_appearance_and_effects() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    type_into(&mut harness, "Font size", "80");
+    type_into(&mut harness, "Opacity", "50");
+    let document = harness.state().editor().document().clone();
+    let title = document.get(&NodeId::from("title")).unwrap();
+    let text = moshionly_app::editor::inspect::text_of(title).unwrap();
+    assert_eq!(text.font_size, 80.0);
+    assert_eq!(text.layer.opacity, 50.0);
+    // Nonsense is refused and changes nothing.
+    type_into(&mut harness, "Font size", "big");
+    let document = harness.state().editor().document().clone();
+    let text =
+        moshionly_app::editor::inspect::text_of(document.get(&NodeId::from("title")).unwrap())
+            .unwrap();
+    assert_eq!(text.font_size, 80.0);
+    // A shadow is added and its blur set.
+    harness.get_by_label("Add shadow").click_accesskit();
+    harness.run();
+    type_into(&mut harness, "Shadow blur", "20");
+    let document = harness.state().editor().document().clone();
+    let shadow = document
+        .get(&NodeId::from("title"))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .shadow
+        .unwrap();
+    assert_eq!(shadow.blur, 20.0);
+}
+
+#[test]
+fn mixed_values_show_as_mixed_and_set_every_layer() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    // The two texts differ in size: the field says so.
+    assert!(harness.query_by_label("Font size").is_some());
+    let field = harness.get_by_label("Font size");
+    assert_eq!(field.accesskit_node().value().as_deref(), None);
+    type_into(&mut harness, "Font size", "30");
+    let document = harness.state().editor().document().clone();
+    for id in ["title", "raised"] {
+        let text =
+            moshionly_app::editor::inspect::text_of(document.get(&NodeId::from(id)).unwrap())
+                .unwrap();
+        assert_eq!(text.font_size, 30.0, "{id}");
+    }
+}
