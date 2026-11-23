@@ -1,0 +1,10 @@
+{
+  "name": "moshionly-figma-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Figma plugin that sends a selection to Moshionly as editable layers",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}
