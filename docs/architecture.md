@@ -170,3 +170,7 @@ Artboards are drawn by evaluating and rendering on worker threads and showing th
 The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 
 All colours, spacing and type sizes come from one theme module so the look can be changed in one place.
+
+## Packaging
+
+`scripts/release-mac.sh` turns a release build into `Moshionly.app` and `Moshionly-<version>.dmg` in `dist/`. The bundle is assembled outside cargo: the script builds the `moshionly` binary for Apple silicon and macOS 11 or later, checks that it links only system libraries, draws `AppIcon.icns` with the app crate's `app_icon` example (the same mark as the window icon, on Apple's icon grid) and fills in `packaging/macos/Info.plist`. It then signs the app with the hardened runtime and no entitlements, has Apple notarize it, staples the ticket, and does the same for the `.dmg` that holds it. The signing identity and the `notarytool` profile come from the keychain and the environment (`MOSHIONLY_SIGN_IDENTITY`, `MOSHIONLY_NOTARY_PROFILE`), never from the repository. `--ad-hoc` makes the same bundle without an Apple account; CI builds it that way on every pull request.

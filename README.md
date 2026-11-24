@@ -32,9 +32,31 @@ There is nothing to keyframe and nothing breaks when you change the design later
 - **AI chat with the provider you choose**: use a subscription you already have through its command-line agent (Claude Code and others), or an API key for Anthropic, OpenAI or any OpenAI-compatible endpoint, including local models.
 - **Agent-ready**: a built-in MCP server gives any agent the same tools the built-in chat uses: read the file, apply edits atomically, take a screenshot, export.
 
+## Install on a Mac
+
+1. Get `Moshionly-<version>.dmg` from the [releases page](https://github.com/steshio/moshionly/releases), or from whoever shared it with you.
+2. Open it, and drag Moshionly onto the Applications folder next to it.
+3. Open Moshionly from Applications, Launchpad or Spotlight. The first time, macOS checks that you want to open an app from the internet: choose Open.
+
+Moshionly runs on Macs with Apple silicon (M1 and later). It is built for macOS 11 or later and tested on the latest macOS. Intel Macs are not supported (macOS 27 itself runs only on Apple silicon).
+
+Double-clicking a `.moshi` file does not open it in Moshionly yet: open projects from the File menu.
+
+The `moshionly` command line comes inside the app, for agents and scripts:
+
+```bash
+# Serve a project to an agent over MCP, for example with Claude Code
+claude mcp add moshionly -- /Applications/Moshionly.app/Contents/MacOS/moshionly mcp --save /path/to/project.moshi
+
+# Export without opening the window
+/Applications/Moshionly.app/Contents/MacOS/moshionly export project.moshi --out project.mp4
+```
+
+The agents button in the app shows the same command, with the full path.
+
 ## Getting started
 
-You need [Rust](https://rustup.rs) (stable). On macOS you also need the Xcode command line tools (`xcode-select --install`).
+To build and run Moshionly from the source code, you need [Rust](https://rustup.rs) (stable). On macOS you also need the Xcode command line tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/steshio/moshionly.git
@@ -71,6 +93,64 @@ cargo run --release -- mcp --save crates/moshionly-core/examples/demo.moshi
 
 Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`) to unlock ProRes and WebM export.
 
+## Build the Mac app yourself
+
+One command builds `Moshionly.app` and its installer, signs them, has Apple check them, and staples Apple's approval to both, so the app opens on other people's Macs without a warning:
+
+```bash
+scripts/release-mac.sh
+```
+
+It needs the same tools as [Getting started](#getting-started) (Rust and the Xcode command line tools), works from any folder, and takes a few minutes the first time. You get two things in `dist/` at the top of the repository:
+
+- `dist/Moshionly.app`, the app itself;
+- `dist/Moshionly-<version>.dmg`, the installer to give to people.
+
+Running it again replaces them. Before it builds anything, the script checks that everything it needs is in place and says in plain words what is missing. `scripts/release-mac.sh --help` lists the options:
+
+- `--skip-notarize` signs with your Developer ID but does not send the app to Apple. macOS will still warn people who download it.
+- `--ad-hoc` needs no Apple account at all (see below).
+- `--out <folder>` puts the results in another folder.
+
+### One-time signing setup
+
+This is for the maintainer who publishes releases. It needs a paid [Apple Developer Program](https://developer.apple.com/programs/) membership, and the certificate can only be created by the team's Account Holder.
+
+1. **Create a Developer ID Application certificate.** In Xcode: Xcode › Settings › Accounts, select your team, choose Manage Certificates, then + › Developer ID Application. (Or create it on [developer.apple.com](https://developer.apple.com/account/resources/certificates/list) with a certificate signing request from Keychain Access.) To check that it is in your keychain:
+
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+
+   The list should include a line with `Developer ID Application: <your name> (<your Team ID>)`.
+
+2. **Make an app-specific password** at [account.apple.com](https://account.apple.com), under Sign-In and Security › App-Specific Passwords. Apple's notary service uses it instead of your real password.
+
+3. **Save it for the notary tool**, once:
+
+   ```bash
+   xcrun notarytool store-credentials moshionly-notary --apple-id <your Apple ID> --team-id <your Team ID>
+   ```
+
+   It asks for the app-specific password and keeps it in your login keychain. Nothing goes into the repository. Your Team ID is the ten-character code shown in the certificate's name and under Membership details on developer.apple.com.
+
+The first time the script signs, macOS may ask for your login password so that `codesign` can use the certificate: choose Always Allow. If the script says Xcode's licence has not been accepted, run `sudo xcodebuild -license accept` once.
+
+The script finds the Developer ID certificate on its own. Two settings, from the environment, change what it uses:
+
+- `MOSHIONLY_SIGN_IDENTITY`: which certificate to sign with, by name or by the SHA-1 hash `security find-identity` shows. Needed only when your keychain has more than one Developer ID Application certificate.
+- `MOSHIONLY_NOTARY_PROFILE`: the name you gave `notarytool store-credentials`, if it is not `moshionly-notary`.
+
+### Without an Apple account
+
+Contributors who want to try the Mac app without a developer membership can build it with an ad-hoc signature, which needs no account:
+
+```bash
+scripts/release-mac.sh --ad-hoc
+```
+
+The app runs normally on the Mac that built it. On another Mac, macOS refuses to open it at first, because Apple has not checked it. To open it anyway: try to open it once, then go to System Settings › Privacy & Security, scroll down to the message about Moshionly, and choose Open Anyway.
+
 ## How the project is organised
 
 ```
@@ -82,6 +162,8 @@ crates/
   moshionly-ai       chat providers: subscriptions and API keys
   moshionly-app      the desktop editor
 plugins/figma        the Figma plugin
+packaging/macos      the Mac app's Info.plist template
+scripts/             release-mac.sh, which builds the Mac app and its installer
 docs/                architecture and file format
 ```
 
@@ -112,11 +194,12 @@ Done:
 - [x] Export: PNG, PNG sequence, GIF, MP4, WebM and ProRes (with ffmpeg), and Lottie
 - [x] Chat panel and AI settings in the editor
 - [x] Connect an agent to the open file, accept designs from Figma, and the `moshionly export` and `moshionly mcp` commands
+- [x] The Mac app: `Moshionly.app` and a `.dmg`, signed, notarized and stapled by one command
 
 Next:
 
 - [ ] Run the Figma plugin inside Figma and polish the round trip
-- [ ] Packaged macOS app (signed download)
+- [ ] Publish the signed `.dmg` with each release, and open `.moshi` files by double-clicking them
 - [ ] Components, video and audio layers, shader effects
 - [ ] Linux and Windows builds
 
