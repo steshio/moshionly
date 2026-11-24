@@ -9,6 +9,7 @@ mod canvas_panel;
 mod chat_panel;
 mod connect;
 mod edit_commands;
+mod export_dialog;
 mod files;
 mod inspector;
 mod layers_panel;
@@ -142,6 +143,8 @@ pub struct Shell {
     imports: VecDeque<PendingImport>,
     /// Where the design asked about would go.
     import_choice: ImportChoice,
+    /// The Export dialog, while it is open.
+    export: Option<export_dialog::ExportDialog>,
 }
 
 /// What [`Shell::show`] hands back to the app.
@@ -246,6 +249,7 @@ impl Shell {
             connect_open: false,
             imports: VecDeque::new(),
             import_choice: ImportChoice::NewArtboards,
+            export: None,
         }
     }
 
@@ -380,7 +384,8 @@ impl Shell {
             || self.renaming.is_some()
             || self.list_drag.is_some()
             || self.connect_open
-            || !self.imports.is_empty();
+            || !self.imports.is_empty()
+            || self.export.is_some();
 
         self.now = ctx.input(|i| i.time);
         self.editor.attach(&ctx);
@@ -506,6 +511,7 @@ impl Shell {
 
         requested.extend(self.palette.show(&ctx, &self.commands));
         self.connect_dialog(&ctx);
+        self.export_dialog(&ctx);
         self.import_dialog(&ctx);
         self.unsaved_prompt(&ctx);
         if !self.palette.is_open() {
@@ -1080,6 +1086,7 @@ impl Shell {
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
             CommandId::ConnectAgent => self.connect_open = true,
+            CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),

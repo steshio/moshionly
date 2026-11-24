@@ -118,7 +118,6 @@ impl MoshionlyApp {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
         for id in output.commands {
-            // TODO: export is connected by the export task.
             self.shell.toast(Toast::info(format!(
                 "\"{}\" is not available yet",
                 id.name().trim_end_matches('…')
