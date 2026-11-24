@@ -10,14 +10,18 @@
 //! The converter looks at the same moments many times, so scenes are kept,
 //! and the scenes it has not looked at for longest are forgotten first.
 //! Text is laid out once for each text and style: a scene evaluated again
-//! measures nothing again.
+//! measures nothing again. Layouts are kept the same way, up to a limit,
+//! so a text whose size, spacing or box animates, and so is laid out anew
+//! at most moments, cannot fill memory.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::rc::Rc;
 
+use moshionly_core::model::Font;
 use moshionly_core::scene::TextStyle;
-use moshionly_core::text::{TextLayout, TextRequest};
+use moshionly_core::text::{TextCluster, TextLayout, TextLine, TextRequest};
 use moshionly_core::{Document, NodeId, Scene, TextMeasurer, evaluate};
 
 use super::clock::Clock;
@@ -26,9 +30,9 @@ use super::clock::Clock;
 /// longest ago is forgotten.
 const KEPT: usize = 2048;
 
-/// How many different texts keep their layouts. A counter shows a new
-/// text for every value; past this many, texts are measured each time.
-const LAYOUTS_KEPT: usize = 4096;
+/// How much the kept text layouts may take, in bytes. Past it, the
+/// layouts looked at longest ago are forgotten first.
+const LAYOUTS_BUDGET: usize = 64 << 20;
 
 /// Scenes of one artboard by frame.
 pub(crate) struct Scenes<'a> {
@@ -149,50 +153,97 @@ impl<K: std::hash::Hash + Eq, V: Clone> Kept<K, V> {
     }
 }
 
-/// A text's layouts, each with the style and wrapping width it was laid
-/// out with.
-type LayoutsOfText = Vec<(TextStyle, Option<f64>, TextLayout)>;
+/// Everything a text is laid out from: the text, its style and its
+/// wrapping width, numbers to the bit.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct LayoutKey {
+    text: String,
+    family: String,
+    weight: u16,
+    italic: bool,
+    /// Font size, line height and letter spacing.
+    sizes: [u64; 3],
+    align: u8,
+    wrap: Option<u64>,
+}
+
+impl LayoutKey {
+    fn of(request: &TextRequest<'_>) -> Self {
+        // Every field by name, so that one added later is not missed.
+        let TextStyle {
+            font:
+                Font {
+                    family,
+                    weight,
+                    italic,
+                },
+            font_size,
+            line_height,
+            letter_spacing,
+            align,
+        } = request.style;
+        Self {
+            text: request.text.to_owned(),
+            family: family.clone(),
+            weight: *weight,
+            italic: *italic,
+            sizes: [
+                font_size.to_bits(),
+                line_height.to_bits(),
+                letter_spacing.to_bits(),
+            ],
+            align: *align as u8,
+            wrap: request.wrap_width.map(f64::to_bits),
+        }
+    }
+
+    /// Roughly what keeping `layout` for this key takes, in bytes.
+    fn size_with(&self, layout: &TextLayout) -> usize {
+        size_of::<(Self, TextLayout, usize, u64)>()
+            + self.text.capacity()
+            + self.family.capacity()
+            + layout.lines.capacity() * size_of::<TextLine>()
+            + layout.clusters.capacity() * size_of::<TextCluster>()
+    }
+}
 
 /// Text layouts by text, style and wrapping width: each text is laid out
-/// once, however many scenes show it.
+/// once, however many scenes show it, as long as there is room.
 struct Layouts<'a> {
     measurer: &'a dyn TextMeasurer,
-    kept: RefCell<HashMap<String, LayoutsOfText>>,
+    kept: Kept<LayoutKey, TextLayout>,
+    /// How much `kept` may take, in bytes.
+    budget: usize,
 }
 
 impl<'a> Layouts<'a> {
     fn new(measurer: &'a dyn TextMeasurer) -> Self {
         Self {
             measurer,
-            kept: RefCell::new(HashMap::new()),
+            kept: Kept::new(),
+            budget: LAYOUTS_BUDGET,
         }
     }
 }
 
 impl TextMeasurer for Layouts<'_> {
     fn measure(&self, request: &TextRequest<'_>) -> TextLayout {
-        if let Some(found) = self.kept.borrow().get(request.text).and_then(|layouts| {
-            layouts
-                .iter()
-                .find(|(style, wrap, _)| style == request.style && *wrap == request.wrap_width)
-        }) {
-            return found.2.clone();
+        let key = LayoutKey::of(request);
+        if let Some(layout) = self.kept.get(&key) {
+            return layout;
         }
         let layout = self.measurer.measure(request);
-        let mut kept = self.kept.borrow_mut();
-        if kept.len() < LAYOUTS_KEPT || kept.contains_key(request.text) {
-            kept.entry(request.text.to_owned()).or_default().push((
-                request.style.clone(),
-                request.wrap_width,
-                layout.clone(),
-            ));
-        }
+        let size = key.size_with(&layout);
+        self.kept.insert(key, layout.clone(), size, self.budget);
         layout
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use moshionly_core::MonospaceMeasurer;
+    use moshionly_core::model::TextAlign;
+
     use super::*;
 
     #[test]
@@ -224,5 +275,104 @@ mod tests {
         kept.insert(3, 3, 30, 100);
         assert_eq!(kept.get(&1), None, "the oldest and largest went");
         assert_eq!((kept.get(&2), kept.get(&3)), (Some(2), Some(3)));
+    }
+
+    /// A measurer that counts what it lays out.
+    #[derive(Default)]
+    struct Counting {
+        measured: Cell<usize>,
+    }
+
+    impl TextMeasurer for Counting {
+        fn measure(&self, request: &TextRequest<'_>) -> TextLayout {
+            self.measured.set(self.measured.get() + 1);
+            MonospaceMeasurer::default().measure(request)
+        }
+    }
+
+    fn style(font_size: f64) -> TextStyle {
+        TextStyle {
+            font: Font::default(),
+            font_size,
+            line_height: font_size * 1.2,
+            letter_spacing: 0.0,
+            align: TextAlign::Left,
+        }
+    }
+
+    #[test]
+    fn each_text_and_style_is_laid_out_once() {
+        let measurer = Counting::default();
+        let layouts = Layouts::new(&measurer);
+        let measure = |text: &str, style: &TextStyle, wrap_width: Option<f64>| {
+            layouts.measure(&TextRequest {
+                text,
+                style,
+                wrap_width,
+            })
+        };
+        let plain = style(20.0);
+        let first = measure("Launch", &plain, None);
+        assert_eq!(measure("Launch", &plain, None), first);
+        assert_eq!(measurer.measured.get(), 1);
+        // Any difference is laid out on its own.
+        let bold = TextStyle {
+            font: Font {
+                weight: 700,
+                ..Font::default()
+            },
+            ..plain.clone()
+        };
+        let spaced = TextStyle {
+            letter_spacing: 2.0,
+            ..plain.clone()
+        };
+        let centred = TextStyle {
+            align: TextAlign::Center,
+            ..plain.clone()
+        };
+        for (text, style, wrap) in [
+            ("Launch", &style(21.0), None),
+            ("Launch", &bold, None),
+            ("Launch", &spaced, None),
+            ("Launch", &centred, None),
+            ("Launch", &plain, Some(40.0)),
+            ("Launched", &plain, None),
+        ] {
+            measure(text, style, wrap);
+        }
+        assert_eq!(measurer.measured.get(), 7);
+        assert_eq!(measure("Launch", &plain, None), first);
+        assert_eq!(measurer.measured.get(), 7);
+    }
+
+    #[test]
+    fn layouts_of_a_style_that_animates_stay_within_their_budget() {
+        // A paragraph whose size changes at every moment looked at: each
+        // moment lays it out anew.
+        let measurer = Counting::default();
+        let mut layouts = Layouts::new(&measurer);
+        layouts.budget = 1 << 20;
+        let text = "Every letter of this paragraph rises into place. ".repeat(5);
+        let measure = |layouts: &Layouts<'_>, size: f64| {
+            layouts.measure(&TextRequest {
+                text: &text,
+                style: &style(size),
+                wrap_width: Some(300.0),
+            })
+        };
+        let sizes: Vec<f64> = (0..20_000)
+            .map(|step| 12.0 + f64::from(step) / 1000.0)
+            .collect();
+        for size in &sizes {
+            measure(&layouts, *size);
+            assert!(layouts.kept.size.get() <= layouts.budget);
+        }
+        assert_eq!(measurer.measured.get(), sizes.len());
+        // The latest are kept, the first forgotten.
+        measure(&layouts, sizes[sizes.len() - 1]);
+        assert_eq!(measurer.measured.get(), sizes.len());
+        measure(&layouts, sizes[0]);
+        assert_eq!(measurer.measured.get(), sizes.len() + 1);
     }
 }
