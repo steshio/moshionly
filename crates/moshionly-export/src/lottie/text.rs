@@ -44,6 +44,10 @@ use super::timeline::{places_for, tolerance};
 /// that letters above or left of the text box are not cut off.
 const SHIFT: f64 = 20_000.0;
 
+/// The warning for letters drawn as pictures, which Lottie text leaves out.
+const PICTURES_LEFT_OUT: &str = "has characters drawn as pictures, such as colour emoji; Lottie \
+                                 text is drawn as outlines, so they are left out.";
+
 /// Room left around each letter's outline in its composition, in pixels.
 const PAD: f64 = 2.0;
 
@@ -154,8 +158,66 @@ impl<'a> Converter<'a> {
     }
 
     /// The outlines of the letters of `content` in `range`, in the text
-    /// node's own space, drawn by the renderer.
+    /// node's own space, drawn by the renderer. Notes letters that the
+    /// renderer draws as pictures, which have no outlines and are left out.
     fn outlines(
+        &mut self,
+        node: &Node,
+        scene_node: &SceneNode,
+        content: &TextContent,
+        range: Range<usize>,
+    ) -> Vec<Contour> {
+        let contours = self.draw_outlines(node, scene_node, content, range.clone());
+        let text = content.text.get(range.clone()).unwrap_or_default();
+        if text.chars().any(may_be_picture) {
+            self.note_pictures(node, scene_node, content, range, &contours);
+        }
+        contours
+    }
+
+    /// Warns when a letter of `content` in `range` that can be a picture,
+    /// such as a colour emoji, has no outline: Skia's SVG canvas leaves
+    /// such glyphs out without a trace. A letter the fonts do not have is
+    /// drawn as a box, which has an outline and is exported as drawn.
+    /// `drawn` holds the outlines of the whole range.
+    fn note_pictures(
+        &mut self,
+        node: &Node,
+        scene_node: &SceneNode,
+        content: &TextContent,
+        range: Range<usize>,
+        drawn: &[Contour],
+    ) {
+        let layout = self.renderer.fonts().measure(&TextRequest {
+            text: &content.text,
+            style: &content.style,
+            wrap_width: content.wrap_width,
+        });
+        for letter in split(&content.text, &layout, TextSplit::Letters) {
+            if letter.start < range.start || letter.end > range.end {
+                continue;
+            }
+            let text = content.text.get(letter.start..letter.end);
+            if !text.unwrap_or_default().chars().any(may_be_picture) {
+                continue;
+            }
+            let empty = if letter.start == range.start && letter.end == range.end {
+                drawn.is_empty()
+            } else {
+                let alone = letter.start..letter.end;
+                self.draw_outlines(node, scene_node, content, alone)
+                    .is_empty()
+            };
+            if empty {
+                self.warnings.layer(node, PICTURES_LEFT_OUT);
+                return;
+            }
+        }
+    }
+
+    /// The outlines of the letters of `content` in `range`, as the
+    /// renderer draws them onto Skia's SVG canvas.
+    fn draw_outlines(
         &mut self,
         node: &Node,
         scene_node: &SceneNode,
@@ -205,11 +267,7 @@ impl<'a> Converter<'a> {
         let data = canvas.end();
         let text = String::from_utf8_lossy(data.as_bytes());
         if text.contains("<image") {
-            self.warnings.layer(
-                node,
-                "has characters drawn as pictures, such as colour emoji; Lottie text is drawn \
-                 as outlines, so they are left out.",
-            );
+            self.warnings.layer(node, PICTURES_LEFT_OUT);
         }
         svg::paths(&text)
             .into_iter()
@@ -865,6 +923,35 @@ fn json_round(frame: f64) -> f64 {
     super::json::round(frame, places::TIME)
 }
 
+/// Whether a character can be drawn as a picture rather than an outline:
+/// emoji, pictographs and the symbols that have emoji forms, and the
+/// selector that asks for the emoji form. Only letters with one of these
+/// are drawn apart to see whether they have outlines.
+fn may_be_picture(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x00A9
+            | 0x00AE
+            | 0x203C
+            | 0x2049
+            | 0x2122
+            | 0x2139
+            | 0x2190..=0x21FF
+            | 0x2300..=0x23FF
+            | 0x24C2
+            | 0x25A0..=0x27BF
+            | 0x2900..=0x297F
+            | 0x2B00..=0x2BFF
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0xFE0F
+            | 0x1F000..=0x1FAFF
+            | 0xE0020..=0xE007F
+    )
+}
+
 /// How fine a split is: letters are the finest.
 fn fineness(split: TextSplit) -> u8 {
     match split {
@@ -891,6 +978,16 @@ fn slot(start: f64, end: f64, stagger: f64, position: usize, count: usize) -> (f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_may_be_pictures_and_letters_are_not() {
+        for emoji in ["😀", "👍🏽", "❤️", "🇷🇼", "©"] {
+            assert!(emoji.chars().any(may_be_picture), "{emoji}");
+        }
+        for text in ["Launch day", "Ünïcødé", "日本語", "Привет", "  \n"] {
+            assert!(!text.chars().any(may_be_picture), "{text}");
+        }
+    }
 
     #[test]
     fn slots_fill_the_animation() {

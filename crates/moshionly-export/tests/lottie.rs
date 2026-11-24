@@ -15,6 +15,15 @@ use serde_json::Value;
 /// Exports `document` as Lottie with `settings` and returns the parsed
 /// file and what the export reported.
 fn export_document(document: Arc<Document>, settings: Settings) -> (Value, Exported) {
+    export_with_fonts(document, settings, FontLibrary::bundled())
+}
+
+/// Exports `document` as Lottie with `settings`, drawing text with `fonts`.
+fn export_with_fonts(
+    document: Arc<Document>,
+    settings: Settings,
+    fonts: FontLibrary,
+) -> (Value, Exported) {
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("animation.json");
     let artboard = document.artboards()[0].clone();
@@ -22,7 +31,7 @@ fn export_document(document: Arc<Document>, settings: Settings) -> (Value, Expor
         .with_project_file(common::demo_path())
         .with_settings(settings)
         .with_renderer(Renderer::new(
-            FontLibrary::bundled(),
+            fonts,
             AssetLoader::new(Some(common::demo_path())),
         ));
     let (result, reports) = common::run(&job);
@@ -939,4 +948,39 @@ fn colours_that_fade_take_few_keyframes() {
             );
         }
     }
+}
+
+#[test]
+fn colour_emoji_left_out_of_text_are_said() {
+    let nodes = r##",{"id":"smile","parent":"board","index":"a0","type":"text","name":"Smile",
+            "x":40,"y":40,"content":"Hi 😀","font_size":80,"fill":"#000000"}"##;
+    let document = document(1000.0, nodes);
+    let said = |fonts: FontLibrary| -> String {
+        let (_, exported) = export_with_fonts(document.clone(), Settings::default(), fonts);
+        exported.warnings.join("\n")
+    };
+    // The bundled fonts have no emoji and draw a box, which has an outline
+    // and is exported as drawn.
+    assert!(!said(FontLibrary::bundled()).contains("pictures"));
+
+    // A colour emoji font draws a picture, which Lottie text leaves out.
+    let renderer = Renderer::new(FontLibrary::with_system_fonts(), AssetLoader::default());
+    let artboard = document.artboards()[0].clone();
+    let scene = moshionly_core::evaluate(&document, &artboard, 0.0, renderer.fonts()).unwrap();
+    let frame = renderer
+        .render(&scene, &moshionly_render::RenderOptions::default())
+        .unwrap();
+    let colourful = frame.to_unpremultiplied().chunks(4).any(|pixel| {
+        let (low, high) = (pixel[..3].iter().min(), pixel[..3].iter().max());
+        high.unwrap() - low.unwrap() > 80
+    });
+    if !colourful {
+        eprintln!("skipped: this machine has no colour emoji font");
+        return;
+    }
+    let said = said(FontLibrary::with_system_fonts());
+    assert!(
+        said.contains("\"Smile\" has characters drawn as pictures, such as colour emoji"),
+        "{said}"
+    );
 }
