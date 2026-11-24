@@ -14,6 +14,7 @@
 //! | `layers` | The layer tree as Lottie layers; shapes and their paint |
 //! | `groups` | Null layers, precompositions, clips, masks and track mattes |
 //! | `text`, `svg` | Letters as outlines from the renderer, and pieces that move |
+//! | `poses` | How the pieces of a text move, worked out once per moment |
 //! | `images` | Pictures inside the file or beside it |
 //! | `effects` | Drop shadows and blurs |
 //! | `shapes`, `paint` | Outlines; fills and strokes in colours and gradients |
@@ -28,6 +29,7 @@ mod images;
 mod json;
 mod layers;
 mod paint;
+mod poses;
 mod props;
 mod scenes;
 mod shapes;
@@ -51,7 +53,7 @@ use clock::Clock;
 use fit::Animated;
 use images::Images;
 use json::{num, object, places};
-use layers::{Comp, Converter};
+use layers::{Comp, Converter, Step};
 use props::Transform;
 use scenes::Scenes;
 use timeline::Timeline;
@@ -89,10 +91,12 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
             message: "the planned artboard is missing".into(),
         })?;
     let scenes = Scenes::new(document, &artboard.id, cx.source.renderer.fonts(), clock);
+    let cancel = cx.reporter.cancel_token().clone();
     let timeline = Timeline {
         document,
         clock,
         scenes: &scenes,
+        cancel: &cancel,
     };
     cx.reporter.report(Phase::Rendering, 0);
 
@@ -102,11 +106,24 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         .max(1) as u64;
     let frames = cx.plan.frame_count();
     let mut converted = 0;
+    let mut reported = 0;
     let (warnings, images) = {
         let reporter = &mut cx.reporter;
-        let progress = Box::new(move || {
-            converted += 1;
-            reporter.report(Phase::Rendering, frames * converted.min(total) / total);
+        // Frames stand for the part of the layers converted, counting the
+        // part done of the layer being converted.
+        let progress = Box::new(move |step: Step| {
+            let done = match step {
+                Step::Layer => {
+                    converted += 1;
+                    converted as f64
+                }
+                Step::Part(part) => converted as f64 + part.clamp(0.0, 1.0),
+            };
+            let frames_done = (frames as f64 * done.min(total as f64) / total as f64) as u64;
+            if frames_done != reported {
+                reported = frames_done;
+                reporter.report(Phase::Rendering, frames_done);
+            }
             reporter.check()
         });
         let images = Images::new(cx.plan.lottie_images, cx.destination, cx.project_file);

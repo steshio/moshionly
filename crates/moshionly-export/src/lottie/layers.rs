@@ -43,9 +43,17 @@ impl Comp {
     }
 }
 
-/// Called after each layer is converted; fails when the export is
-/// cancelled.
-pub(crate) type Progress<'a> = Box<dyn FnMut() -> Result<(), ExportError> + 'a>;
+/// How far the conversion has come.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Step {
+    /// A layer is converted.
+    Layer,
+    /// This part of the layer being converted is done, from 0 to 1.
+    Part(f64),
+}
+
+/// Called as the conversion goes on; fails when the export is cancelled.
+pub(crate) type Progress<'a> = Box<dyn FnMut(Step) -> Result<(), ExportError> + 'a>;
 
 /// Turns the layers of an artboard into Lottie layers.
 pub(crate) struct Converter<'a> {
@@ -125,7 +133,7 @@ impl<'a> Converter<'a> {
         offset: [f64; 2],
     ) -> Result<(), ExportError> {
         if !self.is_ever_visible(&node.id) {
-            return (self.progress)();
+            return (self.progress)(Step::Layer);
         }
         match &node.data {
             NodeData::Rect(_) | NodeData::Ellipse(_) | NodeData::Star(_) | NodeData::Path(_) => {
@@ -148,7 +156,13 @@ impl<'a> Converter<'a> {
             // Artboards are never inside other layers.
             _ => {}
         }
-        (self.progress)()
+        (self.progress)(Step::Layer)
+    }
+
+    /// Reports that `part` of the layer being converted is done, from 0 to
+    /// 1, for layers that take long; fails when the export is cancelled.
+    pub fn step(&mut self, part: f64) -> Result<(), ExportError> {
+        (self.progress)(Step::Part(part))
     }
 
     /// Whether `layer` is shown at any moment of the export. Layers hidden

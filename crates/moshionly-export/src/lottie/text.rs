@@ -36,6 +36,7 @@ use super::fit::{Animated, Hints};
 use super::json::{num, object, places};
 use super::layers::{Comp, Converter, layer_start};
 use super::paint::{self, Role, Source};
+use super::poses::{Drawn, Poses};
 use super::props::{Position, Transform};
 use super::shapes::{Contour, Outline};
 use super::svg;
@@ -48,6 +49,10 @@ const SHIFT: f64 = 20_000.0;
 /// The warning for letters drawn as pictures, which Lottie text leaves out.
 const PICTURES_LEFT_OUT: &str = "has characters drawn as pictures, such as colour emoji; Lottie \
                                  text is drawn as outlines, so they are left out.";
+
+/// The part of a text layer's progress that drawing the outlines of its
+/// pieces takes; fitting their keyframes takes the rest.
+const OUTLINING: f64 = 0.2;
 
 /// Room left around each letter's outline in its composition, in pixels,
 /// besides what its stroke needs.
@@ -87,10 +92,7 @@ impl<'a> Converter<'a> {
         let states = self.states(node, text);
         match states.as_slice() {
             [] => Ok(()),
-            [state] => {
-                self.add_still_text(node, state, comp, parent_index, offset);
-                Ok(())
-            }
+            [state] => self.add_still_text(node, state, comp, parent_index, offset),
             _ => self.add_counting_text(node, &states, comp, parent_index, offset),
         }
     }
@@ -286,11 +288,38 @@ impl<'a> Converter<'a> {
         comp: &mut Comp,
         parent_index: Option<i64>,
         offset: [f64; 2],
-    ) {
+    ) -> Result<(), ExportError> {
         let hints = self.timeline.hints(&node.id);
-        let transform = self.text_transform(node, &hints, offset, &state.node);
-        let paints = self.text_paints(node, &hints, &state.node);
         let effects = self.text_effects(&node.id);
+        let layout = self.renderer.fonts().measure(&TextRequest {
+            text: &state.content.text,
+            style: &state.content.style,
+            wrap_width: state.content.wrap_width,
+        });
+        // The pieces that move on their own, with their outlines; pieces
+        // without outlines, such as spaces, are left out.
+        let mut atoms = Vec::new();
+        if !effects.is_empty() {
+            let finest = effects
+                .iter()
+                .map(|effect| effect.animation.split)
+                .min_by_key(|split| fineness(*split))
+                .unwrap_or(TextSplit::Letters);
+            let all = split(&state.content.text, &layout, finest);
+            let count = all.len();
+            for (done, atom) in all.into_iter().enumerate() {
+                let contours =
+                    self.outlines(node, &state.node, &state.content, atom.start..atom.end);
+                if !contours.is_empty() {
+                    atoms.push((atom, contours));
+                }
+                self.step(OUTLINING * done as f64 / count as f64)?;
+            }
+        }
+        let starts = atoms.iter().map(|(atom, _)| atom.start).collect();
+        let poses = Poses::new(self.timeline.scenes, node.id.clone(), starts);
+        let transform = self.text_transform(node, &hints, offset, &state.node, &poses);
+        let paints = self.text_paints(node, &hints, &state.node, &poses);
         let mut shapes = Vec::new();
         if effects.is_empty() {
             let contours = self.outlines(
@@ -302,26 +331,11 @@ impl<'a> Converter<'a> {
             shapes.extend(static_paths(&contours));
             shapes.extend(paints.iter().cloned());
         } else {
-            let layout = self.renderer.fonts().measure(&TextRequest {
-                text: &state.content.text,
-                style: &state.content.style,
-                wrap_width: state.content.wrap_width,
-            });
-            let finest = effects
-                .iter()
-                .map(|effect| effect.animation.split)
-                .min_by_key(|split| fineness(*split))
-                .unwrap_or(TextSplit::Letters);
-            let atoms = split(&state.content.text, &layout, finest);
             let mut blurred = false;
             // Lottie draws the first group in front; the text reads
             // forward, and pieces do not overlap, so the order is free.
-            for atom in &atoms {
-                let contours =
-                    self.outlines(node, &state.node, &state.content, atom.start..atom.end);
-                if contours.is_empty() {
-                    continue;
-                }
+            let count = atoms.len();
+            for (index, (atom, contours)) in atoms.iter().enumerate() {
                 let mut atom_hints = Hints::default();
                 for effect in &effects {
                     let pieces = split(&state.content.text, &layout, effect.animation.split);
@@ -349,15 +363,17 @@ impl<'a> Converter<'a> {
                         effect.animation.timing.easing,
                     );
                 }
-                let (piece, blur) = self.piece_transform(&node.id, atom.start, &atom_hints);
+                let (piece, blur) = self.piece_transform(&poses, index, &atom_hints);
                 blurred |= blur;
-                let mut items = static_paths(&contours);
+                let mut items = static_paths(contours);
                 items.extend(paints.iter().cloned());
                 items.push(piece.to_group_item());
                 shapes.push(object([
                     ("ty", Value::from("gr")),
                     ("it", Value::Array(items)),
                 ]));
+                let done = (index + 1) as f64 / count as f64;
+                self.step(OUTLINING + (1.0 - OUTLINING) * done)?;
             }
             if blurred {
                 self.warnings.layer(
@@ -378,6 +394,7 @@ impl<'a> Converter<'a> {
         );
         self.add_effects(node, &mut layer);
         comp.layers.push(Value::Object(layer));
+        Ok(())
     }
 
     /// The `text_in` and `text_out` animations of a layer, in milliseconds.
@@ -406,13 +423,18 @@ impl<'a> Converter<'a> {
         hints: &Hints,
         offset: [f64; 2],
         rest: &SceneNode,
+        poses: &Poses<'_>,
     ) -> Transform {
         let id = &node.id;
         let timeline = self.timeline;
         let length = places_for(tolerance::LENGTH);
-        let drawn =
-            |frame: f64| text_node(timeline.scenes.at(frame).as_deref(), id).map(|(n, _)| n);
-        let box_center = |node: &SceneNode| {
+        let rest = Drawn {
+            transform: rest.transform,
+            width: rest.width,
+            height: rest.height,
+        };
+        let drawn = |frame: f64| poses.at(frame).drawn;
+        let box_center = |node: &Drawn| {
             node.transform
                 .apply(Point::new(node.width / 2.0, node.height / 2.0))
         };
@@ -427,7 +449,7 @@ impl<'a> Converter<'a> {
         // not drawn: as at the moment it was.
         let rest_frame = 0.0;
         let rest_shift = {
-            let measured = box_center(rest);
+            let measured = box_center(&rest);
             let stored = stored_center(rest_frame);
             [measured.x - stored.x, measured.y - stored.y]
         };
@@ -454,7 +476,7 @@ impl<'a> Converter<'a> {
             length,
         );
         let anchor = |frame: f64| {
-            let node = drawn(frame).unwrap_or_else(|| rest.clone());
+            let node = drawn(frame).unwrap_or(rest);
             vec![node.width / 2.0, node.height / 2.0]
         };
         Transform {
@@ -467,11 +489,17 @@ impl<'a> Converter<'a> {
     }
 
     /// The fill and stroke items of a text, to put in each of its groups.
-    fn text_paints(&mut self, node: &Node, hints: &Hints, rest: &SceneNode) -> Vec<Value> {
+    fn text_paints(
+        &mut self,
+        node: &Node,
+        hints: &Hints,
+        rest: &SceneNode,
+        poses: &Poses<'_>,
+    ) -> Vec<Value> {
         let id = &node.id;
         let timeline = self.timeline;
-        let size = |frame: f64| match text_node(timeline.scenes.at(frame).as_deref(), id) {
-            Some((node, _)) => (node.width, node.height),
+        let size = |frame: f64| match poses.at(frame).drawn {
+            Some(drawn) => (drawn.width, drawn.height),
             None => (rest.width, rest.height),
         };
         let fill_paint = |frame: f64| timeline.fill(id, frame);
@@ -535,47 +563,31 @@ impl<'a> Converter<'a> {
         items
     }
 
-    /// How one piece of text is moved, scaled and faded by its text
+    /// How piece `index` of `poses` is moved, scaled and faded by its text
     /// animations, and whether it is ever blurred.
-    fn piece_transform(&self, id: &NodeId, at: usize, hints: &Hints) -> (Transform, bool) {
+    fn piece_transform(&self, poses: &Poses<'_>, index: usize, hints: &Hints) -> (Transform, bool) {
         let timeline = self.timeline;
-        // The unit the piece belongs to: its transform and opacity. Pieces
-        // that no unit covers are not drawn at that moment.
-        let unit = |frame: f64| -> (Affine, f64, f64) {
-            match text_node(timeline.scenes.at(frame).as_deref(), id) {
-                Some((_, content)) => content
-                    .units
-                    .iter()
-                    .find(|unit| unit.start <= at && at < unit.end)
-                    .map_or((Affine::IDENTITY, 0.0, 0.0), |unit| {
-                        (unit.transform, unit.opacity, unit.blur)
-                    }),
-                None => (Affine::IDENTITY, 1.0, 0.0),
-            }
-        };
+        let piece = |frame: f64| poses.at(frame).pieces[index];
         let length = places_for(tolerance::LENGTH);
         let position = timeline.fit(
-            &|frame| {
-                let [_, _, _, _, e, f] = unit(frame).0.0;
-                vec![e, f]
-            },
+            &|frame| piece(frame).position.to_vec(),
             hints,
             tolerance::LENGTH,
             length,
         );
         let scale = timeline.fit(
-            &|frame| vec![unit(frame).0.0[0] * 100.0],
+            &|frame| vec![piece(frame).scale * 100.0],
             hints,
             tolerance::SCALE,
             places_for(tolerance::SCALE),
         );
         let opacity = timeline.fit(
-            &|frame| vec![unit(frame).1 * 100.0],
+            &|frame| vec![piece(frame).opacity * 100.0],
             hints,
             tolerance::OPACITY,
             places_for(tolerance::OPACITY),
         );
-        let blurred = self.survey.iter().any(|frame| unit(*frame).2 > 0.0);
+        let blurred = self.survey.iter().any(|frame| piece(*frame).blur > 0.0);
         let transform = Transform {
             position: Position::Joined(position),
             scale,

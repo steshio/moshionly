@@ -5,6 +5,8 @@ use moshionly_core::eval::{Property, PropertyValue, value_at};
 use moshionly_core::model::{CornerRadius, Paint, Stroke};
 use moshionly_core::{Document, Node, NodeData, NodeId};
 
+use crate::progress::CancelToken;
+
 use super::clock::Clock;
 use super::fit::{self, Animated, Hints, Track};
 use super::scenes::Scenes;
@@ -18,6 +20,8 @@ pub(crate) struct Timeline<'a> {
     pub clock: Clock,
     /// Evaluated scenes, for what only a scene knows.
     pub scenes: &'a Scenes<'a>,
+    /// Stops fitting once the export is cancelled.
+    pub cancel: &'a CancelToken,
 }
 
 /// How close keyframes keep to the true value, per kind of value.
@@ -144,6 +148,7 @@ impl<'a> Timeline<'a> {
             at,
             tolerance,
             places,
+            cancel: Some(self.cancel),
         };
         fit::fit(&track, hints, start, end)
     }

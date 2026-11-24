@@ -5,10 +5,13 @@ mod common;
 
 use std::fs;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use moshionly_core::eval::{Property, PropertyValue, value_at};
 use moshionly_core::{Document, Easing, NodeId, ease, io};
-use moshionly_export::{ExportJob, Exported, Format, FrameRate, LottieImages, Settings};
+use moshionly_export::{
+    CancelToken, ExportError, ExportJob, Exported, Format, FrameRate, LottieImages, Phase, Settings,
+};
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
 use serde_json::Value;
 
@@ -1040,4 +1043,122 @@ fn blurred_groups_keep_what_their_blur_draws_from() {
     let position = position(back, 0.0);
     assert_eq!(anchor[0].as_f64().unwrap() - position[0], reach);
     assert_eq!(anchor[1].as_f64().unwrap() - position[1], reach);
+}
+
+/// A paragraph of `letters` characters that comes in letter by letter
+/// over eight seconds, on an artboard ten seconds long, at 60 frames a
+/// second; and its text.
+fn long_text(letters: usize) -> (Arc<Document>, String) {
+    let words = "Every letter of this paragraph rises into place on its own ";
+    let text: String = words.chars().cycle().take(letters).collect();
+    let nodes = format!(
+        r##",{{"id":"para","parent":"board","index":"a0","type":"text","name":"Paragraph",
+            "x":50,"y":50,"width":900,"height":400,"auto_size":"height","content":"{text}",
+            "font_size":28,"fill":"#111111"}}
+        ,{{"id":"in","parent":"board","index":"a1","type":"text_in","target":"para",
+            "start":0,"end":8000,"effect":"slide_up","split":"letters","stagger":20}}"##
+    );
+    (document(10_000.0, &nodes), text)
+}
+
+#[test]
+fn long_text_that_comes_in_letter_by_letter_exports_quickly() {
+    // Each letter's keyframes are fitted from many moments; every moment
+    // is now evaluated once for all letters. This took minutes.
+    let (document, text) = long_text(288);
+    let settings = Settings::default().with_frame_rate(FrameRate::FPS_60);
+    let started = Instant::now();
+    let (lottie, exported) = export_document(document.clone(), settings);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(20), "took {took:?}");
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+
+    // A group per letter, which lands where Moshionly puts the letter.
+    let groups = layer(&lottie["layers"], "Paragraph")["shapes"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let letters: Vec<usize> = text
+        .char_indices()
+        .filter(|(_, c)| !c.is_whitespace())
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(groups.len(), letters.len());
+    let fonts = FontLibrary::bundled();
+    let artboard = document.artboards()[0].clone();
+    for step in 0..=1200 {
+        let frame = f64::from(step) / 2.0;
+        let scene =
+            moshionly_core::evaluate(&document, &artboard, frame * 1000.0 / 60.0, &fonts).unwrap();
+        let Some(moshionly_core::scene::Content::Text(content)) =
+            scene.find(&NodeId::from("para")).map(|node| &node.content)
+        else {
+            panic!("the text is drawn");
+        };
+        for (group, at) in groups.iter().zip(&letters) {
+            let unit = content
+                .units
+                .iter()
+                .find(|unit| unit.start <= *at && *at < unit.end);
+            let (opacity, [e, f]) = unit.map_or((0.0, [0.0, 0.0]), |unit| {
+                let [_, _, _, _, e, f] = unit.transform.0;
+                (unit.opacity * 100.0, [e, f])
+            });
+            let piece = group["it"].as_array().unwrap().last().unwrap();
+            let got = evaluate(&piece["o"], frame)[0];
+            assert!(
+                (got - opacity).abs() <= 0.08,
+                "letter at {at}, frame {frame}: opacity {got} instead of {opacity}"
+            );
+            if opacity > 0.0 {
+                let got = evaluate(&piece["p"], frame);
+                assert!(
+                    (got[0] - e).abs() <= 0.1 && (got[1] - f).abs() <= 0.1,
+                    "letter at {at}, frame {frame}: {got:?} instead of {e}, {f}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cancelling_stops_in_the_middle_of_a_long_text() {
+    let (document, _) = long_text(288);
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("animation.json");
+    let artboard = document.artboards()[0].clone();
+    let job = ExportJob::new(document, artboard, Format::Lottie, &destination)
+        .with_settings(Settings::default().with_frame_rate(FrameRate::FPS_60))
+        .with_renderer(Renderer::new(
+            FontLibrary::bundled(),
+            AssetLoader::default(),
+        ));
+    let token = CancelToken::new();
+    let mut cancelled: Option<(Instant, u64)> = None;
+    let mut after = 0;
+    let result = job.run(
+        |progress| {
+            if progress.phase != Phase::Rendering {
+                return;
+            }
+            match cancelled {
+                Some(_) => after += 1,
+                // The only layer is a third converted: its letters' keyframes
+                // are being fitted.
+                None if progress.frames_done * 3 >= progress.frames_total => {
+                    token.cancel();
+                    cancelled = Some((Instant::now(), progress.frames_done));
+                }
+                None => {}
+            }
+        },
+        &token,
+    );
+    let (at, done) = cancelled.expect("progress is reported within the layer");
+    let took = at.elapsed();
+    assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
+    assert!(done < 600, "cancelled before the layer was done, at {done}");
+    assert!(after <= 1, "{after} reports after cancelling");
+    assert!(took < Duration::from_secs(2), "took {took:?} to stop");
+    assert!(!destination.exists());
 }

@@ -20,12 +20,21 @@
 //!
 //! Every candidate is checked against the true value eight times a frame,
 //! after its numbers are rounded the way they are written, so nothing is
-//! taken on trust. Values that jump (a `show`, an animation that starts
-//! from a value of its own) get a hold keyframe up to the jump.
+//! taken on trust. Where no animation runs, a value is expected to hold;
+//! that it does is checked once a frame, and a value that does not hold
+//! after all is fitted like any other. Values that jump (a `show`, an
+//! animation that starts from a value of its own) get a hold keyframe up
+//! to the jump.
+//!
+//! A fit looks at the cancellation token every few dozen values it works
+//! out, and once the export is cancelled it ends at once with the value at
+//! its start, which is thrown away with the rest of the export.
 
 use std::collections::HashMap;
 
 use moshionly_core::{Easing, ease};
+
+use crate::progress::CancelToken;
 
 use super::json::{places, round};
 
@@ -162,6 +171,8 @@ pub(crate) struct Track<'a> {
     pub tolerance: f64,
     /// Decimals the values are written with.
     pub places: i32,
+    /// Ends the fit early once cancelled.
+    pub cancel: Option<&'a CancelToken>,
 }
 
 /// The most times a piece is split in two.
@@ -175,6 +186,9 @@ const CHECKS_PER_FRAME: f64 = 8.0;
 /// The part of the tolerance a fit may use where it is checked, leaving
 /// the rest for the moments between checks.
 const MARGIN: f64 = 0.75;
+/// How many values a fit works out between looks at the cancellation
+/// token.
+const VALUES_PER_CANCEL_CHECK: u32 = 64;
 
 /// Fits keyframes to `track` from frame `start` to frame `end`.
 pub(crate) fn fit(track: &Track<'_>, hints: &Hints, start: f64, end: f64) -> Animated {
@@ -198,10 +212,16 @@ pub(crate) fn fit(track: &Track<'_>, hints: &Hints, start: f64, end: f64) -> Ani
         track,
         hints,
         cache: HashMap::new(),
+        worked_out: 0,
+        stopped: false,
     };
+    let first = fitter.value(start);
     let mut keys = Vec::new();
     for pair in cuts.windows(2) {
         fitter.piece(pair[0], pair[1], 0, &mut keys);
+    }
+    if fitter.stopped {
+        return Animated::Static(first);
     }
     let last = fitter.before(end);
     let last = fitter.rounded(last);
@@ -211,6 +231,9 @@ pub(crate) fn fit(track: &Track<'_>, hints: &Hints, start: f64, end: f64) -> Ani
         ease: Ease::Hold,
     });
     let keys = fitter.merge(keys);
+    if fitter.stopped {
+        return Animated::Static(first);
+    }
     simplify(keys)
 }
 
@@ -243,6 +266,10 @@ struct Fitter<'a, 'b> {
     hints: &'a Hints,
     /// Values already worked out, by the bits of their time.
     cache: HashMap<u64, Vec<f64>>,
+    /// How many values have been worked out.
+    worked_out: u32,
+    /// Whether the export was cancelled; the fit then ends.
+    stopped: bool,
 }
 
 /// How far a candidate is from the true values.
@@ -255,11 +282,24 @@ struct Miss {
 
 impl Fitter<'_, '_> {
     fn value(&mut self, frame: f64) -> Vec<f64> {
-        let at = self.track.at;
-        self.cache
-            .entry(frame.to_bits())
-            .or_insert_with(|| at(frame))
-            .clone()
+        if let Some(value) = self.cache.get(&frame.to_bits()) {
+            return value.clone();
+        }
+        self.worked_out += 1;
+        if self.worked_out.is_multiple_of(VALUES_PER_CANCEL_CHECK)
+            && self.track.cancel.is_some_and(CancelToken::is_cancelled)
+        {
+            self.stopped = true;
+        }
+        if self.stopped
+            && let Some(any) = self.cache.values().next()
+        {
+            // Cancelled: any value will do, the fit is thrown away.
+            return any.clone();
+        }
+        let value = (self.track.at)(frame);
+        self.cache.insert(frame.to_bits(), value.clone());
+        value
     }
 
     /// The value just before `frame`: where a piece ending there arrives.
@@ -285,7 +325,7 @@ impl Fitter<'_, '_> {
     /// properties do not need keyframes of their own.
     fn merge(&mut self, mut keys: Vec<Keyframe>) -> Vec<Keyframe> {
         let mut index = 0;
-        while index + 2 < keys.len() {
+        while index + 2 < keys.len() && !self.stopped {
             let (Ease::Curve(_), Ease::Curve(_)) = (keys[index].ease, keys[index + 1].ease) else {
                 index += 1;
                 continue;
@@ -317,6 +357,9 @@ impl Fitter<'_, '_> {
 
     /// Fits the piece from `a` to `b`, adding its keyframes to `keys`.
     fn piece(&mut self, a: f64, b: f64, depth: u32, keys: &mut Vec<Keyframe>) {
+        if self.stopped {
+            return;
+        }
         let from = self.value(a);
         let from = self.rounded(from);
         let arrival = self.before(b);
@@ -329,6 +372,27 @@ impl Fitter<'_, '_> {
         } else {
             b
         };
+        // Where no animation runs the value is expected to hold: once a
+        // frame is enough to see that it does.
+        let quiet = !self
+            .hints
+            .spans
+            .iter()
+            .any(|span| span.start < b && span.end > a);
+        if quiet && self.close(&from, &to) {
+            let holds = quiet_checks(a, b).into_iter().all(|time| {
+                let value = self.value(time);
+                self.close(&value, &from)
+            });
+            if holds {
+                keys.push(Keyframe {
+                    time: a,
+                    value: from,
+                    ease: Ease::Hold,
+                });
+                return;
+            }
+        }
         let checks: Vec<(f64, Vec<f64>)> = checks(a, b)
             .into_iter()
             .map(|time| (time, self.value(time)))
@@ -548,7 +612,8 @@ impl Fitter<'_, '_> {
 }
 
 /// The moments a piece from `a` to `b` is checked at: eight times a frame
-/// on the frame grid, and a few between the ends for short pieces.
+/// on the frame grid, and a few between the ends for pieces shorter than a
+/// frame, which have few moments on the grid.
 fn checks(a: f64, b: f64) -> Vec<f64> {
     let mut times: Vec<f64> = Vec::new();
     let first = (a * CHECKS_PER_FRAME).floor() as i64 + 1;
@@ -556,12 +621,25 @@ fn checks(a: f64, b: f64) -> Vec<f64> {
     for step in first..=last {
         times.push(step as f64 / CHECKS_PER_FRAME);
     }
-    for k in 1..8 {
-        times.push(a + (b - a) * f64::from(k) / 8.0);
-    }
     times.retain(|time| *time > a && *time < b);
-    times.sort_by(f64::total_cmp);
-    times.dedup();
+    if times.len() < CHECKS_PER_FRAME as usize {
+        for k in 1..8 {
+            times.push(a + (b - a) * f64::from(k) / 8.0);
+        }
+        times.sort_by(f64::total_cmp);
+        times.dedup();
+    }
+    times
+}
+
+/// The moments a piece from `a` to `b` where no animation runs is checked
+/// at to see that its value holds: every frame, and the middle.
+fn quiet_checks(a: f64, b: f64) -> Vec<f64> {
+    let first = a.floor() as i64 + 1;
+    let last = b.ceil() as i64 - 1;
+    let mut times: Vec<f64> = (first..=last).map(|frame| frame as f64).collect();
+    times.push((a + b) / 2.0);
+    times.retain(|time| *time > a && *time < b);
     times
 }
 
@@ -669,6 +747,7 @@ mod tests {
             at,
             tolerance,
             places: 3,
+            cancel: None,
         };
         let animated = fit(&track, hints, 0.0, frames);
         for step in 0..(frames * 32.0) as u32 {
@@ -818,6 +897,64 @@ mod tests {
             0.01,
         );
         assert_eq!(animated.keyframe_count(), 2);
+    }
+
+    #[test]
+    fn a_cancelled_fit_ends_at_once() {
+        // An elastic value over ten seconds takes thousands of values to
+        // fit; cancelled after a hundred, the fit ends at the next look.
+        let token = CancelToken::new();
+        let worked_out = std::cell::Cell::new(0_u32);
+        let at = |frame: f64| {
+            worked_out.set(worked_out.get() + 1);
+            if worked_out.get() == 100 {
+                token.cancel();
+            }
+            vec![100.0 * ease(&Easing::elastic(), frame / 300.0)]
+        };
+        let track = Track {
+            at: &at,
+            tolerance: 0.01,
+            places: 3,
+            cancel: Some(&token),
+        };
+        let animated = fit(&track, &Hints::default(), 0.0, 300.0);
+        assert!(
+            worked_out.get() <= 100 + VALUES_PER_CANCEL_CHECK,
+            "{} values",
+            worked_out.get()
+        );
+        assert_eq!(animated, Animated::Static(vec![0.0]));
+    }
+
+    #[test]
+    fn values_hold_where_nothing_runs_with_a_look_a_frame() {
+        // A short animation in a long export: the value holds before and
+        // after it, which needs a look a frame, not eight.
+        let worked_out = std::cell::Cell::new(0_u32);
+        let tween = tween(4000.0, 4500.0, Easing::smooth());
+        let at = |frame: f64| {
+            worked_out.set(worked_out.get() + 1);
+            tween(frame)
+        };
+        let hints = hints(&[(4000.0, 4500.0, Easing::smooth())]);
+        let track = Track {
+            at: &at,
+            tolerance: 0.01,
+            places: 3,
+            cancel: None,
+        };
+        let animated = fit(&track, &hints, 0.0, 400.0);
+        assert!(worked_out.get() < 600, "{} values", worked_out.get());
+        assert_eq!(animated.keyframe_count(), 3, "{animated:#?}");
+        for step in 0..(400 * 32) {
+            let frame = f64::from(step) / 32.0;
+            let (got, want) = (animated.at(frame)[0], tween(frame)[0]);
+            assert!(
+                (got - want).abs() <= 0.015,
+                "at frame {frame}: {got} instead of {want}"
+            );
+        }
     }
 
     #[test]
