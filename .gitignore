@@ -11,6 +11,8 @@ Cargo.lock.bak
 
 # Local app data, exports and scratch
 /exports/
+# The Mac app and installer made by scripts/release-mac.sh
+/dist/
 /tmp/
 *.moshi.autosave
 .env
