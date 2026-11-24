@@ -1,8 +1,8 @@
 # moshionly-export
 
-Writes a Moshionly artboard to an image or a video file. The editor's Export
-dialog, the agents' `export` tool and the `moshionly export` command all use
-it.
+Writes a Moshionly artboard to an image, a video or a Lottie file. The
+editor's Export dialog, the agents' `export` tool and the `moshionly export`
+command all use it.
 
 ```rust
 use std::sync::Arc;
@@ -34,6 +34,7 @@ say what is wrong before the person starts.
 | MP4 (H.264) | Social media, slides, websites | No | Yes |
 | WebM (VP9) | Websites, including transparent overlays | Yes | Needs `ffmpeg` |
 | ProRes 4444 (MOV) | Video editing software, including transparent overlays | Yes | Needs `ffmpeg` |
+| Lottie (JSON) | Apps and websites: vector shapes and keyframes that play at any size | Yes | Yes |
 
 `available_formats()` says which formats can be written right now, and
 `availability()` says why one cannot (for example, "WebM needs ffmpeg, which
@@ -43,9 +44,10 @@ Homebrew: brew install ffmpeg"). `ffmpeg` is looked for on `PATH` and in
 `/snap/bin`, since an app started from the Finder does not see the shell's
 `PATH`. The app can also pass a specific one with `ExportJob::with_ffmpeg`.
 
-Lottie export, which describes the animation as vectors instead of pixels,
-will be added in `src/lottie/` as another `Format`; it plugs into the same
-job, plan and progress.
+Lottie describes the animation as vector shapes and keyframes instead of
+pixels; see [Lottie](#lottie) below. It runs through the same job, plan,
+progress, cancellation and temporary-file-then-rename write as the other
+formats.
 
 ## Settings
 
@@ -88,6 +90,10 @@ its own size, 30 frames per second, on its own background.
   as a duration with extra zeros.
 - **GIF**: how many times it plays (forever by default, once, or a number of
   times) and whether it is dithered (on by default).
+- **Lottie**: whether pictures go inside the file (the default) or into a
+  folder beside it. The size sets the composition's size, which players use
+  when nothing else decides; the content is scaled to it. Quality and the
+  GIF settings do not apply.
 
 ### Which frames
 
@@ -139,6 +145,72 @@ written into.
 Exporting the same thing twice gives the same bytes, in every format (for
 WebM and ProRes, with the same `ffmpeg`).
 
+## Lottie
+
+A Lottie file is JSON that lottie-web, the Android and iOS players, Skottie,
+ThorVG and others play. The export converts the scene model, not pixels:
+each layer of the artboard becomes a Lottie layer, in the same order, with
+the same transform (Lottie turns and scales a layer about its anchor, which
+is set to the centre of the layer's box, as Moshionly does).
+
+| Moshionly | Lottie |
+|---|---|
+| Artboard | The composition: its size, frame rate and length; its fill is a background layer |
+| Rectangle, ellipse | Rectangle and ellipse shapes; different corners, arcs and rings are paths |
+| Star, pen path | Paths |
+| Fill, stroke | Fills and strokes, solid or linear and radial gradients; blend modes; opacity |
+| Group that only moves its children | A null layer the children are parented to |
+| Group that fades, blends, blurs, casts a shadow or clips | A precomposition, sized to cover all of it that can be seen; a clip is a mask of its rounded box |
+| Mask group | A track matte: the mask over a precomposition of the rest |
+| Text | Outlines of the letters, made with the renderer's own fonts, so it looks the same everywhere without font files |
+| Text animations | One animated group per letter, word or line |
+| Counter | Each value shown for its stretch of time, its letters placed from compositions drawn once per letter shape |
+| Image | An image layer, with the picture inside the file as base64 PNG or JPEG, or in a folder beside it |
+| Blur, drop shadow | Gaussian Blur and Drop Shadow effects |
+| Reveal | A mask that moves |
+| Hidden layers | Left out |
+
+### Keyframes
+
+Moshionly has no keyframes: a property's value is worked out from its
+animations at every moment. The export finds keyframes that reproduce it:
+
+- A linear or Bezier-shaped easing (everything but elastic and bounce)
+  becomes one keyframe whose Lottie handles are that easing. Where other
+  animations cut it, each piece is the exact piece of the same curve, and
+  neighbouring pieces join again when one curve covers them.
+- Elastic and bouncing easings, and several animations on one property at
+  once (moves that add up, a fade that interrupts another), are fitted with
+  a few cubic pieces each, split at their turning points, until the fit
+  keeps within a small tolerance: a tenth of a pixel, a hundredth of a
+  degree, a fraction of a percent of opacity or scale, about one step of a
+  colour channel.
+- `show`, `hide` and values that jump get hold keyframes.
+
+Every keyframe is checked against core's own evaluation eight times a frame
+before it is kept, with its numbers rounded as they are written. Numbers
+are rounded to what cannot be seen and values at their default are left
+out, so files stay small; the demo is about 110 kB, most of it letters.
+
+### Players
+
+Effects follow lottie-web, the most used player: a shadow's softness and a
+blur's blurriness are set so lottie-web draws them as Moshionly does.
+Skottie and the Android player read shadow softness as a blur radius and
+draw shadows somewhat softer; lottie-web's canvas renderer draws no
+effects, and fades the layers of a faded group one by one rather than
+together. Players differ in whether a reveal also cuts a layer's shadow.
+
+### Warnings
+
+What Lottie cannot express exactly is drawn as closely as it can be, and
+`Exported::warnings` says so in plain words, naming the layer. For example: a stretched
+radial gradient (drawn round), a paint that changes between linear and
+radial, a stroke inside or outside the edge of anything but a rectangle or
+ellipse (drawn centred), letters that blur as they come in, a gradient on a
+counting text, characters drawn as pictures such as emoji, a picture that
+cannot be read (left out). One layer never stops the export.
+
 ## The command-line example
 
 ```text
@@ -146,6 +218,8 @@ cargo run --release -p moshionly-export --example export -- demo.moshi demo.mp4
 cargo run --release -p moshionly-export --example export -- demo.moshi demo.gif --fps 25 --width 600
 cargo run --release -p moshionly-export --example export -- demo.moshi frames --scale 2
 cargo run --release -p moshionly-export --example export -- demo.moshi clear.webm --transparent
+cargo run --release -p moshionly-export --example export -- demo.moshi demo.json --fps 60
+cargo run --release -p moshionly-export --example export -- demo.moshi demo.json --format lottie --images-beside
 cargo run --release -p moshionly-export --example export -- --formats
 ```
 
@@ -157,7 +231,10 @@ without arguments for every option.
 `cargo test -p moshionly-export` checks PNG pixels against the renderer,
 decodes GIFs and compares every frame, reads MP4 files back with the `mp4`
 crate and decodes them with OpenH264's decoder, and checks WebM and ProRes
-with `ffprobe`. The WebM and ProRes tests, and the MP4 check with
+with `ffprobe`. For Lottie it checks the fitted keyframes against core's
+`value_at` at every frame for every easing and for combined animations,
+evaluating the written keyframes the way players do, and checks the
+structure of shapes, groups, masks, text, images, effects and warnings. The WebM and ProRes tests, and the MP4 check with
 `ffprobe`, print why they are skipped where `ffmpeg` is not installed.
 
 ## Patents
@@ -173,6 +250,7 @@ separate program.
 ## Licences
 
 The code is MIT. Dependencies: `openh264` and `openh264-sys2` (BSD-2-Clause,
-with OpenH264 itself BSD-2-Clause), `gif` (MIT or Apache-2.0), `tempfile` (MIT
-or Apache-2.0), `thiserror` (MIT or Apache-2.0). `ffmpeg` is never linked,
+with OpenH264 itself BSD-2-Clause), `gif` (MIT or Apache-2.0), `image` (MIT
+or Apache-2.0), `serde_json` (MIT or Apache-2.0), `tempfile` (MIT or
+Apache-2.0), `thiserror` (MIT or Apache-2.0). `ffmpeg` is never linked,
 only run.

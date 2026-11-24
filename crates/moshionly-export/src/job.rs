@@ -11,6 +11,7 @@ use crate::ffmpeg::{self, Ffmpeg, INSTALL_HINT};
 use crate::format::Format;
 use crate::frames::FrameSource;
 use crate::gif;
+use crate::lottie;
 use crate::mp4;
 use crate::output::Output;
 use crate::png;
@@ -169,14 +170,19 @@ impl ExportJob {
                 renderer: &renderer,
             },
             reporter: Reporter::new(&mut progress, cancel, plan.frame_count()),
+            project_file: self.project_file.as_deref(),
+            destination: output.destination(),
         };
         cx.reporter.report(Phase::Preparing, 0);
-        write(&mut cx, output.path(), ffmpeg.as_ref())?;
+        let images = write(&mut cx, output.path(), ffmpeg.as_ref())?;
         cx.reporter.check()?;
         cx.reporter.report(Phase::Finishing, plan.frame_count());
         let warnings = std::mem::take(&mut cx.reporter.warnings);
         let path = output.destination().to_owned();
         let bytes = output.commit()?;
+        if let Some(images) = images {
+            images.commit()?;
+        }
         Ok(Exported {
             path,
             format: plan.format,
@@ -213,23 +219,28 @@ impl ExportJob {
 /// Writes the export to `path`, the temporary file or folder.
 ///
 /// Every format plugs in here. A raster format renders frames from
-/// `cx.source` and encodes them; a format that converts the scene model
-/// instead of pixels (Lottie, to come in `src/lottie/`) evaluates scenes
-/// at the plan's moments and writes its file, reporting progress the same
-/// way.
-fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: Option<&Ffmpeg>) -> Result<(), ExportError> {
+/// `cx.source` and encodes them; Lottie, which converts the scene model
+/// instead of pixels, evaluates the artboard and writes its file,
+/// reporting progress the same way. A Lottie file that keeps its images
+/// beside it also returns those files, to be moved into place after it.
+fn write(
+    cx: &mut Context<'_>,
+    path: &Path,
+    ffmpeg: Option<&Ffmpeg>,
+) -> Result<Option<lottie::ImageFiles>, ExportError> {
     match cx.plan.format {
-        Format::Png => png::write_still(cx, path),
-        Format::PngSequence => png::write_sequence(cx, path),
-        Format::Gif => gif::write(cx, path),
-        Format::Mp4 => mp4::write(cx, path),
+        Format::Png => png::write_still(cx, path).map(|()| None),
+        Format::PngSequence => png::write_sequence(cx, path).map(|()| None),
+        Format::Gif => gif::write(cx, path).map(|()| None),
+        Format::Mp4 => mp4::write(cx, path).map(|()| None),
         Format::WebM | Format::ProRes => match ffmpeg {
-            Some(ffmpeg) => ffmpeg::write(cx, path, ffmpeg),
+            Some(ffmpeg) => ffmpeg::write(cx, path, ffmpeg).map(|()| None),
             None => Err(ExportError::FfmpegMissing {
                 format: cx.plan.format,
                 reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
             }),
         },
+        Format::Lottie => lottie::write(cx, path),
     }
 }
 
@@ -241,6 +252,10 @@ pub(crate) struct Context<'a> {
     pub source: FrameSource<'a>,
     /// Where progress, warnings and cancellation go.
     pub reporter: Reporter<'a>,
+    /// The project file, which images are found next to.
+    pub project_file: Option<&'a Path>,
+    /// Where the export ends up, for files that go beside it.
+    pub destination: &'a Path,
 }
 
 /// Reports progress, gathers warnings and watches for cancellation.
@@ -288,10 +303,15 @@ impl<'a> Reporter<'a> {
     /// is kept once, however many frames have it.
     pub fn warn(&mut self, warnings: &[RenderWarning]) {
         for warning in warnings {
-            let text = warning.to_string();
-            if !self.warnings.contains(&text) {
-                self.warnings.push(text);
-            }
+            self.note(warning.to_string());
+        }
+    }
+
+    /// Notes something that was written differently from the document, in
+    /// words for a person. Each is kept once.
+    pub fn note(&mut self, warning: String) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
         }
     }
 }

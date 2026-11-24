@@ -3,9 +3,9 @@
 //! ```text
 //! cargo run --release -p moshionly-export --example export -- <file.moshi> <output> [options]
 //!
-//! --format <name>      png, png_sequence, gif, mp4, webm or prores; by default
-//!                      from the output's extension (.png .gif .mp4 .webm .mov),
-//!                      and a PNG sequence when it has none
+//! --format <name>      png, png_sequence, gif, mp4, webm, prores or lottie; by
+//!                      default from the output's extension (.png .gif .mp4
+//!                      .webm .mov .json), and a PNG sequence when it has none
 //! --fps <rate>         frames per second, such as 30 or 29.97 (default 30)
 //! --scale <factor>     size as a multiple of the artboard (default 1)
 //! --width <pixels>     size as a width instead, keeping proportions
@@ -18,6 +18,7 @@
 //! --end <ms>           where it ends (default: the end of the artboard)
 //! --once               a GIF that plays once instead of looping
 //! --no-dither          a GIF without dithering
+//! --images-beside      a Lottie file's images as files in a folder beside it
 //! --formats            list the formats that can be written here, and stop
 //! ```
 //!
@@ -31,14 +32,15 @@ use std::time::Instant;
 
 use moshionly_core::{Color, NodeId, io};
 use moshionly_export::{
-    Background, CancelToken, ExportJob, Format, FrameRate, Loop, Phase, Quality, Settings, Size,
-    availability,
+    Background, CancelToken, ExportJob, Format, FrameRate, Loop, LottieImages, Phase, Quality,
+    Settings, Size, availability,
 };
 
-const USAGE: &str = "usage: export <file.moshi> <output> [--format png|png_sequence|gif|mp4|webm|prores] \
+const USAGE: &str = "usage: export <file.moshi> <output> \
+     [--format png|png_sequence|gif|mp4|webm|prores|lottie] \
      [--fps 30] [--scale 1 | --width 1080] [--artboard <name>] [--quality draft|standard|high] \
      [--transparent | --background #RRGGBB] [--at <ms>] [--start <ms>] [--end <ms>] [--once] \
-     [--no-dither] | --formats";
+     [--no-dither] [--images-beside] | --formats";
 
 fn number(flag: &str, value: Option<&String>) -> Result<f64, String> {
     let value = value.ok_or(format!("{flag} needs a value\n{USAGE}"))?;
@@ -93,6 +95,7 @@ fn run(arguments: &[String]) -> Result<(), String> {
             "--end" => settings.end_ms = Some(number(flag, flags.next())?),
             "--once" => settings.gif_loop = Loop::Once,
             "--no-dither" => settings.dither = false,
+            "--images-beside" => settings.lottie_images = LottieImages::Files,
             other => return Err(format!("unknown option \"{other}\"\n{USAGE}")),
         }
     }

@@ -12,6 +12,7 @@ use moshionly_render::{Background, RenderOptions};
 use thiserror::Error;
 
 use crate::format::{Format, SizeLimits};
+use crate::lottie::LottieImages;
 use crate::timing::{FrameRate, FrameTimes, TimingError};
 
 /// The most frames one export may have: a million, which is over nine hours
@@ -135,6 +136,9 @@ pub struct Settings {
     /// colours between them, which smooths gradients and shadows. Default:
     /// on.
     pub dither: bool,
+    /// Whether a Lottie file carries its images inside it or as files
+    /// beside it. Default: inside.
+    pub lottie_images: LottieImages,
 }
 
 impl Default for Settings {
@@ -149,6 +153,7 @@ impl Default for Settings {
             end_ms: None,
             gif_loop: Loop::default(),
             dither: true,
+            lottie_images: LottieImages::default(),
         }
     }
 }
@@ -209,6 +214,13 @@ impl Settings {
         self
     }
 
+    /// The same settings keeping a Lottie file's images inside it or
+    /// beside it.
+    pub fn with_lottie_images(mut self, images: LottieImages) -> Self {
+        self.lottie_images = images;
+        self
+    }
+
     /// Checks the settings for exporting `artboard` of `document` as
     /// `format`, and works out exactly what will be written.
     pub fn plan(
@@ -265,6 +277,7 @@ impl Settings {
             quality: self.quality,
             gif_loop: self.gif_loop,
             dither: self.dither,
+            lottie_images: self.lottie_images,
         })
     }
 
@@ -498,6 +511,8 @@ pub struct Plan {
     pub gif_loop: Loop,
     /// Whether a GIF is dithered.
     pub dither: bool,
+    /// Where a Lottie file's images go.
+    pub lottie_images: LottieImages,
 }
 
 impl Plan {

@@ -3,8 +3,8 @@
 //! The editor's Export dialog, the agents' `export` tool and the
 //! `moshionly export` command all call this crate. PNG, PNG sequences, GIF
 //! and MP4 are written in-process; WebM and ProRes by an installed
-//! `ffmpeg`. Lottie, which converts the scene model instead of pixels,
-//! will join them in `src/lottie/`.
+//! `ffmpeg`. Lottie converts the scene model into vectors and keyframes
+//! instead of pixels.
 //!
 //! # A quick tour
 //!
@@ -63,6 +63,7 @@ pub mod format;
 mod frames;
 mod gif;
 pub mod job;
+mod lottie;
 mod mp4;
 mod output;
 mod png;
@@ -75,6 +76,7 @@ pub use error::ExportError;
 pub use ffmpeg::Ffmpeg;
 pub use format::{Format, SizeLimits};
 pub use job::{ExportJob, Exported};
+pub use lottie::LottieImages;
 pub use progress::{CancelToken, Phase, Progress};
 pub use settings::{
     Loop, MAX_FRAMES, Moment, Moments, Plan, Quality, Settings, SettingsError, Size,

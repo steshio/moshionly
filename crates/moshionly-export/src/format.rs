@@ -4,8 +4,8 @@ use std::fmt;
 
 /// A kind of file an export writes.
 ///
-/// Raster formats are made of rendered frames. Lottie, which describes the
-/// animation as vectors instead of pixels, will join this list.
+/// Raster formats are made of rendered frames. Lottie describes the
+/// animation as vectors and keyframes instead of pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     /// One frame as a PNG image: a moment of the animation, or the design at
@@ -26,17 +26,22 @@ pub enum Format {
     /// A QuickTime video with ProRes 4444, which can be transparent: for
     /// video editing software. Needs `ffmpeg`.
     ProRes,
+    /// A Lottie animation: a JSON file of vector shapes and keyframes that
+    /// apps and websites play at any size (lottie-web, the Android and iOS
+    /// players, Skottie, ThorVG).
+    Lottie,
 }
 
 impl Format {
     /// Every format, in the order a menu lists them.
-    pub const ALL: [Format; 6] = [
+    pub const ALL: [Format; 7] = [
         Format::Png,
         Format::PngSequence,
         Format::Gif,
         Format::Mp4,
         Format::WebM,
         Format::ProRes,
+        Format::Lottie,
     ];
 
     /// The short name tools and the command line use, such as `png_sequence`.
@@ -48,17 +53,20 @@ impl Format {
             Format::Mp4 => "mp4",
             Format::WebM => "webm",
             Format::ProRes => "prores",
+            Format::Lottie => "lottie",
         }
     }
 
     /// Looks a format up by its [short name](Self::as_str), ignoring case.
-    /// The file extensions `mov` and `apng` are not names; `mov` is
-    /// accepted for ProRes since that is the only QuickTime format.
+    /// The file extensions `mov` and `json` are not names; `mov` is
+    /// accepted for ProRes since that is the only QuickTime format, and
+    /// `json` for Lottie.
     pub fn parse(name: &str) -> Option<Format> {
         let name = name.trim().to_ascii_lowercase();
         let name = name.replace(['-', ' '], "_");
         match name.as_str() {
             "mov" => Some(Format::ProRes),
+            "json" => Some(Format::Lottie),
             "pngs" | "png_seq" => Some(Format::PngSequence),
             _ => Self::ALL.into_iter().find(|format| format.as_str() == name),
         }
@@ -73,6 +81,7 @@ impl Format {
             Format::Mp4 => "MP4",
             Format::WebM => "WebM",
             Format::ProRes => "ProRes 4444",
+            Format::Lottie => "Lottie",
         }
     }
 
@@ -86,6 +95,7 @@ impl Format {
             Format::Mp4 => Some("mp4"),
             Format::WebM => Some("webm"),
             Format::ProRes => Some("mov"),
+            Format::Lottie => Some("json"),
         }
     }
 
@@ -97,6 +107,13 @@ impl Format {
     /// Whether the format holds movement: every format but a single PNG.
     pub fn is_animated(self) -> bool {
         self != Format::Png
+    }
+
+    /// Whether the export is made of rendered pixels. Lottie is not: it
+    /// converts the scene model into vectors and keyframes, and ignores
+    /// the render options of a [`Plan`](crate::Plan).
+    pub fn draws_pixels(self) -> bool {
+        self != Format::Lottie
     }
 
     /// Whether the format can keep see-through parts see-through. A GIF
@@ -148,6 +165,14 @@ impl Format {
                 max_long_side: 8192,
                 max_short_side: 8192,
                 max_pixels: 8192 * 4320,
+            },
+            // Vectors draw at any size; the size only says how large the
+            // animation is when a player does not choose.
+            Format::Lottie => SizeLimits {
+                min_side: 1,
+                max_long_side: MAX_FRAME_SIDE,
+                max_short_side: MAX_FRAME_SIDE,
+                max_pixels: u64::from(MAX_FRAME_SIDE) * u64::from(MAX_FRAME_SIDE),
             },
         }
     }
@@ -222,7 +247,8 @@ mod tests {
         assert_eq!(Format::parse("png-sequence"), Some(Format::PngSequence));
         assert_eq!(Format::parse("mov"), Some(Format::ProRes));
         assert_eq!(Format::parse("WebM"), Some(Format::WebM));
-        assert_eq!(Format::parse("lottie"), None);
+        assert_eq!(Format::parse("Lottie"), Some(Format::Lottie));
+        assert_eq!(Format::parse("json"), Some(Format::Lottie));
         assert_eq!(Format::parse("jpeg"), None);
     }
 
@@ -241,6 +267,10 @@ mod tests {
         assert_eq!(Format::Mp4.max_fps_at(1920, 1080), 172.0);
         assert_eq!(Format::Mp4.max_fps_at(3840, 2160), 64.0);
         assert_eq!(Format::WebM.max_fps_at(3840, 2160), 240.0);
+        assert!(Format::Lottie.is_animated() && Format::Lottie.supports_transparency());
+        assert!(!Format::Lottie.draws_pixels() && Format::Gif.draws_pixels());
+        assert_eq!(Format::Lottie.extension(), Some("json"));
+        assert!(Format::Lottie.size_limits().allows(16_384, 16_384));
     }
 
     #[test]
