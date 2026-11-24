@@ -26,6 +26,20 @@ pub struct Measurement {
     pub label: String,
 }
 
+/// A path being drawn with the pen, in world coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PenOverlay {
+    /// The outline so far, flattened to a polyline, with a line on to the
+    /// pointer.
+    pub path: Vec<Pos2>,
+    /// The anchors.
+    pub anchors: Vec<Pos2>,
+    /// Handle lines, from an anchor to its handle.
+    pub handles: Vec<[Pos2; 2]>,
+    /// The pointer is over the first anchor: a click closes the path.
+    pub closing: bool,
+}
+
 /// Everything the viewport draws over the artboards, in world coordinates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overlays {
@@ -44,6 +58,10 @@ pub struct Overlays {
     pub guides: Vec<[Pos2; 2]>,
     /// Distances to show.
     pub measurements: Vec<Measurement>,
+    /// A path being drawn with the pen.
+    pub pen: Option<PenOverlay>,
+    /// A box drawn around text being edited on the canvas.
+    pub editing: Option<OrientedBox>,
 }
 
 impl Overlays {
@@ -97,6 +115,14 @@ pub(super) fn paint(ui: &Ui, viewport: Rect, camera: &Camera, overlays: &Overlay
         );
     }
 
+    if let Some(editing) = overlays.editing {
+        outline(&painter, &editing.to_screen(camera, viewport), accent);
+    }
+
+    if let Some(pen) = &overlays.pen {
+        paint_pen(&painter, viewport, camera, pen, theme);
+    }
+
     for measurement in &overlays.measurements {
         let from = crisp_point(camera.world_to_screen(viewport, measurement.from));
         let to = crisp_point(camera.world_to_screen(viewport, measurement.to));
@@ -121,6 +147,38 @@ pub(super) fn paint(ui: &Ui, viewport: Rect, camera: &Camera, overlays: &Overlay
             Align2::CENTER_CENTER,
             &measurement.label,
             c.measure,
+        );
+    }
+}
+
+/// Draws a path being drawn with the pen: its outline so far, its handles
+/// and its anchors.
+fn paint_pen(painter: &Painter, viewport: Rect, camera: &Camera, pen: &PenOverlay, theme: &Theme) {
+    let c = &theme.color;
+    let screen = |p: Pos2| camera.world_to_screen(viewport, p);
+    let accent = Stroke::new(1.5, c.accent);
+    if pen.path.len() >= 2 {
+        painter.add(Shape::line(
+            pen.path.iter().map(|p| screen(*p)).collect(),
+            accent,
+        ));
+    }
+    for [anchor, handle] in &pen.handles {
+        let (a, h) = (screen(*anchor), screen(*handle));
+        painter.line_segment([a, h], Stroke::new(1.0, c.accent));
+        painter.circle(h, 3.0, c.handle_fill, Stroke::new(1.0, c.accent));
+    }
+    for (n, anchor) in pen.anchors.iter().enumerate() {
+        let at = screen(*anchor);
+        // The first anchor grows when a click there would close the path.
+        let side = if n == 0 && pen.closing { 10.0 } else { 7.0 };
+        let rect = Rect::from_center_size(at, Vec2::splat(side));
+        painter.rect(
+            rect,
+            1.0,
+            c.handle_fill,
+            Stroke::new(1.0, c.accent),
+            StrokeKind::Inside,
         );
     }
 }

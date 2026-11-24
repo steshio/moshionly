@@ -14,14 +14,21 @@
 //!   a [`key::Key`].
 //! - [`commands`]: every command with its name and shortcut, and the command
 //!   palette.
+//! - [`editor`]: the open document, held in a shared session, and the
+//!   editor's state around it: selection, current artboard, playhead, tool.
+//!   Its rules (what a click selects, how a drag becomes edits) are plain
+//!   functions that are tested without a window.
+//! - [`canvas`]: pictures of the artboards, rendered on worker threads.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
 //!
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
+pub mod canvas;
 pub mod commands;
 pub mod dialogs;
+pub mod editor;
 pub mod key;
 pub mod raster;
 pub mod settings;

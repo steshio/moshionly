@@ -3,6 +3,10 @@
 //! Thin helpers over the operating system's open and save panels, so the rest
 //! of the app never spells out file filters. Each one blocks until the user
 //! answers and returns `None` when they cancel.
+//!
+//! The editor asks through the [`Dialogs`] trait, so that tests can answer
+//! in the user's place: [`NativeDialogs`] shows the real panels and
+//! [`NoDialogs`] cancels every question.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +52,69 @@ impl ExportFormat {
             Self::Lottie => "json",
         }
     }
+}
+
+/// The questions the editor asks with a file dialog.
+pub trait Dialogs {
+    /// Which project to open.
+    fn open_project(&self) -> Option<PathBuf>;
+    /// Where to save a project named `suggested_name`.
+    fn save_project(&self, suggested_name: &str) -> Option<PathBuf>;
+    /// Which images to import.
+    fn import_images(&self) -> Option<Vec<PathBuf>>;
+}
+
+/// The operating system's own dialogs.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeDialogs;
+
+impl Dialogs for NativeDialogs {
+    fn open_project(&self) -> Option<PathBuf> {
+        open_project()
+    }
+
+    fn save_project(&self, suggested_name: &str) -> Option<PathBuf> {
+        save_project(suggested_name)
+    }
+
+    fn import_images(&self) -> Option<Vec<PathBuf>> {
+        import_images()
+    }
+}
+
+/// Dialogs that are cancelled straight away: for tests and for running
+/// without a window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoDialogs;
+
+impl Dialogs for NoDialogs {
+    fn open_project(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn save_project(&self, _suggested_name: &str) -> Option<PathBuf> {
+        None
+    }
+
+    fn import_images(&self) -> Option<Vec<PathBuf>> {
+        None
+    }
+}
+
+/// Whether `path` names an image the editor can place.
+pub fn is_image(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        IMAGE_EXTENSIONS
+            .iter()
+            .any(|known| e.eq_ignore_ascii_case(known))
+    })
+}
+
+/// Whether `path` names a Moshionly project.
+pub fn is_project(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(PROJECT_EXTENSION))
 }
 
 /// Asks which project to open.
@@ -131,6 +198,17 @@ mod tests {
         assert_eq!(file_name("  ", "png"), "Untitled.png");
         assert_eq!(file_name("...", "png"), "Untitled.png");
         assert_eq!(file_name("tab\there", "png"), "tab-here.png");
+    }
+
+    #[test]
+    fn files_are_told_apart_by_their_extension() {
+        assert!(is_image(Path::new("a/b/Photo.JPG")));
+        assert!(is_image(Path::new("dot.webp")));
+        assert!(!is_image(Path::new("notes.txt")));
+        assert!(is_project(Path::new("teaser.moshi")));
+        assert!(!is_project(Path::new("teaser.moshi.bak")));
+        assert!(!is_project(Path::new("moshi")));
+        assert_eq!(NoDialogs.open_project(), None);
     }
 
     #[test]

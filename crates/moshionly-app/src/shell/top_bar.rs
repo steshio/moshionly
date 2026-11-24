@@ -21,6 +21,10 @@ use crate::{
 pub struct TopBar<'a> {
     /// The project's name.
     pub project_name: &'a str,
+    /// Whether the project has changes that are not saved.
+    pub unsaved: bool,
+    /// Projects opened lately, the most recent first.
+    pub recent: &'a [std::path::PathBuf],
     /// The canvas zoom, where 1 is 100%.
     pub zoom: f32,
     /// Whether the animation is playing.
@@ -46,6 +50,8 @@ pub struct TopBarOutput {
     pub drag_window: bool,
     /// The user double-clicked the bar's empty space.
     pub toggle_maximized: bool,
+    /// A recent project was chosen from the menu.
+    pub open_recent: Option<std::path::PathBuf>,
 }
 
 /// Draws the top bar in `rect`.
@@ -84,15 +90,26 @@ pub fn top_bar(ui: &mut Ui, rect: Rect, bar: &TopBar<'_>) -> TopBarOutput {
     left.add_space(theme.space.sm);
 
     let file = caret_button(&mut left, bar.project_name, theme.title(), "Main menu");
+    if bar.unsaved {
+        let (dot, response) = left.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+        left.painter()
+            .circle_filled(dot.center(), 3.0, theme.color.text_secondary);
+        crate::widgets::tooltip(response, "Unsaved changes", None);
+    }
     Popup::menu(&file)
         .frame(popup_frame(&left))
         .gap(theme.space.xs)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            if let Some(id) = main_menu(ui, bar) {
+        .show(|ui| match main_menu(ui, bar) {
+            Some(Chosen::Command(id)) => {
                 out.commands.push(id);
                 ui.close();
             }
+            Some(Chosen::Recent(path)) => {
+                out.open_recent = Some(path);
+                ui.close();
+            }
+            None => {}
         });
 
     left.add_space(theme.space.md);
@@ -184,7 +201,7 @@ fn command_button(ui: &mut Ui, id: CommandId, commands: &CommandRegistry) -> Res
     ui.add_enabled(
         commands.is_enabled(id),
         IconButton::new(id.icon().unwrap_or(icons::QUESTION))
-            .tooltip(id.name())
+            .tooltip(commands.label(id))
             .shortcut(&shortcut),
     )
 }
@@ -228,14 +245,26 @@ fn caret_button(ui: &mut Ui, text: &str, font: FontId, name: &str) -> Response {
     response
 }
 
+/// How many recent projects the main menu lists.
+const RECENT_SHOWN: usize = 5;
+
 /// Width of the category column of the main menu.
 const CATEGORY_WIDTH: f32 = 128.0;
 /// Width of the command column of the main menu.
 const COMMAND_WIDTH: f32 = 248.0;
 
+/// What was chosen in the main menu.
+enum Chosen {
+    /// A command.
+    Command(CommandId),
+    /// A recent project.
+    Recent(std::path::PathBuf),
+}
+
 /// The main menu: categories on the left, the commands of the category under
-/// the pointer on the right. Returns the command that was chosen.
-fn main_menu(ui: &mut Ui, bar: &TopBar<'_>) -> Option<CommandId> {
+/// the pointer on the right. Under File, the recent projects follow the
+/// commands. Returns what was chosen.
+fn main_menu(ui: &mut Ui, bar: &TopBar<'_>) -> Option<Chosen> {
     let theme = Theme::of(ui);
     let memory = ui.scope_id().with("category");
     let mut active: Category = ui.data(|d| d.get_temp(memory)).unwrap_or(Category::File);
@@ -254,7 +283,18 @@ fn main_menu(ui: &mut Ui, bar: &TopBar<'_>) -> Option<CommandId> {
         })
         .max()
         .unwrap_or(0);
-    let height = longest as f32 * row;
+    // Room for the recent projects under the File commands too.
+    let files = CommandId::ALL
+        .iter()
+        .filter(|id| id.category() == Category::File)
+        .count();
+    let recent = bar.recent.len().min(RECENT_SHOWN);
+    let with_recent = if recent > 0 {
+        files + recent + 2
+    } else {
+        files
+    };
+    let height = longest.max(with_recent) as f32 * row;
 
     ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
     let columns = ui.horizontal_top(|ui| {
@@ -288,7 +328,23 @@ fn main_menu(ui: &mut Ui, bar: &TopBar<'_>) -> Option<CommandId> {
                     _ => None,
                 };
                 if command_item(ui, id, bar.commands, checked) {
-                    chosen = Some(id);
+                    chosen = Some(Chosen::Command(id));
+                }
+            }
+            if active == Category::File && !bar.recent.is_empty() {
+                crate::widgets::menu_separator(ui);
+                crate::widgets::menu_heading(ui, "Recent");
+                for path in bar.recent.iter().take(RECENT_SHOWN) {
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    let item = ui
+                        .add(MenuItem::new(&name).icon(icons::FILE))
+                        .on_hover_text(path.display().to_string());
+                    if item.clicked() {
+                        chosen = Some(Chosen::Recent(path.clone()));
+                    }
                 }
             }
         });

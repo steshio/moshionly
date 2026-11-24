@@ -24,6 +24,9 @@ fn harness(camera: Camera) -> Harness<'static, State> {
 fn harness_with(camera: Camera, overlays: Overlays) -> Harness<'static, State> {
     let mut harness = Harness::builder()
         .with_size(SIZE)
+        // Frames a sixtieth of a second apart, as on a screen, so that two
+        // quick clicks are a double click.
+        .with_step_dt(1.0 / 60.0)
         .with_context_setup(theme::install)
         .build_ui_state(
             |ui, state: &mut State| {
@@ -259,6 +262,33 @@ fn a_drag_inside_the_selection_is_an_ordinary_drag() {
     let events = &harness.state().events;
     assert!(
         matches!(events.first(), Some(ViewportEvent::DragStarted { .. })),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn two_quick_clicks_are_a_double_click() {
+    let mut harness = harness(camera());
+    let at = pos2(250.0, 150.0);
+    harness.hover_at(at);
+    harness.run();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+    }
+    harness.run();
+    let events = &harness.state().events;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ViewportEvent::DoubleClicked { .. })),
         "{events:?}"
     );
 }

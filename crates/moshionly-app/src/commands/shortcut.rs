@@ -53,6 +53,8 @@ fn key_text(key: Key, mac: bool) -> &'static str {
         Key::Plus => "+",
         Key::Minus => "-",
         Key::Equals => "=",
+        Key::OpenBracket => "[",
+        Key::CloseBracket => "]",
         other => other.name(),
     }
 }

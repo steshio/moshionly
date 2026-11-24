@@ -84,7 +84,7 @@ pub fn command_item(
     checked: Option<bool>,
 ) -> bool {
     let shortcut = id.shortcut_label().unwrap_or_default();
-    let mut item = MenuItem::new(id.name());
+    let mut item = MenuItem::new(commands.label(id));
     if let Some(icon) = id.icon() {
         item = item.icon(icon);
     }

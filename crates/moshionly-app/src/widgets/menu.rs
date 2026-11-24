@@ -222,6 +222,9 @@ pub(crate) fn menu_body(ui: &mut Ui, add_items: impl FnOnce(&mut Ui)) {
     add_items(ui);
 }
 
+/// The tallest a dropdown's list grows before it scrolls, in points.
+const MAX_LIST_HEIGHT: f32 = 360.0;
+
 /// A dropdown: a field showing the current choice that opens a list of all
 /// choices.
 ///
@@ -237,6 +240,7 @@ pub struct Dropdown<'a, T> {
     icon: Option<&'a str>,
     width: Option<f32>,
     quiet: bool,
+    mixed: bool,
 }
 
 impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
@@ -250,7 +254,15 @@ impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
             icon: None,
             width: None,
             quiet: false,
+            mixed: false,
         }
+    }
+
+    /// Says that the layers being edited differ: the field shows "Mixed",
+    /// no option is checked, and picking any option sets it for all.
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// A leading icon inside the field.
@@ -276,11 +288,14 @@ impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = Theme::of(ui);
         let c = &theme.color;
-        let current = self
-            .options
-            .iter()
-            .find(|(option, _)| *option == *self.value)
-            .map_or("", |(_, label)| *label);
+        let current = if self.mixed {
+            "Mixed"
+        } else {
+            self.options
+                .iter()
+                .find(|(option, _)| *option == *self.value)
+                .map_or("", |(_, label)| *label)
+        };
 
         let width = self.width.unwrap_or_else(|| ui.available_width());
         let (rect, mut response) =
@@ -334,7 +349,7 @@ impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
                 Align2::LEFT_CENTER,
                 current,
                 theme.body(),
-                c.text,
+                if self.mixed { c.text_secondary } else { c.text },
             );
         }
 
@@ -346,15 +361,21 @@ impl<'a, T: PartialEq + Copy> Dropdown<'a, T> {
             .close_behavior(PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
-                for (option, label) in self.options {
-                    let item = MenuItem::new(label).checked(*option == *self.value);
-                    if ui.add(item).clicked() {
-                        picked = Some(*option);
-                    }
-                }
+                // Long lists, such as the installed fonts, scroll.
+                egui::ScrollArea::vertical()
+                    .max_height(MAX_LIST_HEIGHT)
+                    .show(ui, |ui| {
+                        for (option, label) in self.options {
+                            let checked = !self.mixed && *option == *self.value;
+                            let item = MenuItem::new(label).checked(checked);
+                            if ui.add(item).clicked() {
+                                picked = Some(*option);
+                            }
+                        }
+                    });
             });
         if let Some(option) = picked
-            && option != *self.value
+            && (option != *self.value || self.mixed)
         {
             *self.value = option;
             response.mark_changed();

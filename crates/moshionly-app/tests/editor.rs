@@ -1,0 +1,1438 @@
+//! Drives the whole editor on the demo project the way a person would,
+//! without a window: clicking, dragging, typing and undoing.
+
+use egui::{Key, Modifiers, Pos2, pos2, vec2};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
+use moshionly_agent::SessionHandle;
+use moshionly_app::{settings::Settings, shell::Shell, theme};
+use moshionly_core::NodeId;
+use moshionly_render::{AssetLoader, FontLibrary, Renderer};
+
+/// The demo project that comes with the engine.
+const DEMO: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../moshionly-core/examples/demo.moshi"
+);
+
+/// The editor on the demo project, in a 1440 by 900 window.
+fn harness() -> Harness<'static, Shell> {
+    harness_on(std::path::Path::new(DEMO))
+}
+
+/// The editor on the project at `path`, in a 1440 by 900 window.
+fn harness_on(path: &std::path::Path) -> Harness<'static, Shell> {
+    let session = SessionHandle::open(path).expect("the project opens");
+    let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+    let shell = Shell::headless(Settings::default(), session, renderer);
+    let mut harness = Harness::builder()
+        .with_size(vec2(1440.0, 900.0))
+        // Frames a sixtieth of a second apart, so two clicks make a double
+        // click.
+        .with_step_dt(1.0 / 60.0)
+        .with_context_setup(theme::install)
+        .build_ui_state(
+            |ui, shell: &mut Shell| {
+                shell.show(ui);
+            },
+            shell,
+        );
+    harness.run();
+    harness
+}
+
+/// Where a point of the canvas is on screen.
+fn screen(harness: &Harness<'_, Shell>, world: Pos2) -> Pos2 {
+    let shell = harness.state();
+    let canvas = shell.canvas_rect().expect("the canvas has been drawn");
+    shell.camera().world_to_screen(canvas, world)
+}
+
+fn click(harness: &mut Harness<'_, Shell>, at: Pos2) {
+    harness.hover_at(at);
+    harness.drag_at(at);
+    harness.drop_at(at);
+    harness.run();
+}
+
+/// Presses and lets go of the primary button at `at` with `modifiers`,
+/// within one frame.
+fn press(harness: &mut Harness<'_, Shell>, at: Pos2, modifiers: Modifiers) {
+    harness.event(egui::Event::ModifiersChanged(modifiers));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+}
+
+fn double_click(harness: &mut Harness<'_, Shell>, at: Pos2) {
+    // Half a second after any earlier click, so this is not a triple click.
+    for _ in 0..30 {
+        harness.step();
+    }
+    harness.hover_at(at);
+    harness.step();
+    press(harness, at, Modifiers::NONE);
+    harness.step();
+    press(harness, at, Modifiers::NONE);
+    harness.step();
+    harness.run();
+}
+
+fn command_click(harness: &mut Harness<'_, Shell>, at: Pos2) {
+    harness.hover_at(at);
+    harness.step();
+    press(harness, at, Modifiers::COMMAND);
+    harness.step();
+    harness.run();
+}
+
+fn drag(harness: &mut Harness<'_, Shell>, from: Pos2, to: Pos2) {
+    harness.hover_at(from);
+    harness.drag_at(from);
+    // A few steps, as a hand would move.
+    for step in 1..=4 {
+        let t = step as f32 / 4.0;
+        harness.hover_at(from + (to - from) * t);
+        harness.run();
+    }
+    harness.drop_at(to);
+    harness.run();
+}
+
+fn selection(harness: &Harness<'_, Shell>) -> Vec<String> {
+    harness
+        .state()
+        .editor()
+        .selection
+        .ids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect()
+}
+
+/// `x` and `y` of a layer, as the document has them.
+fn position(harness: &Harness<'_, Shell>, id: &str) -> (f64, f64) {
+    let document = harness.state().editor().document().clone();
+    let layer = document
+        .get(&NodeId::from(id))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .clone();
+    (layer.x, layer.y)
+}
+
+#[test]
+fn a_click_selects_the_outermost_group_under_the_pointer() {
+    let mut harness = harness();
+    // The card is at 240, 340 and 600 by 400 on the demo's artboard.
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    assert_eq!(selection(&harness), ["card"]);
+    // A double click goes into the card and picks what is under it.
+    let dot = screen(&harness, pos2(240.0 + 526.0, 340.0 + 326.0));
+    double_click(&mut harness, dot);
+    assert_eq!(selection(&harness), ["dot"]);
+    // Escape lets go.
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(selection(&harness).is_empty());
+}
+
+#[test]
+fn dragging_moves_the_layer_and_one_undo_puts_it_back() {
+    let mut harness = harness();
+    let before = position(&harness, "card");
+    let from = screen(&harness, pos2(400.0, 650.0));
+    let to = screen(&harness, pos2(430.0, 610.0));
+    drag(&mut harness, from, to);
+    assert_eq!(selection(&harness), ["card"]);
+    let after = position(&harness, "card");
+    assert_ne!(after, before, "the card moved");
+    // The drag was one step, whatever it passed through.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "card"), before);
+}
+
+#[test]
+fn typing_in_a_numeric_field_changes_the_layer() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.get_by_label("X").click();
+    harness.run();
+    harness.get_by_label("X").type_text("100");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert_eq!(position(&harness, "card").0, 100.0);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Move")
+    );
+}
+
+#[test]
+fn the_layer_list_and_the_canvas_agree_on_the_selection() {
+    let mut harness = harness();
+    // From the list to the canvas. The timeline names the card too; the
+    // list comes first.
+    harness
+        .get_all_by_label("Card")
+        .next()
+        .expect("the card's row")
+        .click();
+    harness.run();
+    assert_eq!(selection(&harness), ["card"]);
+    // From the canvas to the list: the card's row opens to show the dot.
+    harness.key_press(Key::Escape);
+    harness.run();
+    let dot = screen(&harness, pos2(240.0 + 526.0, 340.0 + 326.0));
+    command_click(&mut harness, dot);
+    assert_eq!(selection(&harness), ["dot"]);
+    // The row shows the selection: egui reports it as toggled on.
+    let row = harness
+        .get_all_by_label("Dot")
+        .next()
+        .expect("the dot's row");
+    assert_eq!(
+        row.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+}
+
+#[test]
+fn arrow_keys_nudge_and_delete_removes() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    let before = position(&harness, "card");
+    harness.key_press(Key::ArrowRight);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+    harness.run();
+    assert_eq!(
+        position(&harness, "card"),
+        (before.0 + 1.0, before.1 + 10.0)
+    );
+    harness.key_press(Key::Backspace);
+    harness.run();
+    assert!(
+        !harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+    assert!(selection(&harness).is_empty());
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+}
+
+#[test]
+fn a_marquee_selects_what_it_touches() {
+    let mut harness = harness();
+    // From the empty top-left of the artboard into the card.
+    let from = screen(&harness, pos2(40.0, 40.0));
+    let to = screen(&harness, pos2(300.0, 400.0));
+    drag(&mut harness, from, to);
+    assert_eq!(selection(&harness), ["card"]);
+}
+
+/// The layers of the demo's artboard of `kind`, by id.
+fn layers_of(harness: &Harness<'_, Shell>, kind: moshionly_core::NodeType) -> Vec<NodeId> {
+    harness
+        .state()
+        .editor()
+        .document()
+        .nodes()
+        .filter(|node| node.node_type() == kind)
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+#[test]
+fn the_rectangle_tool_draws_and_hands_back_to_select() {
+    let mut harness = harness();
+    harness.key_press(Key::R);
+    harness.run();
+    assert_eq!(
+        harness.state().tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    let from = screen(&harness, pos2(60.0, 60.0));
+    let to = screen(&harness, pos2(200.0, 160.0));
+    drag(&mut harness, from, to);
+    let rects = layers_of(&harness, moshionly_core::NodeType::Rect);
+    // The demo has one rect already: the card's accent.
+    assert_eq!(rects.len(), 2);
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    let new = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    assert!(rects.contains(&new));
+    let layer = harness
+        .state()
+        .editor()
+        .document()
+        .get(&new)
+        .unwrap()
+        .layer()
+        .unwrap()
+        .clone();
+    assert!((layer.x - 60.0).abs() < 1.0 && (layer.width - 140.0).abs() < 1.0);
+}
+
+#[test]
+fn the_text_tool_places_text_to_type_into() {
+    let mut harness = harness();
+    harness.key_press(Key::T);
+    harness.run();
+    let at = screen(&harness, pos2(80.0, 900.0));
+    click(&mut harness, at);
+    assert!(harness.state().is_editing_text());
+    harness.event(egui::Event::Text("Hello".to_owned()));
+    harness.run();
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!harness.state().is_editing_text());
+    let texts = layers_of(&harness, moshionly_core::NodeType::Text);
+    let document = harness.state().editor().document().clone();
+    let typed = texts
+        .iter()
+        .filter_map(|id| moshionly_app::editor::inspect::text_of(document.get(id).unwrap()))
+        .any(|text| text.content == "Hello");
+    assert!(typed, "the words were kept");
+    // Adding and typing were one step.
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Add text")
+    );
+}
+
+#[test]
+fn the_pen_draws_a_path() {
+    let mut harness = harness();
+    harness.key_press(Key::P);
+    harness.run();
+    for world in [pos2(100.0, 100.0), pos2(200.0, 50.0), pos2(300.0, 150.0)] {
+        let at = screen(&harness, world);
+        click(&mut harness, at);
+    }
+    harness.key_press(Key::Enter);
+    harness.run();
+    let paths = layers_of(&harness, moshionly_core::NodeType::Path);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    let layer = harness
+        .state()
+        .editor()
+        .document()
+        .get(&paths[0])
+        .unwrap()
+        .layer()
+        .unwrap()
+        .clone();
+    assert!((layer.width - 200.0).abs() < 1.0 && (layer.height - 100.0).abs() < 1.0);
+}
+
+/// Dialogs that answer with fixed files.
+struct FakeDialogs {
+    open: Option<std::path::PathBuf>,
+    save: Option<std::path::PathBuf>,
+}
+
+impl moshionly_app::dialogs::Dialogs for FakeDialogs {
+    fn open_project(&self) -> Option<std::path::PathBuf> {
+        self.open.clone()
+    }
+
+    fn save_project(&self, _suggested_name: &str) -> Option<std::path::PathBuf> {
+        self.save.clone()
+    }
+
+    fn import_images(&self) -> Option<Vec<std::path::PathBuf>> {
+        None
+    }
+}
+
+/// A folder of its own for one test's files.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let folder = std::env::temp_dir().join(format!("moshionly-app-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    folder
+}
+
+#[test]
+fn unsaved_changes_are_asked_about_before_a_new_document() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowRight);
+    harness.run();
+    assert!(harness.state().editor().has_unsaved_changes());
+
+    // Cancel keeps everything as it was.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    assert!(harness.state().is_asking());
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert!(!harness.state().is_asking());
+    assert!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+
+    // Don't save throws the changes away.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    harness.get_by_label("Don't save").click();
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(document.name, "Untitled");
+    assert_eq!(document.artboards().len(), 1);
+    assert!(!document.contains(&NodeId::from("card")));
+    assert_eq!(harness.state().project_name(), "Untitled");
+
+    // The blank document has nothing to lose: another New does not ask,
+    // and neither does closing the window.
+    assert!(!harness.state().editor().has_unsaved_changes());
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    assert!(!harness.state().is_asking());
+    assert!(harness.state_mut().may_close());
+}
+
+#[test]
+fn closing_with_unsaved_changes_asks_first() {
+    let mut harness = harness();
+    // Nothing to lose: the window may close.
+    assert!(harness.state_mut().may_close());
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowRight);
+    harness.run();
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    harness.get_by_label("Don't save").click();
+    harness.run();
+    assert!(harness.state_mut().may_close());
+}
+
+#[test]
+fn projects_open_and_save_through_the_dialogs() {
+    let folder = scratch("files");
+    let saved = folder.join("copy.moshi");
+    let mut harness = harness();
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: Some(DEMO.into()),
+        save: Some(saved.clone()),
+    }));
+    // Save as writes the file and makes it the project's.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    assert!(saved.exists());
+    assert!(!harness.state().editor().has_unsaved_changes());
+    assert_eq!(harness.state().settings().recent.first(), Some(&saved));
+    // A change and a plain save.
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run();
+    assert!(!harness.state().editor().has_unsaved_changes());
+    let reread = moshionly_core::io::load(&saved).unwrap();
+    let y = reread
+        .get(&NodeId::from("card"))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .y;
+    assert_eq!(y, 341.0);
+    // Opening asks for a file and replaces the document.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    harness.run();
+    let y = position(&harness, "card").1;
+    assert_eq!(y, 340.0, "the demo as it is on disk");
+    assert!(selection(&harness).is_empty());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_broken_file_is_refused_in_plain_words() {
+    let folder = scratch("broken");
+    let broken = folder.join("broken.moshi");
+    std::fs::write(&broken, "this is not a project").unwrap();
+    let mut harness = harness();
+    harness.state_mut().open_path(&broken);
+    harness.run();
+    // The demo is still open.
+    assert!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .contains(&NodeId::from("card"))
+    );
+    assert!(!harness.state().settings().recent.contains(&broken));
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn layers_copy_paste_duplicate_and_group() {
+    let mut harness = harness();
+    let card = screen(&harness, pos2(400.0, 650.0));
+    click(&mut harness, card);
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the card went on the clipboard");
+    assert!(copied.contains("\"moshionly\":\"clipboard\""));
+    harness.run();
+
+    let groups = |harness: &Harness<'_, Shell>| layers_of(harness, moshionly_core::NodeType::Group);
+    harness.event(egui::Event::Paste(copied));
+    harness.run();
+    assert_eq!(groups(&harness).len(), 2);
+    let pasted = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    assert_ne!(pasted, NodeId::from("card"));
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 4, "a group around the duplicate");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+
+    // Text that is not ours is not pasted.
+    harness.event(egui::Event::Paste("hello".to_owned()));
+    harness.run();
+    assert_eq!(groups(&harness).len(), 3);
+}
+
+#[test]
+fn layers_move_in_the_stacking_order() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let order = |harness: &Harness<'_, Shell>| -> Vec<String> {
+        harness
+            .state()
+            .editor()
+            .document()
+            .children(&NodeId::from("card"), moshionly_core::Family::Layer)
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    assert_eq!(order(&harness), ["accent", "title", "raised", "dot"]);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::CloseBracket);
+    harness.run();
+    assert_eq!(order(&harness), ["accent", "raised", "title", "dot"]);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::OpenBracket);
+    harness.run();
+    assert_eq!(order(&harness), ["title", "accent", "raised", "dot"]);
+}
+
+/// The rectangle of the first widget named `label`: in the layer list
+/// that is the row, which comes before the timeline's.
+fn rect_of(harness: &Harness<'_, Shell>, label: &str) -> egui::Rect {
+    harness
+        .get_all_by_label(label)
+        .next()
+        .unwrap_or_else(|| panic!("nothing named {label}"))
+        .rect()
+}
+
+#[test]
+fn a_double_click_renames_a_row() {
+    let mut harness = harness();
+    let card = rect_of(&harness, "Card").center();
+    double_click(&mut harness, card);
+    let field = harness.get_by_label("Layer name");
+    field.type_text(" front");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("card")).unwrap().name(),
+        "Card front"
+    );
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Rename")
+    );
+}
+
+#[test]
+fn dragging_a_row_moves_the_layer_out_of_its_group() {
+    let mut harness = harness();
+    // Selecting the dot opens the card's row.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let card = rect_of(&harness, "Card");
+    // Onto the top edge of the card's row: just above it, out of it.
+    drag(
+        &mut harness,
+        dot.center(),
+        egui::pos2(card.center().x, card.top() + 2.0),
+    );
+    let document = harness.state().editor().document().clone();
+    let dot = document.get(&NodeId::from("dot")).unwrap();
+    assert_eq!(dot.parent, Some(NodeId::from("scene")));
+    // It stayed where it was on the artboard.
+    let layer = dot.layer().unwrap();
+    assert_eq!((layer.x, layer.y), (240.0 + 500.0, 340.0 + 300.0));
+}
+
+/// The first widget named `name` that is not a slider: a slider and its
+/// numeric field share a name.
+fn field<'h>(harness: &'h Harness<'_, Shell>, name: &'h str) -> egui_kittest::Node<'h> {
+    harness
+        .get_all_by_label(name)
+        .find(|node| node.accesskit_node().role() != egui::accesskit::Role::Slider)
+        .unwrap_or_else(|| panic!("no field named {name}"))
+}
+
+/// Types `text` into the numeric field named `name` and presses Enter.
+/// The field is clicked through accessibility, so it may be scrolled out of
+/// view.
+fn type_into(harness: &mut Harness<'_, Shell>, name: &str, text: &str) {
+    field(harness, name).click_accesskit();
+    harness.run();
+    field(harness, name).type_text(text);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+}
+
+#[test]
+fn the_inspector_edits_text_appearance_and_effects() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    type_into(&mut harness, "Font size", "80");
+    type_into(&mut harness, "Opacity", "50");
+    let document = harness.state().editor().document().clone();
+    let title = document.get(&NodeId::from("title")).unwrap();
+    let text = moshionly_app::editor::inspect::text_of(title).unwrap();
+    assert_eq!(text.font_size, 80.0);
+    assert_eq!(text.layer.opacity, 50.0);
+    // Nonsense is refused and changes nothing.
+    type_into(&mut harness, "Font size", "big");
+    let document = harness.state().editor().document().clone();
+    let text =
+        moshionly_app::editor::inspect::text_of(document.get(&NodeId::from("title")).unwrap())
+            .unwrap();
+    assert_eq!(text.font_size, 80.0);
+    // A shadow is added and its blur set.
+    harness.get_by_label("Add shadow").click_accesskit();
+    harness.run();
+    type_into(&mut harness, "Shadow blur", "20");
+    let document = harness.state().editor().document().clone();
+    let shadow = document
+        .get(&NodeId::from("title"))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .shadow
+        .unwrap();
+    assert_eq!(shadow.blur, 20.0);
+}
+
+#[test]
+fn mixed_values_show_as_mixed_and_set_every_layer() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    // The two texts differ in size: the field says so.
+    assert!(harness.query_by_label("Font size").is_some());
+    let field = harness.get_by_label("Font size");
+    assert_eq!(field.accesskit_node().value().as_deref(), Some("Mixed"));
+    type_into(&mut harness, "Font size", "30");
+    let document = harness.state().editor().document().clone();
+    for id in ["title", "raised"] {
+        let text =
+            moshionly_app::editor::inspect::text_of(document.get(&NodeId::from(id)).unwrap())
+                .unwrap();
+        assert_eq!(text.font_size, 30.0, "{id}");
+    }
+}
+
+#[test]
+fn a_gradient_filled_layer_can_be_selected() {
+    let mut harness = harness();
+    // The demo's accent bar has a two-stop gradient. Each stop has a colour
+    // field of its own; one shared name used to clash and panic.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("accent"));
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("Gradient stop 1 colour").is_some());
+    assert!(harness.query_by_label("Gradient stop 2 colour").is_some());
+}
+
+/// The opacity of a layer, as the document has it.
+fn opacity(harness: &Harness<'_, Shell>, id: &str) -> f64 {
+    let document = harness.state().editor().document().clone();
+    document
+        .get(&NodeId::from(id))
+        .unwrap()
+        .layer()
+        .unwrap()
+        .opacity
+}
+
+#[test]
+fn a_click_on_a_slider_is_one_undo_step_of_its_own() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let slider = harness
+        .get_all_by_label("Opacity")
+        .find(|node| node.accesskit_node().role() == egui::accesskit::Role::Slider)
+        .expect("the opacity slider")
+        .rect();
+    // A plain click on the track, pressed and let go in separate frames.
+    let at = pos2(slider.left() + slider.width() * 0.3, slider.center().y);
+    harness.hover_at(at);
+    harness.step();
+    harness.drag_at(at);
+    harness.step();
+    harness.drop_at(at);
+    harness.run();
+    let clicked = opacity(&harness, "title");
+    assert!(clicked < 100.0, "the click set the opacity: {clicked}");
+    assert!(!harness.state().editor().in_gesture(), "the step is closed");
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Change opacity")
+    );
+    // An edit of another layer afterwards is a step of its own.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    type_into(&mut harness, "X", "333");
+    assert_eq!(position(&harness, "dot").0, 333.0);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "dot").0, 500.0);
+    assert_eq!(
+        opacity(&harness, "title"),
+        clicked,
+        "only the move was undone"
+    );
+}
+
+#[test]
+fn undo_in_the_middle_of_a_drag_ends_the_drag_as_one_step() {
+    let mut harness = harness();
+    let before = position(&harness, "card");
+    let from = screen(&harness, pos2(400.0, 650.0));
+    harness.hover_at(from);
+    harness.drag_at(from);
+    for step in 1..=3 {
+        harness.hover_at(from + vec2(10.0, -8.0) * step as f32);
+        harness.run();
+    }
+    assert_ne!(position(&harness, "card"), before, "the card follows");
+    // Undo with the button still held: the move so far is one step, and
+    // it is undone.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "card"), before);
+    // The rest of the drag does nothing more.
+    for step in 4..=8 {
+        harness.hover_at(from + vec2(10.0, -8.0) * step as f32);
+        harness.run();
+    }
+    harness.drop_at(from + vec2(80.0, -64.0));
+    harness.run();
+    assert_eq!(position(&harness, "card"), before);
+    let editor = harness.state().editor();
+    assert!(!editor.in_gesture());
+    assert_eq!(
+        editor.undo_label(),
+        None,
+        "no steps were made after the undo"
+    );
+    assert_eq!(editor.redo_label().as_deref(), Some("Redo Move"));
+}
+
+/// The words of a text layer, as the document has them.
+fn content(harness: &Harness<'_, Shell>, id: &str) -> String {
+    let document = harness.state().editor().document().clone();
+    moshionly_app::editor::inspect::text_of(document.get(&NodeId::from(id)).unwrap())
+        .unwrap()
+        .content
+        .clone()
+}
+
+#[test]
+fn closing_keeps_words_still_being_typed() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    // The title starts at 288, 412 on the artboard and is about 357 by 77.
+    let title = screen(&harness, pos2(288.0 + 100.0, 412.0 + 38.0));
+    double_click(&mut harness, title);
+    assert!(harness.state().is_editing_text());
+    harness.event(egui::Event::Text(" soon".to_owned()));
+    harness.run();
+    assert!(!harness.state().editor().has_unsaved_changes());
+    // The words are kept before deciding: now there is something to save.
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    assert!(content(&harness, "title").contains("soon"));
+}
+
+#[test]
+fn closing_keeps_a_path_still_being_drawn() {
+    let mut harness = harness();
+    harness.key_press(Key::P);
+    harness.run();
+    for world in [pos2(100.0, 100.0), pos2(200.0, 50.0)] {
+        let at = screen(&harness, world);
+        click(&mut harness, at);
+    }
+    assert!(!harness.state_mut().may_close());
+    harness.run();
+    assert!(harness.state().is_asking());
+    assert_eq!(layers_of(&harness, moshionly_core::NodeType::Path).len(), 1);
+}
+
+/// A 2 by 1 PNG.
+fn png() -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(2, 1, image::Rgba([13, 153, 255, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    bytes.into_inner()
+}
+
+/// A project in `folder` with one artboard and an image layer `photo`
+/// showing `assets/hero.png`, which is there too.
+fn project_with_an_image(folder: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(folder.join("assets")).unwrap();
+    std::fs::write(folder.join("assets/hero.png"), png()).unwrap();
+    let file = folder.join("project.moshi");
+    std::fs::write(
+        &file,
+        r#"{"format":"moshionly","version":1,"name":"Photo","nodes":[
+        {"id":"scene","parent":null,"index":"a0","type":"artboard","width":1080,"height":1080},
+        {"id":"photo","parent":"scene","index":"a0","type":"image","x":100,"y":100,"width":200,"height":100,"source":"assets/hero.png"}
+        ]}"#,
+    )
+    .unwrap();
+    file
+}
+
+/// The source of an image layer in a document.
+fn source_in(document: &moshionly_core::Document, id: &str) -> String {
+    moshionly_app::editor::inspect::image_of(document.get(&NodeId::from(id)).unwrap())
+        .unwrap()
+        .source
+        .clone()
+}
+
+#[test]
+fn saving_in_another_folder_takes_the_images_along() {
+    let folder = scratch("save-as-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let original = project_with_an_image(&folder.join("a"));
+    let copy = folder.join("b/copy.moshi");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    let mut harness = harness_on(&original);
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(copy.clone()),
+    }));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    // The image went along, and the saved copy finds it.
+    assert_eq!(
+        std::fs::read(folder.join("b/assets/hero.png")).unwrap(),
+        png()
+    );
+    let reread = moshionly_core::io::load(&copy).unwrap();
+    assert_eq!(source_in(&reread, "photo"), "assets/hero.png");
+    assert!(!harness.state().editor().has_unsaved_changes());
+    // The editor looks for images next to the new file.
+    let editor = harness.state().editor();
+    assert_eq!(
+        editor.project_file().map(std::path::Path::to_path_buf),
+        Some(std::path::absolute(&copy).unwrap())
+    );
+    std::fs::remove_dir_all(folder.join("a")).unwrap();
+    assert_eq!(
+        editor.renderer().assets().natural_size("assets/hero.png"),
+        Ok((2, 1)),
+        "found in the new folder, the old one is gone"
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn undo_after_saving_elsewhere_does_not_point_images_back() {
+    let folder = scratch("save-as-undo");
+    let _ = std::fs::remove_dir_all(&folder);
+    let original = project_with_an_image(&folder.join("a"));
+    // The new folder already has another picture by that name, so the
+    // copy is renamed and the layer pointed at it.
+    let copy = folder.join("b/copy.moshi");
+    std::fs::create_dir_all(folder.join("b/assets")).unwrap();
+    std::fs::write(folder.join("b/assets/hero.png"), b"another picture").unwrap();
+    let mut harness = harness_on(&original);
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(copy.clone()),
+    }));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    harness.run();
+    let renamed = source_in(harness.state().editor().document(), "photo");
+    assert_ne!(renamed, "assets/hero.png", "the name was taken");
+    assert_eq!(
+        std::fs::read(folder.join("b").join(&renamed)).unwrap(),
+        png()
+    );
+
+    // Repointing the image was part of saving: undo does not reach it.
+    assert_eq!(harness.state().editor().undo_label(), None);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(
+        source_in(harness.state().editor().document(), "photo"),
+        renamed
+    );
+    assert!(!harness.state().editor().has_unsaved_changes());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_first_save_copies_images_into_the_project() {
+    let folder = scratch("first-save-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let downloads = folder.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let photo = downloads.join("photo.png");
+    std::fs::write(&photo, png()).unwrap();
+    let saved = folder.join("work/teaser.moshi");
+    std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    let mut harness = harness();
+    harness.state_mut().set_dialogs(Box::new(FakeDialogs {
+        open: None,
+        save: Some(saved.clone()),
+    }));
+    // A new project, with a photo dropped in from elsewhere.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run();
+    let (ids, problems) = harness
+        .state_mut()
+        .editor_mut()
+        .import_images(&[photo.as_path()], None);
+    assert!(problems.is_empty(), "{problems:?}");
+    let id = ids[0].to_string();
+    // Unsaved, the photo is used from where it is.
+    assert_eq!(
+        source_in(harness.state().editor().document(), &id),
+        photo.to_string_lossy()
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run();
+    assert!(folder.join("work/assets/photo.png").exists());
+    let reread = moshionly_core::io::load(&saved).unwrap();
+    assert_eq!(source_in(&reread, &id), "assets/photo.png");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn an_image_pasted_into_another_project_comes_with_its_file() {
+    let folder = scratch("paste-images");
+    let _ = std::fs::remove_dir_all(&folder);
+    let first = project_with_an_image(&folder.join("a"));
+    let second = folder.join("b/other.moshi");
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(
+        &second,
+        r#"{"format":"moshionly","version":1,"name":"Other","nodes":[
+        {"id":"scene","parent":null,"index":"a0","type":"artboard","width":1080,"height":1080}
+        ]}"#,
+    )
+    .unwrap();
+    let mut harness = harness_on(&first);
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("photo"));
+    harness.run();
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the photo went on the clipboard");
+    harness.run();
+    harness.state_mut().open_path(&second);
+    harness.run();
+    harness.event(egui::Event::Paste(copied));
+    harness.run();
+    let pasted = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .expect("the pasted photo is selected");
+    assert_eq!(
+        source_in(harness.state().editor().document(), pasted.as_str()),
+        "assets/hero.png"
+    );
+    assert_eq!(
+        std::fs::read(folder.join("b/assets/hero.png")).unwrap(),
+        png()
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_row_let_go_outside_the_list_moves_nothing() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let title = rect_of(&harness, "Title");
+    // Out over the canvas, at the height of another row.
+    drag(
+        &mut harness,
+        dot.center(),
+        egui::pos2(800.0, title.center().y),
+    );
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("dot")).unwrap().parent,
+        Some(NodeId::from("card"))
+    );
+    assert_eq!(harness.state().editor().undo_label(), None);
+}
+
+#[test]
+fn escape_stops_dragging_a_row() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("dot"));
+    harness.run();
+    let dot = rect_of(&harness, "Dot");
+    let card = rect_of(&harness, "Card");
+    let to = egui::pos2(card.center().x, card.top() + 2.0);
+    harness.hover_at(dot.center());
+    harness.drag_at(dot.center());
+    for step in 1..=4 {
+        let t = step as f32 / 4.0;
+        harness.hover_at(dot.center() + (to - dot.center()) * t);
+        harness.run();
+    }
+    harness.key_press(Key::Escape);
+    harness.run();
+    harness.drop_at(to);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("dot")).unwrap().parent,
+        Some(NodeId::from("card"))
+    );
+    assert_eq!(selection(&harness), ["dot"], "Escape did not deselect");
+}
+
+#[test]
+fn ungrouping_nested_groups_selects_only_what_is_left() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("card"));
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let inner = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let outer = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([outer.clone(), inner.clone()]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+    harness.run();
+    let editor = harness.state().editor();
+    assert!(!editor.document().contains(&inner));
+    assert!(!editor.document().contains(&outer));
+    assert_eq!(selection(&harness), ["card"]);
+}
+
+#[test]
+fn colours_menus_and_sliders_show_mixed_values_too() {
+    use moshionly_core::Edit;
+    let mut harness = harness();
+    // The title and the raised amount differ in weight and fill already;
+    // make their opacity and blend differ, and stroke only the title.
+    harness
+        .state_mut()
+        .editor_mut()
+        .apply(
+            "Set up",
+            &[
+                Edit::set("title", "opacity", 50.0),
+                Edit::set("raised", "blend_mode", "multiply"),
+                Edit::set(
+                    "title",
+                    "stroke",
+                    serde_json::json!({ "paint": "#000000", "width": 2 }),
+                ),
+            ],
+        )
+        .unwrap();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    assert!(harness.query_by_label("Weight: Mixed").is_some());
+    assert!(harness.query_by_label("Blend mode: Mixed").is_some());
+    assert_eq!(
+        field(&harness, "Opacity")
+            .accesskit_node()
+            .value()
+            .as_deref(),
+        Some("Mixed")
+    );
+    let fill_hex = || {
+        harness
+            .get_all_by_label("Hex colour")
+            .next()
+            .expect("the fill's hex")
+            .accesskit_node()
+            .value()
+            .map(|value| value.to_string())
+    };
+    assert_eq!(fill_hex().as_deref(), Some("Mixed"));
+
+    // A colour typed into the mixed fill sets both.
+    harness
+        .get_all_by_label("Hex colour")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_all_by_label("Hex colour")
+        .next()
+        .unwrap()
+        .type_text("FF0000");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let document = harness.state().editor().document().clone();
+    for id in ["title", "raised"] {
+        let fill = document
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .fill()
+            .cloned();
+        assert_eq!(
+            fill,
+            Some(moshionly_core::model::Paint::Solid(
+                moshionly_core::Color::rgb(255, 0, 0)
+            )),
+            "{id}"
+        );
+    }
+
+    // A stroke's width changes where there is a stroke, and adds none.
+    type_into(&mut harness, "Stroke width", "4");
+    let document = harness.state().editor().document().clone();
+    let stroke = |id: &str| {
+        document
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .stroke()
+            .cloned()
+    };
+    assert_eq!(stroke("title").map(|s| s.width), Some(4.0));
+    assert_eq!(stroke("raised"), None);
+}
+
+/// The box a layer is drawn in on the canvas, as an upright rectangle.
+fn drawn(harness: &mut Harness<'_, Shell>, id: &str) -> egui::Rect {
+    harness
+        .state_mut()
+        .editor_mut()
+        .box_of(&NodeId::from(id))
+        .unwrap()
+        .bounds()
+}
+
+#[test]
+fn the_inspector_sizes_text_by_the_box_it_is_drawn_in() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("title"));
+    harness.run();
+    let before = drawn(&mut harness, "title");
+    assert!(before.width() > 300.0, "the title is wide: {before:?}");
+    // The field shows the width it is drawn at, not the hint in the file.
+    let width = field(&harness, "Width").accesskit_node().numeric_value();
+    assert!(
+        width.is_some_and(|w| (w - f64::from(before.width())).abs() < 0.5),
+        "{width:?}"
+    );
+    // Setting the height keeps the width that is drawn: no re-wrapping.
+    type_into(&mut harness, "Height", "80");
+    let after = drawn(&mut harness, "title");
+    assert!((after.width() - before.width()).abs() < 0.5, "{after:?}");
+    assert!((after.height() - 80.0).abs() < 0.5);
+    assert!((after.left() - before.left()).abs() < 0.5);
+    let document = harness.state().editor().document().clone();
+    let title =
+        moshionly_app::editor::inspect::text_of(document.get(&NodeId::from("title")).unwrap())
+            .unwrap()
+            .clone();
+    assert_eq!(title.auto_size, moshionly_core::model::AutoSize::Fixed);
+}
+
+#[test]
+fn a_fixed_size_chosen_for_text_is_the_size_it_had() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("raised"));
+    harness.run();
+    let before = drawn(&mut harness, "raised");
+    harness
+        .get_by_label("Text resizing: Auto width")
+        .click_accesskit();
+    harness.run();
+    harness.get_by_label("Fixed size").click();
+    harness.run();
+    let after = drawn(&mut harness, "raised");
+    assert!(
+        (after.size() - before.size()).length() < 0.5,
+        "{before:?} {after:?}"
+    );
+    assert!((after.min - before.min).length() < 0.5);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Change resizing")
+    );
+}
+
+#[test]
+fn a_group_made_around_text_encloses_the_words() {
+    let mut harness = harness();
+    let title = drawn(&mut harness, "title");
+    let raised = drawn(&mut harness, "raised");
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("title"), NodeId::from("raised")]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let group = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .expect("the new group is selected");
+    let around = drawn(&mut harness, group.as_str());
+    let words = title.union(raised);
+    assert!(
+        around.expand(0.5).contains_rect(words),
+        "{around:?} around {words:?}"
+    );
+    // The words did not move, and it is one step.
+    assert!((drawn(&mut harness, "title").min - title.min).length() < 0.5);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Group")
+    );
+}
+
+#[test]
+fn a_group_resized_from_a_handle_stretches_its_contents() {
+    let mut harness = harness();
+    // A plain group around the title and the dot, made with the keyboard.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set([NodeId::from("raised"), NodeId::from("dot")]);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let group = harness
+        .state()
+        .editor()
+        .selection
+        .single()
+        .cloned()
+        .unwrap();
+    let before = drawn(&mut harness, group.as_str());
+    let dot = drawn(&mut harness, "dot");
+    // Its bottom-right handle, out by half its width and height.
+    let corner = screen(&harness, before.right_bottom());
+    let to = screen(&harness, before.right_bottom() + before.size() / 2.0);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::CTRL));
+    drag(&mut harness, corner, to);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run();
+    let after = drawn(&mut harness, group.as_str());
+    assert!(
+        (after.width() - before.width() * 1.5).abs() < 2.0,
+        "{before:?} {after:?}"
+    );
+    // The dot grew with it, from the group's corner.
+    let grown = drawn(&mut harness, "dot");
+    assert!(
+        (grown.width() - dot.width() * 1.5).abs() < 2.0,
+        "{dot:?} {grown:?}"
+    );
+    // One step.
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Resize")
+    );
+    // Typing a width does the same.
+    let wider = format!("{}", (after.width() * 2.0).round());
+    type_into(&mut harness, "Width", &wider);
+    let twice = drawn(&mut harness, "dot");
+    assert!(
+        (twice.width() - grown.width() * 2.0).abs() < 3.0,
+        "{grown:?} {twice:?}"
+    );
+
+    // The card clips: resizing it leaves what is inside as it was.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("card"));
+    harness.run();
+    let accent = drawn(&mut harness, "accent");
+    type_into(&mut harness, "Width", "900");
+    assert_eq!(drawn(&mut harness, "accent"), accent);
+}

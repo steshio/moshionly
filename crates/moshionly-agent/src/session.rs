@@ -222,6 +222,13 @@ impl Session {
         self.saved_revision != Some(self.revision)
     }
 
+    /// Says that the document as it is now has nothing worth saving, as if
+    /// it had just been saved: for a new document nobody has touched yet,
+    /// which has no file. Any later change makes it unsaved again.
+    pub fn mark_clean(&mut self) {
+        self.saved_revision = Some(self.revision);
+    }
+
     /// Applies a batch of edits as one undo step made by `origin`.
     ///
     /// The batch is applied completely or not at all. Returns whether it
@@ -381,6 +388,21 @@ impl Session {
     /// The steps that can be redone. The last one is redone next.
     pub fn redo_steps(&self) -> &[Step] {
         &self.redo
+    }
+
+    /// Makes the most recent undo step permanent and returns it: its change
+    /// stays, but undo skips it and goes on with the step before. For a
+    /// change that is part of something else rather than an edit of its
+    /// own, such as pointing image layers at copies made while saving the
+    /// project in another folder. Returns `None`, and changes nothing, when
+    /// there is no step or a gesture is open.
+    pub fn forget_last_step(&mut self) -> Option<Step> {
+        if self.gesture.is_some() || !self.history.forget_last() {
+            return None;
+        }
+        let step = self.undo.pop();
+        self.check_steps();
+        step
     }
 
     /// Undoes the most recent step and returns it, or `None` when there is
@@ -824,6 +846,39 @@ mod tests {
     }
 
     #[test]
+    fn a_step_made_permanent_is_skipped_by_undo() {
+        let mut session = session();
+        session
+            .apply(Origin::User, "Move", &[Edit::set("r1", "x", 5)])
+            .unwrap();
+        session
+            .apply(Origin::User, "Relink", &[Edit::set("r1", "y", 7)])
+            .unwrap();
+        let revision = session.revision();
+
+        let forgotten = session.forget_last_step().unwrap();
+        assert_eq!(forgotten.summary, "Relink");
+        assert_eq!(session.revision(), revision, "the document did not change");
+        assert_eq!(session.undo_steps().last().unwrap().summary, "Move");
+        // Undo goes on with the step before, and the permanent change stays.
+        assert_eq!(session.undo().unwrap().unwrap().summary, "Move");
+        let rect = session.document().get(&NodeId::from("r1")).unwrap();
+        assert_eq!(
+            (rect.layer().unwrap().x, rect.layer().unwrap().y),
+            (0.0, 7.0)
+        );
+
+        // Not while a gesture is open: its step is not the last one yet.
+        session.begin_gesture(Origin::User, "Drag");
+        session
+            .apply(Origin::User, "", &[Edit::set("r1", "x", 9)])
+            .unwrap();
+        assert!(session.forget_last_step().is_none());
+        session.commit_gesture();
+        assert_eq!(session.undo_steps().last().unwrap().summary, "Drag");
+    }
+
+    #[test]
     fn a_gesture_is_one_step() {
         let mut session = session();
         session.begin_gesture(Origin::User, "Drag");
@@ -985,6 +1040,21 @@ mod tests {
         assert_eq!(reopened.document().name, "Renamed");
         assert!(!reopened.has_unsaved_changes());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_document_can_start_clean() {
+        let mut session = session();
+        assert!(session.has_unsaved_changes());
+        session.mark_clean();
+        assert!(!session.has_unsaved_changes());
+        assert_eq!(session.path(), None);
+        session.rename("Renamed");
+        assert!(session.has_unsaved_changes(), "a change counts again");
+        session.replace(Document::new("New"), None);
+        assert!(session.has_unsaved_changes());
+        session.mark_clean();
+        assert!(!session.has_unsaved_changes());
     }
 
     #[test]

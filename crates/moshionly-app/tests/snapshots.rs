@@ -23,10 +23,10 @@ use egui::vec2;
 use moshionly_app::{
     key::Key,
     settings::Settings,
-    shell::{InspectorTab, Shell, sample::Sample},
+    shell::{InspectorTab, Shell},
     theme::{Theme, icons},
     timeline::{Timeline, TimelineState},
-    viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, Viewport},
+    viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, PenOverlay, Viewport},
     widgets::*,
 };
 
@@ -401,7 +401,24 @@ fn overlays() {
     }
 }
 
-/// The whole editor window with the sample scene.
+/// The demo project that comes with the engine.
+const DEMO: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../moshionly-core/examples/demo.moshi"
+);
+
+/// An editor on the demo project that draws with the bundled fonts on the
+/// test's own thread, so every frame shows finished pictures.
+fn demo_shell() -> Shell {
+    let session = moshionly_agent::SessionHandle::open(DEMO).expect("the demo file opens");
+    let renderer = moshionly_render::Renderer::new(
+        moshionly_render::FontLibrary::bundled(),
+        moshionly_render::AssetLoader::default(),
+    );
+    Shell::headless(Settings::default(), session, renderer)
+}
+
+/// The whole editor window with the demo project.
 #[test]
 fn shell() {
     if !can_render() {
@@ -409,7 +426,11 @@ fn shell() {
     }
     let size = vec2(1440.0, 900.0);
     for variant in Variant::ALL {
-        let mut shell = Shell::new(Settings::default());
+        let mut shell = demo_shell();
+        shell
+            .editor_mut()
+            .selection
+            .select(moshionly_core::NodeId::from("title"));
         let (path, image) = snapshot("shell", size, variant, move |ui| {
             shell.show(ui);
         });
@@ -418,7 +439,8 @@ fn shell() {
     }
 }
 
-/// The window with the chat panel open and the Animate tab showing.
+/// The window with the chat panel open and the Animate tab showing the
+/// card in the middle of its animation.
 #[test]
 fn shell_with_chat() {
     if !can_render() {
@@ -426,9 +448,15 @@ fn shell_with_chat() {
     }
     let size = vec2(1440.0, 900.0);
     for variant in Variant::ALL {
-        let mut shell = Shell::new(Settings::default());
+        let mut shell = demo_shell();
         shell.panels_mut().chat_open = true;
         shell.inspector_mut().tab = InspectorTab::Animate;
+        let editor = shell.editor_mut();
+        editor
+            .selection
+            .select(moshionly_core::NodeId::from("card"));
+        // The amount is counting up and the dot popping in.
+        editor.set_playhead(1700.0);
         let (path, image) = snapshot("shell-chat", size, variant, move |ui| {
             shell.show(ui);
         });
@@ -458,6 +486,7 @@ fn viewport() {
                     name: "Scene 1",
                     rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1080.0, 1080.0)),
                     texture: None,
+                    texture_rect: None,
                     fill: egui::Color32::WHITE,
                     selected: true,
                 },
@@ -466,6 +495,7 @@ fn viewport() {
                     name: "A second scene with a name too long to fit above it",
                     rect: egui::Rect::from_min_size(egui::pos2(1240.0, 0.0), vec2(400.0, 1080.0)),
                     texture: None,
+                    texture_rect: None,
                     fill: egui::Color32::from_rgb(0x18, 0x18, 0x1E),
                     selected: false,
                 },
@@ -488,6 +518,17 @@ fn viewport() {
                     to: egui::pos2(1240.0, 800.0),
                     label: "160".to_owned(),
                 }],
+                pen: Some(PenOverlay {
+                    path: vec![
+                        egui::pos2(1340.0, 900.0),
+                        egui::pos2(1440.0, 760.0),
+                        egui::pos2(1540.0, 940.0),
+                    ],
+                    anchors: vec![egui::pos2(1340.0, 900.0), egui::pos2(1440.0, 760.0)],
+                    handles: vec![[egui::pos2(1440.0, 760.0), egui::pos2(1500.0, 740.0)]],
+                    closing: false,
+                }),
+                editing: None,
             };
             Viewport::new(&mut camera)
                 .artboards(&artboards)
@@ -499,7 +540,7 @@ fn viewport() {
     }
 }
 
-/// The timeline on its own, with the sample scene's actions.
+/// The timeline on its own, with the demo project's actions.
 #[test]
 fn timeline() {
     if !can_render() {
@@ -507,19 +548,30 @@ fn timeline() {
     }
     let size = vec2(1100.0, 280.0);
     for variant in Variant::ALL {
-        let sample = Sample::default();
-        let mut groups = sample.timeline_groups();
+        let document = moshionly_core::io::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../moshionly-core/examples/demo.moshi"
+        ))
+        .expect("the demo file loads");
+        let artboard = document.artboards()[0].clone();
+        let duration = moshionly_core::eval::duration_of(&document, &artboard).unwrap();
+        let mut groups = moshionly_app::editor::timeline::timeline_groups(
+            &document,
+            &artboard,
+            &Default::default(),
+        );
         groups[1].collapsed = true;
         groups[2].hidden = true;
-        let selection = [Key::new("a-card-move")];
+        let selection = [groups[0].bars[0].key.clone()];
+        let selected_group = groups[0].key.clone();
         let mut state = TimelineState::default();
         let (path, image) = snapshot("timeline", size, variant, move |ui| {
             let rect = ui.ctx().content_rect();
             Timeline::new(&mut state, &groups)
                 .selection(&selection)
-                .selected_group(Some(&Key::new("card")))
+                .selected_group(Some(&selected_group))
                 .playhead(1200.0)
-                .duration(sample.duration)
+                .duration(duration)
                 .looping(true)
                 .show(ui, rect);
         });
@@ -536,7 +588,7 @@ fn command_palette() {
     }
     let size = vec2(1440.0, 900.0);
     for variant in Variant::ALL {
-        let mut shell = Shell::new(Settings::default());
+        let mut shell = demo_shell();
         shell.palette_mut().open();
         let (path, image) = snapshot("palette", size, variant, move |ui| {
             shell.show(ui);

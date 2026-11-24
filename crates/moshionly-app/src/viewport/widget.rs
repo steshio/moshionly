@@ -27,6 +27,10 @@ pub struct Artboard<'a> {
     pub rect: Rect,
     /// The rendered artboard. Until it arrives, `fill` is shown.
     pub texture: Option<TextureId>,
+    /// The part of the artboard the texture covers, in world coordinates.
+    /// `None` when it covers the whole artboard. Close up, only the part on
+    /// screen is rendered; the rest shows `fill`.
+    pub texture_rect: Option<Rect>,
     /// The artboard's background colour.
     pub fill: Color32,
     /// Whether the artboard is selected; its name is then accent-coloured.
@@ -342,12 +346,22 @@ impl<'a> Viewport<'a> {
                 continue;
             }
             painter.add(theme.shadow.artboard.as_shape(screen, 0.0));
-            match artboard.texture {
-                Some(texture) => {
-                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            match (artboard.texture, artboard.texture_rect) {
+                (Some(texture), None) => {
                     painter.image(texture, screen, uv, Color32::WHITE);
                 }
-                None => {
+                (Some(texture), Some(part)) => {
+                    painter.rect_filled(screen, 0.0, artboard.fill);
+                    let part = camera.rect_to_screen(rect, part);
+                    painter.with_clip_rect(screen.intersect(rect)).image(
+                        texture,
+                        part,
+                        uv,
+                        Color32::WHITE,
+                    );
+                }
+                (None, _) => {
                     painter.rect_filled(screen, 0.0, artboard.fill);
                 }
             }

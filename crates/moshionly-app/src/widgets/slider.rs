@@ -19,6 +19,7 @@ pub struct Slider<'a> {
     range: RangeInclusive<f64>,
     step: f64,
     width: Option<f32>,
+    mixed: bool,
 }
 
 impl<'a> Slider<'a> {
@@ -31,7 +32,15 @@ impl<'a> Slider<'a> {
             range,
             step: 1.0,
             width: None,
+            mixed: false,
         }
+    }
+
+    /// Says that the layers being edited differ: the track shows no value
+    /// until the slider is moved, which sets the value for all.
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// The value snaps to multiples of `step` (1 by default; 0 disables).
@@ -46,8 +55,9 @@ impl<'a> Slider<'a> {
         self
     }
 
-    /// Draws the slider. `changed()` is true while the value moves and
-    /// `drag_stopped()` when the gesture ends.
+    /// Draws the slider. `changed()` is true while the value moves, and
+    /// `drag_stopped()` or `clicked()` when the gesture ends: a click on the
+    /// track sets the value without ever becoming a drag.
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = Theme::of(ui);
         let c = &theme.color;
@@ -69,7 +79,7 @@ impl<'a> Slider<'a> {
         {
             let t = f64::from(((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0));
             let next = slider_value(t, min, max, self.step);
-            if next != *self.value {
+            if next != *self.value || self.mixed {
                 *self.value = next;
                 response.mark_changed();
             }
@@ -80,7 +90,10 @@ impl<'a> Slider<'a> {
         } else {
             0.0
         };
-        if ui.is_rect_visible(rect) {
+        if ui.is_rect_visible(rect) && self.mixed {
+            // No one value to show: the bare track.
+            ui.painter().rect_filled(track, 2.0, c.well_pressed);
+        } else if ui.is_rect_visible(rect) {
             let x = track.left() + track.width() * t;
             ui.painter().rect_filled(track, 2.0, c.well_pressed);
             ui.painter().rect_filled(
@@ -128,21 +141,38 @@ pub fn slider_with_value(
     range: RangeInclusive<f64>,
     unit: &str,
 ) -> NumericResponse {
+    slider_with_value_mixed(ui, value, name, range, unit, false)
+}
+
+/// A [`slider_with_value`] that can say the layers being edited differ
+/// (`mixed`): the slider and the field both show it until one is used,
+/// which sets the value for all.
+pub fn slider_with_value_mixed(
+    ui: &mut Ui,
+    value: &mut f64,
+    name: &str,
+    range: RangeInclusive<f64>,
+    unit: &str,
+    mixed: bool,
+) -> NumericResponse {
     let theme = Theme::of(ui);
     let field_width = 56.0;
     let slider_width = (ui.available_width() - field_width - theme.space.md).max(40.0);
     let slider = Slider::new(value, name, range.clone())
         .width(slider_width)
+        .mixed(mixed)
         .show(ui);
     let mut numeric = NumericField::new(value, name)
         .unit(unit)
         .range(range)
         .width(field_width)
+        .mixed(mixed && !slider.changed())
         .show(ui);
     if slider.changed() {
         numeric.response.mark_changed();
     }
-    numeric.finished |= slider.drag_stopped();
+    // A click on the track changes the value but is never a drag.
+    numeric.finished |= slider.drag_stopped() || slider.clicked();
     numeric.active |= slider.dragged();
     numeric
 }

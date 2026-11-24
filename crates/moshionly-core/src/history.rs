@@ -192,6 +192,16 @@ impl History {
         }
     }
 
+    /// Makes the most recent undo step permanent: its change stays in the
+    /// document, but undo no longer reaches it and goes on with the step
+    /// before. For a change that is part of something else rather than an
+    /// edit of its own, such as pointing image layers at copies made while
+    /// saving a project in another folder. An open transaction is left as
+    /// it is. Returns whether there was a step to make permanent.
+    pub fn forget_last(&mut self) -> bool {
+        self.undo.pop().is_some()
+    }
+
     /// Forgets every step and any open transaction, for example after
     /// loading another file into the same document. The revision still
     /// changes, because whatever was derived from the document is stale.
@@ -281,6 +291,30 @@ mod tests {
         assert!(history.redo(&mut document).unwrap());
         assert_eq!(x_of(&document, "r1"), 20.0);
         assert!(!history.redo(&mut document).unwrap());
+    }
+
+    #[test]
+    fn a_step_made_permanent_is_skipped_by_undo() {
+        let (mut document, mut history) = setup();
+        history
+            .apply(&mut document, &[update("r1", json!({ "x": 10 }))])
+            .unwrap();
+        history
+            .apply(&mut document, &[update("r1", json!({ "y": 30 }))])
+            .unwrap();
+        let revision = history.revision();
+
+        assert!(history.forget_last());
+        assert_eq!(history.revision(), revision, "the document did not change");
+        assert_eq!(history.undo_depth(), 2);
+        // Undo goes on with the step before; the permanent change stays.
+        assert!(history.undo(&mut document).unwrap());
+        let rect = document.get(&NodeId::from("r1")).unwrap().layer().unwrap();
+        assert_eq!((rect.x, rect.y), (0.0, 30.0));
+
+        assert!(history.forget_last());
+        assert!(!history.forget_last(), "nothing left to make permanent");
+        assert!(!history.undo(&mut document).unwrap());
     }
 
     #[test]

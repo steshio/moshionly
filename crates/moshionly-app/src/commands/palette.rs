@@ -160,7 +160,7 @@ impl Palette {
                                         menu_heading(ui, command.category().label());
                                     }
                                     let shortcut = command.shortcut_label().unwrap_or_default();
-                                    let mut item = MenuItem::new(command.name())
+                                    let mut item = MenuItem::new(registry.label(command))
                                         .highlighted(index == self.highlighted);
                                     if let Some(icon) = command.icon() {
                                         item = item.icon(icon);
