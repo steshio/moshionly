@@ -403,42 +403,70 @@ impl PendingImport {
 ///   or out onto the canvas, comes over as new the first time, and later
 ///   sends update that copy.
 /// - A layer whose earlier version sits inside another part's earlier
-///   version has left it in Figma since. It comes over as new, instead of
-///   being put in a place that is about to be replaced.
+///   version has left it in Figma since. It updates a copy that came over
+///   when it left before, if there is one, and otherwise comes over as new,
+///   instead of being put in a place that is about to be replaced.
 /// - No earlier layer is taken twice.
 fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<NodeId>> {
-    let mut taken = HashSet::new();
-    let found: Vec<Option<NodeId>> = parts
+    // Every earlier layer of the right kind for each part, in tree order.
+    let candidates: Vec<Vec<NodeId>> = parts
         .iter()
         .map(|part| {
             let root = &part[0];
             root.layer()
                 .and_then(|layer| layer.source_id.as_deref())
                 .filter(|source| !source.is_empty())
-                .and_then(|source| {
-                    layer_from(document, source, root.node_type() == NodeType::Artboard)
-                })
+                .map(|source| layers_from(document, source, root.node_type() == NodeType::Artboard))
+                .unwrap_or_default()
+        })
+        .collect();
+    let inside = |taken: &HashSet<NodeId>, id: &NodeId| {
+        document
+            .ancestors(id)
+            .any(|above| taken.contains(&above.id))
+    };
+    let mut taken = HashSet::new();
+    let first: Vec<Option<NodeId>> = candidates
+        .iter()
+        .map(|list| {
+            list.first()
+                .cloned()
                 .filter(|existing| taken.insert(existing.clone()))
         })
         .collect();
-    found
+    let mut found: Vec<Option<NodeId>> = first
         .into_iter()
-        .map(|earlier| {
-            earlier.filter(|existing| {
-                !document
-                    .ancestors(existing)
-                    .any(|above| taken.contains(&above.id))
+        .map(|earlier| earlier.filter(|existing| !inside(&taken, existing)))
+        .collect();
+    // A part whose first earlier version goes with another part's may have
+    // a copy elsewhere that came over when it left before: update that one.
+    for (earlier, list) in found.iter_mut().zip(&candidates) {
+        if earlier.is_some() {
+            continue;
+        }
+        *earlier = list
+            .iter()
+            .find(|candidate| {
+                !taken.contains(*candidate)
+                    && !inside(&taken, candidate)
+                    && !taken
+                        .iter()
+                        .any(|other| document.is_ancestor(candidate, other))
             })
-        })
-        .collect()
+            .cloned();
+        if let Some(chosen) = earlier {
+            taken.insert(chosen.clone());
+        }
+    }
+    found
 }
 
-/// The first layer of the document, in tree order, that was imported from
-/// `source` and is an artboard exactly when `artboard` is true.
-fn layer_from(document: &Document, source: &str, artboard: bool) -> Option<NodeId> {
+/// The layers of the document, in tree order, that were imported from
+/// `source` and are artboards exactly when `artboard` is true.
+fn layers_from(document: &Document, source: &str, artboard: bool) -> Vec<NodeId> {
     document
         .nodes()
-        .find(|node| {
+        .filter(|node| {
             (node.node_type() == NodeType::Artboard) == artboard
                 && node
                     .layer()
@@ -446,6 +474,7 @@ fn layer_from(document: &Document, source: &str, artboard: bool) -> Option<NodeI
                     .is_some_and(|id| id == source)
         })
         .map(|node| node.id.clone())
+        .collect()
 }
 
 /// What became of a design handed to the app.

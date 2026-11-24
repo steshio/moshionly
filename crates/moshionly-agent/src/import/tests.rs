@@ -139,8 +139,10 @@ fn an_accepted_design_is_one_import_step() {
 /// The id of the layer imported from `source`.
 fn imported(session: &SessionHandle, source: &str) -> NodeId {
     let document = session.document();
-    layer_from(&document, source, true)
-        .or_else(|| layer_from(&document, source, false))
+    layers_from(&document, source, true)
+        .into_iter()
+        .chain(layers_from(&document, source, false))
+        .next()
         .unwrap()
 }
 
@@ -183,7 +185,7 @@ fn sending_again_replaces_the_layers_and_keeps_their_animations() {
     let animations = document.animations_targeting(&new_box);
     assert_eq!(animations.len(), 1, "the fade moved over to the new box");
     assert_eq!(document.artboards().len(), 4);
-    assert!(layer_from(&document, "figma:abc:9:1", true).is_some());
+    assert!(!layers_from(&document, "figma:abc:9:1", true).is_empty());
 }
 
 #[test]
@@ -260,6 +262,39 @@ fn a_layer_moved_out_of_a_frame_is_kept_whatever_the_order() {
     assert!(
         !document.is_ancestor(&frame, &boxes[0].id),
         "and outside its old frame"
+    );
+}
+
+#[test]
+fn a_layer_moved_out_and_back_in_keeps_one_copy_outside() {
+    let session = demo_session();
+    let apply = |nodes: Value| {
+        read(&envelope(nodes))
+            .unwrap()
+            .apply(&session, &ImportTarget::ReplaceMatching)
+            .unwrap()
+    };
+    let frame = json!({ "id": "1:1", "type": "artboard", "name": "Frame", "width": 400,
+                        "height": 300, "fill": "#FFFFFF", "source_id": "figma:abc:1:1" });
+    let outside = json!([
+        { "id": "1:2", "type": "rect", "name": "Box", "x": 500, "y": 20,
+          "width": 100, "height": 50, "fill": "#FF5A1F", "source_id": "figma:abc:1:2" },
+        frame.clone(),
+    ]);
+    apply(design("#0D99FF"));
+    let before = session.document().artboards().len();
+    // Out of the frame, back in, and out again.
+    apply(outside.clone());
+    apply(design("#0D99FF"));
+    let outcome = apply(outside);
+    assert_eq!(
+        outcome.replaced, 2,
+        "the frame and the copy outside are updated"
+    );
+    assert_eq!(
+        session.document().artboards().len(),
+        before + 1,
+        "one copy outside, not one more each time"
     );
 }
 
