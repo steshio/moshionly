@@ -449,9 +449,17 @@ fn code_block(ui: &mut Ui, text: &str) -> bool {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
                 let copy_width = theme.size.control + theme.space.xs;
-                ui.add_sized(
-                    [ui.available_width() - copy_width, 0.0],
-                    egui::Label::new(RichText::new(text).font(theme.mono()).color(c.text)).wrap(),
+                let width = ui.available_width() - copy_width;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(width);
+                        ui.add(
+                            egui::Label::new(RichText::new(text).font(theme.mono()).color(c.text))
+                                .wrap(),
+                        );
+                    },
                 );
                 copy = ui
                     .add(IconButton::new(icons::COPY).tooltip("Copy"))
