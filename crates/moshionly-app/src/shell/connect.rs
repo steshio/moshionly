@@ -29,9 +29,10 @@ use crate::{
 /// more once a few are waiting.
 pub const MAX_IMPORTS_PER_WINDOW: usize = 6;
 
-/// How many bytes of designs are added in one [`IMPORT_WINDOW`]. The first
-/// design of a window is always added, however large, so one design at the
-/// server's size limit never gets stuck.
+/// Once the designs added in one [`IMPORT_WINDOW`] come to this many bytes,
+/// no more are added until the window moves on. Only what was already added
+/// counts, so the design that crosses the line is added whole (up to the
+/// server's 64 MB limit), and one design at that limit never gets stuck.
 pub const MAX_IMPORT_BYTES_PER_WINDOW: usize = 32 * 1024 * 1024;
 
 /// See [`MAX_IMPORTS_PER_WINDOW`].
