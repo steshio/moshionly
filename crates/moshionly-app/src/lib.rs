@@ -19,6 +19,8 @@
 //!   Its rules (what a click selects, how a drag becomes edits) are plain
 //!   functions that are tested without a window.
 //! - [`canvas`]: pictures of the artboards, rendered on worker threads.
+//! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
+//!   and the agent tools.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
 //!
@@ -26,6 +28,7 @@
 
 pub mod app;
 pub mod canvas;
+pub mod chat;
 pub mod commands;
 pub mod dialogs;
 pub mod editor;
