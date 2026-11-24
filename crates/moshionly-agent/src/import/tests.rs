@@ -184,6 +184,57 @@ fn sending_again_replaces_the_layers_and_keeps_their_animations() {
 }
 
 #[test]
+fn a_frame_moved_into_another_frame_since_comes_over_as_new() {
+    let session = demo_session();
+    read(&envelope(design("#0D99FF")))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    let artboards = session.document().artboards().len();
+
+    // In Figma the frame now sits inside another frame, so it comes over as
+    // a group, which cannot take the artboard's place.
+    let mut nodes = design("#FF5A1F");
+    nodes[0]["type"] = json!("group");
+    let outcome = read(&envelope(nodes))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .expect("the design comes over instead of being refused");
+    assert_eq!(outcome.replaced, 0);
+    assert_eq!(session.document().artboards().len(), artboards + 1);
+}
+
+#[test]
+fn new_frames_sent_together_keep_their_arrangement() {
+    let session = demo_session();
+    let nodes = json!([
+        { "id": "1:1", "type": "artboard", "name": "Top", "x": 0, "y": 0,
+          "width": 400, "height": 300, "source_id": "figma:abc:1:1" },
+        { "id": "2:1", "type": "artboard", "name": "Below", "x": 0, "y": 500,
+          "width": 400, "height": 300, "source_id": "figma:abc:2:1" },
+    ]);
+    let outcome = read(&envelope(nodes))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    assert_eq!(outcome.roots.len(), 2);
+    let document = session.document();
+    let place = |source: &str| {
+        let value = document
+            .get(&imported(&session, source))
+            .unwrap()
+            .to_value();
+        (
+            value["x"].as_f64().unwrap_or(0.0),
+            value["y"].as_f64().unwrap_or(0.0),
+        )
+    };
+    let (top, below) = (place("figma:abc:1:1"), place("figma:abc:2:1"));
+    assert_eq!(top.0, below.0, "still one above the other");
+    assert_eq!(below.1 - top.1, 500.0);
+}
+
+#[test]
 fn the_sink_hands_designs_on_and_wakes_the_app() {
     let woken = std::sync::Arc::new(AtomicUsize::new(0));
     let (sink, inbox) = ImportSink::new();

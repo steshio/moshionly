@@ -21,7 +21,7 @@ use std::fmt;
 use std::sync::{Arc, mpsc};
 
 use moshionly_core::import::{self, Destination, ImportError};
-use moshionly_core::{Document, Node, NodeData, NodeId};
+use moshionly_core::{Document, Node, NodeData, NodeId, NodeType};
 use serde_json::Value;
 
 use crate::session::{Origin, SessionHandle};
@@ -290,7 +290,7 @@ fn read_notes(value: Option<&Value>) -> Result<Vec<ImportNote>, EnvelopeError> {
 
 impl PendingImport {
     /// Adds the design to the session's document as one undo step made by
-    /// an import. The person should have agreed to it.
+    /// an import, which the person can take back.
     pub fn apply(
         &self,
         session: &SessionHandle,
@@ -318,13 +318,25 @@ impl PendingImport {
                     outcome.roots = imported.roots;
                 }
                 ImportTarget::ReplaceMatching => {
+                    // Parts that never came over are added together at the
+                    // end, so several new frames keep their arrangement.
+                    let mut fresh: Vec<Node> = Vec::new();
                     for part in self.parts() {
                         let root = &part[0];
+                        let is_artboard = root.node_type() == NodeType::Artboard;
                         let earlier = root
                             .layer()
                             .and_then(|layer| layer.source_id.as_deref())
                             .filter(|source| !source.is_empty())
-                            .and_then(|source| layer_from(&scratch, source));
+                            .and_then(|source| layer_from(&scratch, source))
+                            // An artboard only takes an artboard's place. A
+                            // frame moved into another frame in Figma since,
+                            // or out onto the canvas, comes over as new.
+                            .filter(|existing| {
+                                scratch.get(existing).is_some_and(|node| {
+                                    (node.node_type() == NodeType::Artboard) == is_artboard
+                                })
+                            });
                         match earlier {
                             Some(existing) => {
                                 let replaced =
@@ -334,13 +346,14 @@ impl PendingImport {
                                 outcome.replaced += 1;
                                 outcome.dropped_animations += replaced.dropped.len();
                             }
-                            None => {
-                                let imported =
-                                    import::insert(&scratch, &part, &Destination::NewArtboards)?;
-                                add(&mut scratch, imported.edits)?;
-                                outcome.roots.extend(imported.roots);
-                            }
+                            None => fresh.extend(part),
                         }
+                    }
+                    if !fresh.is_empty() {
+                        let imported =
+                            import::insert(&scratch, &fresh, &Destination::NewArtboards)?;
+                        add(&mut scratch, imported.edits)?;
+                        outcome.roots.extend(imported.roots);
                     }
                 }
             }
