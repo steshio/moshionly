@@ -29,12 +29,15 @@
 //!   and exports.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
+//! - [`cli`]: the `moshionly` command's arguments, and its headless `mcp`
+//!   and `export` modes.
 //!
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
 pub mod canvas;
 pub mod chat;
+pub mod cli;
 pub mod commands;
 pub mod connect;
 pub mod dialogs;

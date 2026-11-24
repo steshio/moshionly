@@ -48,9 +48,9 @@ pub fn client_setups(url: &str) -> Vec<ClientSetup> {
 
 /// The command that serves a file on standard input and output, for agents
 /// that only start servers themselves. It works without the window, on the
-/// file as saved.
+/// file as saved, and writes each change back.
 pub fn stdio_command() -> String {
-    "moshionly mcp path/to/project.moshi".to_owned()
+    "moshionly mcp --save path/to/project.moshi".to_owned()
 }
 
 #[cfg(test)]
