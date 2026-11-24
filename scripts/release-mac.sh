@@ -567,8 +567,17 @@ staple() {
   fi
 }
 
+# Apple usually answers within minutes, but a team's first submissions can
+# take hours, and the script shows nothing while it waits.
+notary_wait_note() {
+  say "  This usually takes a few minutes, but Apple can take hours over a team's first" \
+    "  submissions. Leave it running. To see where Apple is, run this in another window:" \
+    "    xcrun notarytool history --keychain-profile $notary_profile"
+}
+
 notarize_app() {
-  step "Sending the app to Apple for notarization (this usually takes a few minutes)…"
+  step "Sending the app to Apple for notarization…"
+  notary_wait_note
   local zip="$work_dir/$app_name.zip"
   ditto -c -k --keepParent "$app" "$zip"
   notarize "$zip" "the app"
@@ -617,6 +626,7 @@ sign_dmg() {
 
 notarize_dmg() {
   step "Sending the installer to Apple for notarization…"
+  notary_wait_note
   notarize "$dmg" "the installer"
   staple "$dmg" "the installer"
 }

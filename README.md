@@ -103,7 +103,7 @@ One command builds `Moshionly.app` and its installer, signs them, has Apple chec
 scripts/release-mac.sh
 ```
 
-It needs the same tools as [Getting started](#getting-started) (Rust and the Xcode command line tools), works from any folder, and takes a few minutes the first time. You get two things in `dist/` at the top of the repository:
+It needs the same tools as [Getting started](#getting-started) (Rust and the Xcode command line tools), works from any folder, and takes a few minutes the first time. Apple's check usually takes a few minutes too, but Apple can take hours over your first submissions; leave the script running until it finishes. You get two things in `dist/` at the top of the repository:
 
 - `dist/Moshionly.app`, the app itself;
 - `dist/Moshionly-<version>.dmg`, the installer to give to people.
