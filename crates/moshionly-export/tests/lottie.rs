@@ -852,3 +852,91 @@ fn every_property_says_whether_it_is_animated() {
     // Saying so costs little.
     assert!(demo_export.bytes < 200_000, "{} bytes", demo_export.bytes);
 }
+
+/// The alpha of a colour from 0 to 255, from a property of `layer` at
+/// `ms`: its fill, its stroke or its shadow.
+fn alpha(document: &Document, layer: &str, property: Property, ms: f64) -> f64 {
+    let color = match value_at(document, &NodeId::from(layer), property, ms) {
+        Some(PropertyValue::Paint(Some(paint))) => paint.as_solid(),
+        Some(PropertyValue::Stroke(Some(stroke))) => stroke.paint.as_solid(),
+        Some(PropertyValue::Shadow(Some(shadow))) => Some(shadow.color),
+        _ => None,
+    };
+    color.map_or(0.0, |color| f64::from(color.a))
+}
+
+#[test]
+fn colours_that_fade_take_few_keyframes() {
+    // Colours are 8-bit, so a fade is a staircase of 255 steps. Following
+    // each step took hundreds of keyframes for a two-keyframe change. The
+    // stroke's end cuts the shadow's fade, which then starts on a step.
+    let nodes = r##",{"id":"card","parent":"board","index":"a0","type":"rect","name":"Card",
+            "width":200,"height":100,"fill":"#0D99FF",
+            "stroke":{"paint":"#111111","width":4},
+            "shadow":{"color":"#000000C0","y":16,"blur":20}}
+        ,{"id":"f","parent":"board","index":"a0","type":"fill","target":"card",
+            "start":0,"end":1000,"easing":{"type":"linear"},"to":"#0D99FF00"}
+        ,{"id":"s","parent":"board","index":"a1","type":"stroke","target":"card",
+            "start":200,"end":1400,"to":{"paint":"#11111100"}}
+        ,{"id":"d","parent":"board","index":"a2","type":"shadow","target":"card",
+            "start":0,"end":2000,"to":{"color":"#00000000"}}
+        ,{"id":"words","parent":"board","index":"a1","type":"text","name":"Words",
+            "y":300,"content":"Fading","font_size":40,"fill":"#222222"}
+        ,{"id":"t","parent":"board","index":"a3","type":"fill","target":"words",
+            "start":500,"end":1500,"to":"#22222200"}"##;
+    let document = document(2000.0, nodes);
+    let settings = Settings::default().with_frame_rate(FrameRate::FPS_60);
+    let (lottie, _) = export_document(document.clone(), settings);
+    let layers = &lottie["layers"];
+    let card = layer(layers, "Card");
+    let item = |layer: &Value, ty: &str| -> Value {
+        layer["shapes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ty"] == ty)
+            .unwrap_or_else(|| panic!("a {ty} item"))
+            .clone()
+    };
+    // Each alpha in Lottie's units, and Moshionly's own from 0 to 255.
+    let tracks = [
+        ("card", Property::Fill, item(card, "fl")["o"].clone(), 2.55),
+        (
+            "card",
+            Property::Stroke,
+            item(card, "st")["o"].clone(),
+            2.55,
+        ),
+        (
+            "card",
+            Property::Shadow,
+            card["ef"][0]["ef"][1]["v"].clone(),
+            1.0,
+        ),
+        (
+            "words",
+            Property::Fill,
+            item(layer(layers, "Words"), "fl")["o"].clone(),
+            2.55,
+        ),
+    ];
+    for (id, property, track, to_255) in tracks {
+        let count = track["k"].as_array().map_or(0, Vec::len);
+        assert!(
+            (2..10).contains(&count),
+            "{id} {property:?}: {count} keyframes: {track}"
+        );
+        // Within one and a half of the 255 steps, the tolerance, at every
+        // frame and between frames.
+        for step in 0..=480 {
+            let frame = f64::from(step) / 4.0;
+            let ms = frame * 1000.0 / 60.0;
+            let got = evaluate(&track, frame)[0] * to_255;
+            let want = alpha(&document, id, property, ms);
+            assert!(
+                (got - want).abs() <= 1.5,
+                "{id} {property:?} at frame {frame}: {got} instead of {want}"
+            );
+        }
+    }
+}

@@ -30,8 +30,19 @@ pub(crate) mod tolerance {
     /// Scale in percent. On a layer 600 pixels wide this is a tenth of a
     /// pixel at the edge.
     pub const SCALE: f64 = 0.03;
-    /// Opacity in percent: a fifth of one of 255 steps.
+    /// The opacity of layers and pieces of text in percent, which change
+    /// smoothly: a fifth of one of 255 steps.
     pub const OPACITY: f64 = 0.08;
+    /// The alpha of a colour in percent: one and a half of its 255 steps.
+    /// Colours are 8-bit, so a fade is a staircase of such steps. A
+    /// keyframe that starts on a step can be half a step off the smooth
+    /// fade the staircase follows, and the staircase half a step off too;
+    /// a tolerance finer than that follows every step with keyframes of
+    /// its own.
+    pub const ALPHA: f64 = 0.6;
+    /// The alpha of a colour from 0 to 255, as shadows write it: one and a
+    /// half steps, as for [`ALPHA`].
+    pub const ALPHA_255: f64 = 1.5;
     /// Colour channels from 0 to 1: about one of 255 steps, which is how
     /// finely colours blend.
     pub const COLOR: f64 = 0.004;

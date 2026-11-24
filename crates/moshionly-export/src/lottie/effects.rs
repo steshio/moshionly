@@ -110,7 +110,12 @@ impl Converter<'_> {
                 tolerance::COLOR,
                 places_for(tolerance::COLOR),
             );
-            let opacity = timeline.fit(&part(4..5), &hints, 0.2, 2);
+            let opacity = timeline.fit(
+                &part(4..5),
+                &hints,
+                tolerance::ALPHA_255,
+                places_for(tolerance::ALPHA_255),
+            );
             let direction = timeline.fit(&part(5..6), &hints, tolerance::ANGLE * 10.0, 3);
             let length = places_for(tolerance::LENGTH);
             let distance = timeline.fit(&part(6..7), &hints, tolerance::LENGTH, length);
@@ -120,7 +125,12 @@ impl Converter<'_> {
                 "Drop Shadow",
                 vec![
                     value(COLOR, "Shadow Color", 0, property(&color, places::COLOR)),
-                    value(SLIDER, "Opacity", 1, property(&opacity, 2)),
+                    value(
+                        SLIDER,
+                        "Opacity",
+                        1,
+                        property(&opacity, places_for(tolerance::ALPHA_255)),
+                    ),
                     value(ANGLE, "Direction", 2, property(&direction, places::ANGLE)),
                     value(SLIDER, "Distance", 3, property(&distance, places::LENGTH)),
                     value(SLIDER, "Softness", 4, property(&softness, places::LENGTH)),

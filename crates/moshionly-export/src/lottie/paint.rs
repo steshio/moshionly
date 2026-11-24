@@ -210,8 +210,8 @@ fn solid(source: &Source<'_>, role: &Role<'_>) -> Map<String, Value> {
     let o = source.timeline.fit(
         &opacity,
         source.hints,
-        tolerance::OPACITY,
-        places_for(tolerance::OPACITY),
+        tolerance::ALPHA,
+        places_for(tolerance::ALPHA),
     );
     let ty = match role {
         Role::Fill(_) => "fl",
