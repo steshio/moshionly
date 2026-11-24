@@ -127,8 +127,8 @@ pub struct Shell {
     pending: Option<FileAction>,
     /// The window may close: the person said so.
     closing: bool,
-    /// What is typed into the chat composer.
-    chat_draft: String,
+    /// The AI chat in the chat panel, once the app set one.
+    chat: Option<Box<crate::chat::Chat>>,
     /// The agent tools over the open document, for the MCP server and the
     /// chat.
     tools: Tools,
@@ -242,7 +242,7 @@ impl Shell {
             clipboard: None,
             pending: None,
             closing: false,
-            chat_draft: String::new(),
+            chat: None,
             tools,
             server: AgentServer::off(),
             agent_port: None,
@@ -488,18 +488,8 @@ impl Shell {
         self.advance_playback(&ctx);
         self.timeline_panel(ui, &layout);
 
-        if let Some(chat) = layout.chat {
-            let out = parts::panel(ui, "chat", chat, c.surface, |ui| {
-                chat_panel::chat_panel(ui, &mut self.chat_draft)
-            });
-            edge_line(ui, chat, Edge::Left);
-            if out.close {
-                requested.push(CommandId::ToggleChat);
-            }
-            if out.sent.is_some() {
-                self.toasts
-                    .push(Toast::info("Chat is not connected to a provider yet"));
-            }
+        if self.chat_panel(ui, layout.chat) {
+            requested.push(CommandId::ToggleChat);
         }
 
         self.splitters(ui, window, &layout);

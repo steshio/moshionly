@@ -105,6 +105,9 @@ impl MoshionlyApp {
         // Agents outside the window, and the Figma plugin, reach the open
         // document here unless the settings turn it off.
         shell.serve_agents(crate::connect::DEFAULT_PORT);
+        // The AI chat, with the person's AI settings and keys in the
+        // system's keychain. Nothing is checked until the panel is shown.
+        shell.set_chat(crate::chat::Chat::new());
         Self {
             shell,
             title: APP_NAME.to_owned(),

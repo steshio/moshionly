@@ -267,6 +267,10 @@ impl Shell {
         self.inspector.tab = InspectorTab::Design;
         self.fitted = false;
         self.playback.pause();
+        // The AI should not carry on about a file that is gone.
+        if let Some(chat) = self.chat.as_deref_mut() {
+            chat.new_conversation();
+        }
     }
 
     /// The question about unsaved changes, while it is open.
