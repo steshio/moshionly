@@ -267,6 +267,15 @@ impl Shell {
         self.inspector.tab = InspectorTab::Design;
         self.fitted = false;
         self.playback.pause();
+        // The Export dialog was set up for the old document. Closing it
+        // cancels an export still running and waits for it to clean up.
+        if let Some(dialog) = self.export.take()
+            && dialog.is_running()
+        {
+            self.toasts.push(Toast::info(
+                "Export cancelled: another project took its place",
+            ));
+        }
         // The AI should not carry on about a file that is gone.
         if let Some(chat) = self.chat.as_deref_mut() {
             chat.new_conversation();

@@ -14,7 +14,7 @@ use moshionly_app::connect::ServerStatus;
 use moshionly_app::connect::import::ImportChoice;
 use moshionly_app::export::RunOutcome;
 use moshionly_app::settings::Settings;
-use moshionly_app::shell::Shell;
+use moshionly_app::shell::{FileAction, Shell};
 use moshionly_core::{NodeId, NodeType};
 use moshionly_export::Format;
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
@@ -316,38 +316,102 @@ fn the_export_dialog_writes_its_file_off_the_ui_thread_and_remembers_the_choices
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn quitting_during_an_export_stops_it_and_leaves_nothing_behind() {
-    let mut shell = demo_shell();
+/// What is in `dir`, by name.
+fn files_in(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect()
+}
+
+/// Starts a large MP4 export from the Export dialog into a new folder,
+/// and returns that folder once the export is writing there.
+fn start_long_export(shell: &mut Shell, label: &str) -> std::path::PathBuf {
     shell.open_export_dialog();
     let setup = shell.export_setup_mut().unwrap();
     setup.choices.set_format(Format::Mp4);
     setup.choices.scale = 2.0;
-
     let dir = std::env::temp_dir().join(format!(
-        "moshionly-app-export-quit-{}-{}",
+        "moshionly-app-export-{label}-{}-{}",
         std::process::id(),
         NodeId::generate()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let written = || -> Vec<_> {
-        std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.file_name())
-            .collect()
-    };
     shell.start_export(dir.join("demo.mp4"), None);
     // The unfinished file appears beside the destination once it starts.
     let deadline = Instant::now() + Duration::from_secs(30);
-    while written().is_empty() {
+    while files_in(&dir).is_empty() {
         assert!(Instant::now() < deadline, "the export never started");
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(shell.poll_export(), None, "still running");
+    dir
+}
 
+#[test]
+fn quitting_during_an_export_stops_it_and_leaves_nothing_behind() {
+    let mut shell = demo_shell();
+    let dir = start_long_export(&mut shell, "quit");
     shell.prepare_to_quit();
     assert!(!shell.is_export_dialog_open());
-    assert!(written().is_empty(), "left behind: {:?}", written());
+    assert!(
+        files_in(&dir).is_empty(),
+        "left behind: {:?}",
+        files_in(&dir)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn asking_for_export_again_while_one_runs_keeps_it() {
+    let mut shell = demo_shell();
+    let dir = start_long_export(&mut shell, "again");
+    shell.open_export_dialog();
+    assert!(shell.is_exporting(), "the running export is still shown");
+    shell.cancel_export();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let outcome = loop {
+        if let Some(outcome) = shell.poll_export() {
+            break outcome;
+        }
+        assert!(Instant::now() < deadline, "the export never stopped");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(outcome, RunOutcome::Cancelled);
+    assert!(
+        files_in(&dir).is_empty(),
+        "left behind: {:?}",
+        files_in(&dir)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn another_document_closes_the_export_dialog_and_cancels_its_export() {
+    let mut shell = demo_shell();
+    shell.open_export_dialog();
+    shell.request(FileAction::New);
+    assert!(
+        !shell.is_export_dialog_open(),
+        "it was about the old document"
+    );
+    shell.open_export_dialog();
+    let first = shell.editor().document().artboards().first().cloned();
+    assert_eq!(
+        shell.export_setup().map(|setup| &setup.artboard),
+        first.as_ref()
+    );
+    assert_ne!(first, Some(NodeId::from("scene")));
+
+    let mut shell = demo_shell();
+    let dir = start_long_export(&mut shell, "replaced");
+    shell.request(FileAction::New);
+    assert!(!shell.is_export_dialog_open());
+    assert!(
+        files_in(&dir).is_empty(),
+        "left behind: {:?}",
+        files_in(&dir)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

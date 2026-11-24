@@ -50,13 +50,22 @@ impl ExportDialog {
     pub(super) fn setup(&self) -> &ExportSetup {
         &self.setup
     }
+
+    /// Whether the dialog's file is being written.
+    pub(super) fn is_running(&self) -> bool {
+        matches!(self.stage, Stage::Running { .. })
+    }
 }
 
 impl Shell {
     /// Opens the Export dialog on the current artboard, with the choices
     /// left last time. Formats that need a missing program are offered
-    /// with the reason they cannot be used.
+    /// with the reason they cannot be used. While a file is being written
+    /// the dialog stays on that export, with its progress and Cancel.
     pub fn open_export_dialog(&mut self) {
+        if self.is_exporting() {
+            return;
+        }
         let document = Arc::clone(self.editor.document());
         let Some(artboard) = self
             .editor
@@ -94,6 +103,11 @@ impl Shell {
     /// Whether the Export dialog is open.
     pub fn is_export_dialog_open(&self) -> bool {
         self.export.is_some()
+    }
+
+    /// Whether the Export dialog is writing a file.
+    pub fn is_exporting(&self) -> bool {
+        self.export.as_ref().is_some_and(ExportDialog::is_running)
     }
 
     /// The export being set up in the open Export dialog.
