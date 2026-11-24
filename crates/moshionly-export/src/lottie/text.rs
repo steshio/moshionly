@@ -21,7 +21,8 @@ use std::ops::Range;
 
 use moshionly_core::eval::Property;
 use moshionly_core::model::{
-    BlendMode, Paint, StrokePosition, TextAnimation, TextLayer, TextOrder, TextSplit,
+    BlendMode, Paint, Stroke, StrokeJoin, StrokePosition, TextAnimation, TextLayer, TextOrder,
+    TextSplit,
 };
 use moshionly_core::scene::{Content, SceneNode, ScenePaint, TextContent, TextUnit};
 use moshionly_core::text::{TextMeasurer, TextRequest, split};
@@ -48,7 +49,8 @@ const SHIFT: f64 = 20_000.0;
 const PICTURES_LEFT_OUT: &str = "has characters drawn as pictures, such as colour emoji; Lottie \
                                  text is drawn as outlines, so they are left out.";
 
-/// Room left around each letter's outline in its composition, in pixels.
+/// Room left around each letter's outline in its composition, in pixels,
+/// besides what its stroke needs.
 const PAD: f64 = 2.0;
 
 /// The text a layer shows over a stretch of time.
@@ -617,6 +619,16 @@ impl<'a> Converter<'a> {
             start: f64,
             end: f64,
         }
+        // Players cut a composition at its edges, so each letter's has room
+        // for its stroke, centred on the outline, as far as a corner of it
+        // reaches. The shadow and blur go on the layer of the whole text,
+        // outside these compositions.
+        let pad = self
+            .survey
+            .iter()
+            .filter_map(|frame| timeline.stroke(id, *frame))
+            .map(|stroke| stroke_reach(&stroke) + 1.0)
+            .fold(PAD, f64::max);
         let mut letters: HashMap<String, (String, [f64; 2])> = HashMap::new();
         let mut placed: Vec<Placed> = Vec::new();
         for state in states {
@@ -656,14 +668,14 @@ impl<'a> Converter<'a> {
                 let Some([left, top, right, bottom]) = bounds(&contours) else {
                     continue;
                 };
-                let corner = [left - PAD, top - PAD];
+                let corner = [left - pad, top - pad];
                 let shape: Vec<Contour> = contours
                     .into_iter()
                     .map(|contour| moved(contour, [-corner[0], -corner[1]]))
                     .collect();
                 let items = static_paths(&shape);
                 let key = Value::Array(items.clone()).to_string();
-                let size = [right - left + 2.0 * PAD, bottom - top + 2.0 * PAD];
+                let size = [right - left + 2.0 * pad, bottom - top + 2.0 * pad];
                 let asset = match letters.get(&key) {
                     Some((asset, _)) => asset.clone(),
                     None => {
@@ -860,6 +872,17 @@ impl<'a> Converter<'a> {
         }
         items.extend(fill);
         items
+    }
+}
+
+/// How far a stroke reaches past the outline it is centred on: half its
+/// width, and at a mitred corner up to the miter limit times that. A
+/// square cap reaches half the width diagonally past an end.
+fn stroke_reach(stroke: &Stroke) -> f64 {
+    let half = stroke.width.max(0.0) / 2.0;
+    match stroke.join {
+        StrokeJoin::Miter => half * paint::MITER_LIMIT,
+        StrokeJoin::Round | StrokeJoin::Bevel => half * std::f64::consts::SQRT_2,
     }
 }
 

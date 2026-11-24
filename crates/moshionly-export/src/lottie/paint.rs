@@ -19,7 +19,7 @@ use super::props::{fixed_property, property};
 use super::timeline::{Timeline, places_for, tolerance};
 
 /// The stroke miter limit the renderer uses.
-const MITER_LIMIT: f64 = 4.0;
+pub(crate) const MITER_LIMIT: f64 = 4.0;
 
 /// What a paint is applied to, and how.
 pub(crate) enum Role<'a> {

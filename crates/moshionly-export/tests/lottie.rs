@@ -984,3 +984,36 @@ fn colour_emoji_left_out_of_text_are_said() {
         "{said}"
     );
 }
+
+#[test]
+fn counting_letters_have_room_for_their_stroke() {
+    // Each letter of a counter is a composition, which players cut at its
+    // edges. A wide stroke reaches half its width past the outline, and a
+    // mitred corner up to four times that.
+    let nodes = r##",{"id":"score","parent":"board","index":"a0","type":"text","name":"Score",
+            "x":40,"y":40,"content":"0","font_size":140,"fill":"#FFB703",
+            "stroke":{"paint":"#111111","width":16,"join":"miter"}}
+        ,{"id":"count","parent":"board","index":"a1","type":"counter","target":"score",
+            "start":0,"end":1000,"from":0,"to":25}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    let score = layer(&lottie["layers"], "Score");
+    let placed = asset(&lottie, &score["refId"])["layers"]
+        .as_array()
+        .unwrap();
+    assert!(placed.len() > 10, "{} letters placed", placed.len());
+    let room = 16.0 / 2.0 * 4.0;
+    for letter in placed {
+        let (width, height) = (letter["w"].as_f64().unwrap(), letter["h"].as_f64().unwrap());
+        let drawn = asset(&lottie, &letter["refId"]);
+        let mut all = Vec::new();
+        points(&drawn["layers"][0]["shapes"], &mut all);
+        assert!(!all.is_empty());
+        for [x, y] in all {
+            assert!(
+                (room..=width - room).contains(&x) && (room..=height - room).contains(&y),
+                "({x}, {y}) in {width} by {height}"
+            );
+        }
+    }
+}
