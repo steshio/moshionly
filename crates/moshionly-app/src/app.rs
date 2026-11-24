@@ -130,6 +130,13 @@ impl MoshionlyApp {
 }
 
 impl eframe::App for MoshionlyApp {
+    /// Runs before every frame and also while the window is covered or
+    /// minimized, when `ui` does not: a design sent from Figma then still
+    /// brings Moshionly forward and asks for attention.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.shell.receive_imports(Some(ctx));
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Closing with unsaved changes asks first; the shell closes the
         // window itself once the person has answered.
