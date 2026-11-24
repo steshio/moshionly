@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# Builds Moshionly.app for Apple silicon Macs from a release build of the
-# moshionly binary, with an ad-hoc signature.
+# Builds Moshionly.app for Apple silicon Macs and signs it with a
+# Developer ID.
 #
-#   scripts/release-mac.sh         build dist/Moshionly.app
-#   scripts/release-mac.sh --help  every option
+#   scripts/release-mac.sh           sign with your Developer ID
+#   scripts/release-mac.sh --ad-hoc  no Apple account needed
+#   scripts/release-mac.sh --help    every option
+#
+# Signing settings come from the environment, never from the repository.
+# README.md ("Build the Mac app yourself") explains the one-time setup.
 
 set -euo pipefail
 
@@ -21,11 +25,16 @@ readonly app_id_source="crates/moshionly-app/src/app.rs"
 # Apple silicon, and what the binary links needs it too: Skia's prebuilt
 # library is built for 11.0 and UniformTypeIdentifiers arrived in 11.
 readonly minimum_macos="11.0"
+readonly setup_help="the \"One-time signing setup\" section of README.md"
 
+# What to do: release (sign with a Developer ID) or ad-hoc.
+mode="release"
 out_dir="$repo_root/dist"
 # Set as the script goes.
 work_dir=""
 problems=0
+sign_identity=""
+sign_name=""
 target_dir=""
 version=""
 build_number=""
@@ -36,17 +45,24 @@ app=""
 
 usage() {
   cat <<EOF
-Usage: scripts/release-mac.sh [--out <folder>]
+Usage: scripts/release-mac.sh [--ad-hoc] [--out <folder>]
 
 Builds Moshionly.app for Apple silicon Macs and puts it in dist/ at the
-top of the repository. The app has an ad-hoc signature: it runs on this
-Mac, but macOS warns people who download it.
+top of the repository.
 
+  (no option)        Sign with your Developer ID.
+  --ad-hoc           No Apple account needed: an ad-hoc signature. The app
+                     runs on this Mac, but macOS warns people who download it.
   --out <folder>     Put the app in this folder instead of dist/.
   -h, --help         Show this text.
 
 Settings, from the environment:
-  CARGO_TARGET_DIR   Where cargo builds, as usual.
+  MOSHIONLY_SIGN_IDENTITY    The Developer ID Application identity to sign
+                             with, by name or SHA-1 hash. Needed only when
+                             your keychain has more than one.
+  CARGO_TARGET_DIR           Where cargo builds, as usual.
+
+The one-time signing setup is in README.md, "Build the Mac app yourself".
 EOF
 }
 
@@ -126,6 +142,7 @@ shown_path() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
+      --ad-hoc) mode=ad-hoc ;;
       --out)
         if [[ $# -lt 2 || -z $2 ]]; then
           usage_error "--out needs a folder."
@@ -200,16 +217,111 @@ check_tools() {
       problem "$tool was not found. It comes with macOS and the Xcode command line tools."
     fi
   done
+  if [[ $mode != ad-hoc ]] && ! command -v security >/dev/null 2>&1; then
+    problem "security was not found. It comes with macOS."
+  fi
 }
 
-# Everything that can stop the build is checked here, before it starts.
+# Finds the Developer ID Application identity to sign with, as its SHA-1
+# hash, which names it to codesign without any doubt.
+find_identity() {
+  local listing
+  listing=$(security find-identity -v -p codesigning 2>/dev/null || true)
+  local wanted="${MOSHIONLY_SIGN_IDENTITY:-}"
+  local wanted_hash
+  wanted_hash=$(printf '%s' "$wanted" | tr '[:lower:]' '[:upper:]')
+  local re='^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-F]{40})[[:space:]]+"(.*)"$'
+  local line hash name seen=" "
+  local exact="" exact_count=0 partial="" partial_count=0 developer_ids="" developer_id_count=0
+  while IFS= read -r line; do
+    if ! [[ $line =~ $re ]]; then
+      continue
+    fi
+    hash=${BASH_REMATCH[1]}
+    name=${BASH_REMATCH[2]}
+    # The same identity can be listed once for each keychain it is in.
+    if [[ $seen == *" $hash "* ]]; then
+      continue
+    fi
+    seen="$seen$hash "
+    if [[ $name == "Developer ID Application:"* ]]; then
+      developer_ids="$developer_ids$hash $name"$'\n'
+      developer_id_count=$((developer_id_count + 1))
+    fi
+    if [[ -n $wanted ]]; then
+      if [[ $hash == "$wanted_hash" || $name == "$wanted" ]]; then
+        exact="$hash $name"
+        exact_count=$((exact_count + 1))
+      elif [[ $name == *"$wanted"* ]]; then
+        partial="$partial$hash $name"$'\n'
+        partial_count=$((partial_count + 1))
+      fi
+    fi
+  done <<<"$listing"
+
+  local chosen=""
+  if [[ -n $wanted ]]; then
+    if [[ $exact_count -eq 1 ]]; then
+      chosen=$exact
+    elif [[ $exact_count -eq 0 && $partial_count -eq 1 ]]; then
+      chosen=${partial%$'\n'}
+    elif [[ $exact_count -eq 0 && $partial_count -eq 0 ]]; then
+      problem "No valid signing identity in your keychain matches MOSHIONLY_SIGN_IDENTITY (\"$wanted\")." \
+        "Check the name or SHA-1 hash with:  security find-identity -v -p codesigning" \
+        "Setting up a Developer ID is explained in $setup_help."
+      return
+    else
+      problem "MOSHIONLY_SIGN_IDENTITY (\"$wanted\") matches more than one identity." \
+        "Use the SHA-1 hash of the one you want; this lists them:" \
+        "  security find-identity -v -p codesigning"
+      return
+    fi
+  elif [[ $developer_id_count -eq 1 ]]; then
+    chosen=${developer_ids%$'\n'}
+  elif [[ $developer_id_count -eq 0 ]]; then
+    problem "No \"Developer ID Application\" signing identity is in your keychain." \
+      "Apple notarizes only apps signed with one. Setting it up once is explained in" \
+      "$setup_help." \
+      "To build without an Apple account, run:  scripts/release-mac.sh --ad-hoc" \
+      "(macOS will then warn people who download the app)."
+    return
+  else
+    problem "Your keychain has more than one \"Developer ID Application\" identity:" \
+      "" \
+      "${developer_ids%$'\n'}" \
+      "" \
+      "Choose one by its SHA-1 hash (the first column), for example:" \
+      "  export MOSHIONLY_SIGN_IDENTITY=${developer_ids%% *}"
+    return
+  fi
+
+  sign_identity=${chosen%% *}
+  sign_name=${chosen#* }
+  if [[ $sign_name != "Developer ID Application:"* ]]; then
+    problem "MOSHIONLY_SIGN_IDENTITY picks \"$sign_name\", which is not a Developer ID Application identity." \
+      "Apple notarizes only apps signed with Developer ID Application. See $setup_help."
+    sign_identity=""
+    sign_name=""
+  fi
+}
+
+# Everything that can stop the release is checked here, before the build.
 preflight() {
-  step "Checking the tools…"
+  step "Checking the tools and the signing setup…"
   check_tools
+  # Without working tools the identity cannot be checked.
+  if [[ $problems -eq 0 && $mode != ad-hoc ]]; then
+    find_identity
+  fi
   if [[ $problems -gt 0 ]]; then
     printf '\nNothing was built.\n' >&2
     exit 1
   fi
+  if [[ $mode == ad-hoc ]]; then
+    sign_identity="-"
+    sign_name="an ad-hoc signature"
+  fi
+  say "  Signing with $sign_name."
 }
 
 read_metadata() {
@@ -343,10 +455,15 @@ sign_app() {
     die "the app holds files this script does not know how to sign:" "$contents"
   fi
 
-  # The hardened runtime is on, as a release needs it. No entitlements: the
-  # app needs none.
-  local -a args=(--force --options runtime --sign -)
-  step "Signing the app (ad-hoc, with the hardened runtime)…"
+  # The hardened runtime is on for ad-hoc builds too, so they run under the
+  # same rules as the release. No entitlements: the app needs none.
+  local -a args=(--force --options runtime --sign "$sign_identity")
+  if [[ $mode == ad-hoc ]]; then
+    step "Signing the app (ad-hoc, with the hardened runtime)…"
+  else
+    step "Signing the app with ${sign_name}…"
+    args+=(--timestamp)
+  fi
   local output details
   if ! output=$(codesign "${args[@]}" "$app" 2>&1); then
     die "codesign could not sign the app:" "$output"
@@ -389,9 +506,18 @@ summary() {
   say "" "Done." \
     "  App:  $(shown_path "$app")" \
     "  Version $version (build $build_number), for Apple silicon Macs with macOS $minimum_macos or later."
-  say "" "Ad-hoc signed. It runs on this Mac, but macOS will warn people who download it," \
-    "because no Apple-issued certificate vouches for it: they would need" \
-    "System Settings › Privacy & Security › Open Anyway."
+  case $mode in
+    release)
+      say "" "Signed with your Developer ID but not notarized. Apple has not checked this build," \
+        "so macOS will warn people who download it and refuse to open it until they choose" \
+        "Open Anyway in System Settings › Privacy & Security."
+      ;;
+    ad-hoc)
+      say "" "Ad-hoc signed. It runs on this Mac, but macOS will warn people who download it," \
+        "because no Apple-issued certificate vouches for it: they would need" \
+        "System Settings › Privacy & Security › Open Anyway."
+      ;;
+  esac
 }
 
 main() {
