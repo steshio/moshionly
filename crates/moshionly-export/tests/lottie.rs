@@ -1049,30 +1049,42 @@ fn blurred_groups_keep_what_their_blur_draws_from() {
 /// over eight seconds, on an artboard ten seconds long, at 60 frames a
 /// second; and its text.
 fn long_text(letters: usize) -> (Arc<Document>, String) {
+    paragraph(letters, 28.0, 10_000.0, 20.0)
+}
+
+/// A paragraph of `letters` characters in `font_size` pixel type that
+/// comes in letter by letter, `stagger` milliseconds apart, until two
+/// seconds before the end of an artboard `duration` milliseconds long;
+/// and its text.
+fn paragraph(
+    letters: usize,
+    font_size: f64,
+    duration: f64,
+    stagger: f64,
+) -> (Arc<Document>, String) {
     let words = "Every letter of this paragraph rises into place on its own ";
     let text: String = words.chars().cycle().take(letters).collect();
+    let end = duration - 2000.0;
     let nodes = format!(
         r##",{{"id":"para","parent":"board","index":"a0","type":"text","name":"Paragraph",
             "x":50,"y":50,"width":900,"height":400,"auto_size":"height","content":"{text}",
-            "font_size":28,"fill":"#111111"}}
+            "font_size":{font_size},"fill":"#111111"}}
         ,{{"id":"in","parent":"board","index":"a1","type":"text_in","target":"para",
-            "start":0,"end":8000,"effect":"slide_up","split":"letters","stagger":20}}"##
+            "start":0,"end":{end},"effect":"slide_up","split":"letters","stagger":{stagger}}}"##
     );
-    (document(10_000.0, &nodes), text)
+    (document(duration, &nodes), text)
 }
 
-#[test]
-fn long_text_that_comes_in_letter_by_letter_exports_quickly() {
-    // Each letter's keyframes are fitted from many moments; every moment
-    // is now evaluated once for all letters. This took minutes.
-    let (document, text) = long_text(288);
-    let settings = Settings::default().with_frame_rate(FrameRate::FPS_60);
-    let started = Instant::now();
-    let (lottie, exported) = export_document(document.clone(), settings);
-    let took = started.elapsed();
-    assert!(took < Duration::from_secs(20), "took {took:?}");
-    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
-
+/// Checks that every `every`th letter of the paragraph `text` in `lottie`
+/// lands where Moshionly puts it, every `step` frames up to frame `last`
+/// at 60 frames a second.
+fn assert_letters_land(
+    document: &Document,
+    lottie: &Value,
+    text: &str,
+    every: usize,
+    (step, last): (f64, f64),
+) {
     // A group per letter, which lands where Moshionly puts the letter.
     let groups = layer(&lottie["layers"], "Paragraph")["shapes"]
         .as_array()
@@ -1086,16 +1098,16 @@ fn long_text_that_comes_in_letter_by_letter_exports_quickly() {
     assert_eq!(groups.len(), letters.len());
     let fonts = FontLibrary::bundled();
     let artboard = document.artboards()[0].clone();
-    for step in 0..=1200 {
-        let frame = f64::from(step) / 2.0;
+    for n in 0..=(last / step).round() as u32 {
+        let frame = f64::from(n) * step;
         let scene =
-            moshionly_core::evaluate(&document, &artboard, frame * 1000.0 / 60.0, &fonts).unwrap();
+            moshionly_core::evaluate(document, &artboard, frame * 1000.0 / 60.0, &fonts).unwrap();
         let Some(moshionly_core::scene::Content::Text(content)) =
             scene.find(&NodeId::from("para")).map(|node| &node.content)
         else {
             panic!("the text is drawn");
         };
-        for (group, at) in groups.iter().zip(&letters) {
+        for (group, at) in groups.iter().zip(&letters).step_by(every) {
             let unit = content
                 .units
                 .iter()
@@ -1119,6 +1131,37 @@ fn long_text_that_comes_in_letter_by_letter_exports_quickly() {
             }
         }
     }
+}
+
+#[test]
+fn long_text_that_comes_in_letter_by_letter_exports_quickly() {
+    // Each letter's keyframes are fitted from many moments; every moment
+    // is now evaluated once for all letters. This took minutes.
+    let (document, text) = long_text(288);
+    let settings = Settings::default().with_frame_rate(FrameRate::FPS_60);
+    let started = Instant::now();
+    let (lottie, exported) = export_document(document.clone(), settings);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(20), "took {took:?}");
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    assert_letters_land(&document, &lottie, &text, 1, (0.5, 600.0));
+}
+
+#[test]
+fn letters_that_each_move_for_long_export_quickly() {
+    // Each letter moves for most of twenty seconds, so its keyframes are
+    // fitted from about nine thousand moments, and the letters after it
+    // look at much the same ones. Those are kept for them, within limits;
+    // when there were more than the limit, every letter evaluated them
+    // all again, and this took minutes.
+    let (document, text) = paragraph(300, 16.0, 20_000.0, 5.0);
+    let settings = Settings::default().with_frame_rate(FrameRate::FPS_60);
+    let started = Instant::now();
+    let (lottie, exported) = export_document(document.clone(), settings);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(30), "took {took:?}");
+    assert!(exported.warnings.is_empty(), "{:?}", exported.warnings);
+    assert_letters_land(&document, &lottie, &text, 7, (2.5, 1200.0));
 }
 
 #[test]
