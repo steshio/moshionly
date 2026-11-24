@@ -37,6 +37,7 @@ pub struct NumericField<'a> {
     decimals: usize,
     width: Option<f32>,
     mixed: bool,
+    implied: bool,
     id_salt: Option<egui::IdSalt>,
 }
 
@@ -76,6 +77,7 @@ impl<'a> NumericField<'a> {
             decimals: 2,
             width: None,
             mixed: false,
+            implied: false,
             id_salt: None,
         }
     }
@@ -141,6 +143,13 @@ impl<'a> NumericField<'a> {
     /// differ. Typing or scrubbing still sets the value.
     pub fn mixed(mut self, mixed: bool) -> Self {
         self.mixed = mixed;
+        self
+    }
+
+    /// Shows the value in quiet ink: a value that is not set but follows
+    /// from somewhere else, such as the design. Typing or scrubbing sets it.
+    pub fn implied(mut self, implied: bool) -> Self {
+        self.implied = implied;
         self
     }
 
@@ -345,6 +354,8 @@ impl<'a> NumericField<'a> {
             // Value and unit.
             let (text, ink) = if self.mixed {
                 ("Mixed".to_owned(), c.text_secondary)
+            } else if self.implied {
+                (format_value(*self.value, self.decimals), c.text_tertiary)
             } else {
                 (format_value(*self.value, self.decimals), c.text)
             };

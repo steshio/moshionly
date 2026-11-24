@@ -3,7 +3,10 @@
 //! scrubbing and playing, and making a short animation from scratch.
 
 use egui::{Key, Modifiers, Pos2, pos2, vec2};
-use egui_kittest::{Harness, kittest::Queryable as _};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
 use moshionly_agent::SessionHandle;
 use moshionly_app::{
     editor::timeline::timeline_groups,
@@ -406,6 +409,64 @@ fn a_folder_header_and_delete_take_the_folder_away() {
         assert!(document.contains(&NodeId::from(layer)), "{layer}");
     }
     assert!(harness.query_by_label("Folder 1").is_none());
+}
+
+#[test]
+fn a_resize_shows_the_size_it_keeps_until_one_is_typed() {
+    let mut harness = demo();
+    // The accent strip is 600 by 12.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("accent"));
+    harness.run();
+    harness.key_press(Key::M);
+    harness.run();
+    // Far down the menu: chosen through accessibility, as it may be
+    // scrolled out of view.
+    harness
+        .get_all_by_label("Add action")
+        .next()
+        .expect("an Add action button")
+        .click();
+    harness.run();
+    harness.get_by_label("Resize").click_accesskit();
+    harness.run();
+    let resize = harness.state().editor().actions()[0].clone();
+    // The width and height written in its `to`, and whether it has one.
+    let to = |harness: &Harness<'_, Shell>| {
+        let document = harness.state().editor().document();
+        let to = document.get(&resize).unwrap().to_value()["to"].clone();
+        (to["width"].as_f64(), to["height"].as_f64(), !to.is_null())
+    };
+    let shown = |harness: &Harness<'_, Shell>, name: &str| {
+        harness.get_by_label(name).accesskit_node().numeric_value()
+    };
+
+    // A new resize changes the width only: the height shown is the one
+    // it keeps, the design's, not 0.
+    assert_eq!(to(&harness), (Some(200.0), None, true));
+    assert_eq!(shown(&harness, "W"), Some(200.0));
+    assert_eq!(shown(&harness, "H"), Some(12.0));
+
+    // Typing a height writes it; its × leaves it out again.
+    type_into(&mut harness, "H", "40");
+    assert_eq!(to(&harness), (Some(200.0), Some(40.0), true));
+    harness
+        .get_by_label("H: end on the design value")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(to(&harness), (Some(200.0), None, true));
+    assert_eq!(shown(&harness, "H"), Some(12.0));
+
+    // With the width left out too, nothing is left: the whole value is.
+    harness
+        .get_by_label("W: end on the design value")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(to(&harness), (None, None, false));
+    assert!(harness.query_by_label("Design value").is_some());
 }
 
 #[test]

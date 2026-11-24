@@ -8,7 +8,10 @@
 //!
 //! Each action type's value is made of parts (X and Y of a move, colour and
 //! width of a stroke), listed by [`parts`]. The value as the file has it is
-//! JSON, and the parts are read from and written into that JSON.
+//! JSON, and the parts are read from and written into that JSON. Some types
+//! let a written value leave parts out (a resize may change only the
+//! width): such a part shows, in quiet ink, the value it stands for, and
+//! a written one has its own × to leave it out again.
 
 use egui::{Align, Layout, Ui};
 use moshionly_core::eval::{Property, PropertyValue, value_at};
@@ -18,10 +21,10 @@ use serde_json::{Value, json};
 
 use super::Bind;
 use crate::{
-    theme::icons,
+    theme::{Theme, icons},
     widgets::{
-        ColorField, ColorResponse, IconButton, NumericField, NumericResponse, TextButton, pair,
-        property_row, section,
+        ColorField, ColorResponse, IconButton, NumericField, NumericResponse, TextButton,
+        numeric::format_value, pair, property_row, section,
     },
 };
 
@@ -170,6 +173,27 @@ pub(super) fn parts(ty: NodeType) -> &'static [Part] {
     }
 }
 
+/// Whether a written value of an action type may leave parts out, each
+/// then standing for the layer's own value. The parts of a move may not:
+/// a missing one is no offset, which is what 0 shows.
+pub(super) fn parts_optional(ty: NodeType) -> bool {
+    matches!(ty, NodeType::Resize | NodeType::Stroke | NodeType::Shadow)
+}
+
+/// `value` with the part at `key` left out, as an edit writes it: an edit
+/// merges an object into the one there, so the part is set to `null`,
+/// which removes it. With no part left the whole value is `null`, which
+/// means the same: every part is the layer's own.
+pub(super) fn without_part(value: &Value, key: &str) -> Value {
+    let mut object = value.as_object().cloned().unwrap_or_default();
+    object.remove(key);
+    if object.values().all(Value::is_null) {
+        return Value::Null;
+    }
+    object.insert(key.to_owned(), Value::Null);
+    Value::Object(object)
+}
+
 /// The part of `value` at `key`: the value itself for `None`.
 fn at<'v>(value: &'v Value, key: Option<&str>) -> &'v Value {
     match key {
@@ -301,7 +325,10 @@ pub(super) fn values_section(ui: &mut Ui, bind: &mut Bind<'_>, node: &Node) {
                         let value = resolved(&document, node, slot).unwrap_or(Value::Null);
                         Change::Set(value)
                     }),
-                    Some(value) => written_rows(ui, node, slot, parts, value),
+                    Some(value) => {
+                        let implied = resolved(&document, node, slot);
+                        written_rows(ui, node, slot, parts, value, implied.as_ref())
+                    }
                 };
                 if let Some(change) = change {
                     changes.push((slot, change));
@@ -336,13 +363,15 @@ fn implicit_row(ui: &mut Ui, slot: Slot) -> bool {
 }
 
 /// The rows of a written-down value: a header with a button to leave it
-/// out again, then its parts.
+/// out again, then its parts. `implied` is what the value stands for when
+/// left out, which a part left out shows.
 fn written_rows(
     ui: &mut Ui,
     node: &Node,
     slot: Slot,
     parts: &[Part],
     value: &Value,
+    implied: Option<&Value>,
 ) -> Option<Change> {
     let mut change = None;
     let reset = property_row(ui, slot.label(), |ui| {
@@ -358,7 +387,13 @@ fn written_rows(
     if reset {
         return Some(Change::Set(Value::Null));
     }
-    let salt = (node.id.as_str(), slot.key());
+    let field = Field {
+        slot,
+        value,
+        implied,
+        optional: parts_optional(node.node_type()),
+        salt: (node.id.as_str(), slot.key()),
+    };
     let mut index = 0;
     while index < parts.len() {
         let part = parts[index];
@@ -371,8 +406,8 @@ fn written_rows(
             property_row(ui, "", |ui| {
                 pair(
                     ui,
-                    |ui| first_out = number_field(ui, part, value, salt, true),
-                    |ui| second_out = number_field(ui, second, value, salt, true),
+                    |ui| first_out = number_field(ui, part, &field, true),
+                    |ui| second_out = number_field(ui, second, &field, true),
                 );
             });
             change = change.or(first_out).or(second_out);
@@ -381,10 +416,10 @@ fn written_rows(
         }
         let out = match part {
             Part::Number { label, .. } => {
-                property_row(ui, label, |ui| number_field(ui, part, value, salt, false))
+                property_row(ui, label, |ui| number_field(ui, part, &field, false))
             }
             Part::Color { key, label } => {
-                property_row(ui, label, |ui| color_field(ui, key, label, value, salt))
+                property_row(ui, label, |ui| color_field(ui, key, label, &field))
             }
         };
         change = change.or(out);
@@ -393,14 +428,68 @@ fn written_rows(
     change
 }
 
-/// A number part's field. Returns the whole new value when it moved.
-fn number_field(
-    ui: &mut Ui,
-    part: Part,
-    value: &Value,
-    salt: (&str, &str),
-    labelled: bool,
-) -> Option<Change> {
+/// What the fields of one written value share.
+struct Field<'v> {
+    /// The end of the action the value is.
+    slot: Slot,
+    /// The value as written.
+    value: &'v Value,
+    /// What the value stands for when left out.
+    implied: Option<&'v Value>,
+    /// Whether parts may be left out of it.
+    optional: bool,
+    /// Keeps the fields of this value apart from others.
+    salt: (&'v str, &'v str),
+}
+
+impl Field<'_> {
+    /// The part at `key` as written, if it is.
+    fn written(&self, key: Option<&str>) -> Option<&Value> {
+        Some(at(self.value, key)).filter(|part| !part.is_null())
+    }
+
+    /// Draws `field` and, for a written part that may be left out, a ×
+    /// that leaves it out. Returns the field's outcome, and the change the
+    /// × makes when it was clicked.
+    fn with_leave_out<R>(
+        &self,
+        ui: &mut Ui,
+        key: Option<&'static str>,
+        label: &str,
+        field: impl FnOnce(&mut Ui) -> R,
+    ) -> (R, Option<Change>) {
+        let Some(key) = key.filter(|key| self.optional && self.written(Some(key)).is_some()) else {
+            return (field(ui), None);
+        };
+        let theme = Theme::of(ui);
+        let side = theme.size.control - 4.0;
+        let room = (ui.available_width() - side - ui.spacing().item_spacing.x).max(0.0);
+        let out = ui
+            .allocate_ui(egui::vec2(room, theme.size.control), field)
+            .inner;
+        let tooltip = match self.slot {
+            Slot::From => format!("{label}: start from the current value"),
+            Slot::To => format!("{label}: end on the design value"),
+        };
+        let leave_out = ui
+            .add(
+                IconButton::new(icons::X)
+                    .size(side)
+                    .dimmed(true)
+                    .tooltip(&tooltip),
+            )
+            .clicked();
+        (
+            out,
+            leave_out.then(|| Change::Set(without_part(self.value, key))),
+        )
+    }
+}
+
+/// A number part's field. A part left out shows the value it stands for,
+/// quietly; a radius given per corner shows as words, as this panel sets
+/// one radius for all corners. Returns the whole new value when it moved.
+fn number_field(ui: &mut Ui, part: Part, field: &Field<'_>, labelled: bool) -> Option<Change> {
     let Part::Number {
         key,
         label,
@@ -412,43 +501,72 @@ fn number_field(
     else {
         return None;
     };
-    let mut shown = read_number(value, key).unwrap_or(0.0) * scale;
-    let mut field = NumericField::new(&mut shown, label)
-        .unit(unit)
-        .range(min..=max)
-        .decimals(if unit == "%" && scale > 1.0 { 0 } else { 1 })
-        .id_salt(("value", salt, label));
-    if labelled {
-        field = field.label(label);
+    let written = field.written(key);
+    if let Some(corners) = written.and_then(Value::as_array) {
+        let corners: Vec<String> = corners
+            .iter()
+            .filter_map(Value::as_f64)
+            .map(|radius| format_value(radius, 1))
+            .collect();
+        ui.label(format!("Per corner: {}", corners.join(", ")));
+        return None;
     }
-    let response = field.show(ui);
+    let stored = written.and_then(Value::as_f64);
+    let implied = field.implied.and_then(|value| read_number(value, key));
+    let mut shown = stored.or(implied).unwrap_or(0.0) * scale;
+    let (response, leave_out) = field.with_leave_out(ui, key, label, |ui| {
+        let mut number = NumericField::new(&mut shown, label)
+            .unit(unit)
+            .range(min..=max)
+            .decimals(if unit == "%" && scale > 1.0 { 0 } else { 1 })
+            .implied(stored.is_none() && field.optional)
+            .id_salt(("value", field.salt, label));
+        if labelled {
+            number = number.label(label);
+        }
+        number.show(ui)
+    });
     let moved = response.response.changed() || response.finished;
-    moved.then(|| {
-        let next = with_part(value, key, json!(shown / scale));
-        Change::Field(response, next)
+    leave_out.or_else(|| {
+        moved.then(|| {
+            let next = with_part(field.value, key, json!(shown / scale));
+            Change::Field(response, next)
+        })
     })
 }
 
-/// A colour part's field. A gradient shows as words, as this panel edits
-/// colours only. Returns the whole new value when it moved.
+/// A colour part's field. A part left out shows the colour it stands for;
+/// a gradient shows as words, as this panel edits colours only. Returns the
+/// whole new value when it moved.
 fn color_field(
     ui: &mut Ui,
     key: Option<&'static str>,
     label: &str,
-    value: &Value,
-    salt: (&str, &str),
+    field: &Field<'_>,
 ) -> Option<Change> {
-    let Some(color) = read_color(value, key) else {
-        ui.label("Gradient");
+    let shown = match field.written(key) {
+        Some(_) => Some(field.value),
+        None => field.implied,
+    };
+    let Some(color) = shown.and_then(|value| read_color(value, key)) else {
+        let words = match shown.map(|value| at(value, key)) {
+            Some(Value::Object(_)) => "Gradient",
+            _ => field.slot.implicit(),
+        };
+        ui.label(words);
         return None;
     };
     let mut picked = rgba(color);
-    let response = ColorField::new(&mut picked, label)
-        .id_salt(("value-color", salt, label))
-        .show(ui);
-    (response.changed || response.finished).then(|| {
-        let next = with_part(value, key, hex(picked));
-        Change::Color(response, next)
+    let (response, leave_out) = field.with_leave_out(ui, key, label, |ui| {
+        ColorField::new(&mut picked, label)
+            .id_salt(("value-color", field.salt, label))
+            .show(ui)
+    });
+    leave_out.or_else(|| {
+        (response.changed || response.finished).then(|| {
+            let next = with_part(field.value, key, hex(picked));
+            Change::Color(response, next)
+        })
     })
 }
 
@@ -522,6 +640,14 @@ mod tests {
             Some(Color::rgb(0x0D, 0x99, 0xFF))
         );
         assert_eq!(read_color(&json!({"type": "linear_gradient"}), None), None);
+        // A part left out is removed by the merge; the last one takes the
+        // whole value with it.
+        let size = json!({"width": 200.0, "height": 40.0});
+        assert_eq!(
+            without_part(&size, "height"),
+            json!({"width": 200.0, "height": null})
+        );
+        assert_eq!(without_part(&json!({"width": 200.0}), "width"), Value::Null);
     }
 
     #[test]
