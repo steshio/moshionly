@@ -378,6 +378,63 @@ pub fn with_emptied_folders(document: &Document, edits: Vec<Edit>) -> Result<Vec
     Ok(edits)
 }
 
+/// Edits that put the actions among `ids` in a new folder named `name`, a
+/// row of the timeline's top level. The timeline shows one level of
+/// folders, so folders hold actions and never other folders: a selected
+/// folder stands for the actions in it, actions in a folder are taken out
+/// of it first, and a folder left empty goes. When the actions are exactly
+/// what one folder holds already, that folder is returned with no edits.
+pub fn group_edits(
+    document: &Document,
+    ids: &[NodeId],
+    name: &str,
+) -> Result<(NodeId, Vec<Edit>), ActionError> {
+    let leaves = leaf_actions(document, ids);
+    if let Some(folder) = only_folder_of(document, &leaves) {
+        return Ok((folder, Vec::new()));
+    }
+    let mut scratch = document.clone();
+    let mut edits = Vec::new();
+    for leaf in &leaves {
+        // Nearest first, ending with the artboard.
+        let ancestors: Vec<NodeId> = scratch.ancestors(leaf).map(|n| n.id.clone()).collect();
+        let [.., outer, artboard] = ancestors.as_slice() else {
+            continue;
+        };
+        // Taken out just above its folder, in order.
+        let step = build::move_node(
+            &scratch,
+            leaf,
+            artboard,
+            &build::Place::Before(outer.clone()),
+            false,
+        )?;
+        scratch.apply(&step)?;
+        edits.extend(step);
+    }
+    let (folder, step) = build::group_animations(&scratch, &leaves, name)?;
+    edits.extend(step);
+    Ok((folder, with_emptied_folders(document, edits)?))
+}
+
+/// The top-level folder that holds exactly `actions`, when there is one.
+fn only_folder_of(document: &Document, actions: &[NodeId]) -> Option<NodeId> {
+    let folder = document.parent_of(actions.first()?)?;
+    let top_level = folder
+        .parent
+        .as_ref()
+        .and_then(|parent| document.get(parent));
+    let holds_all = actions
+        .iter()
+        .all(|id| document.get(id).and_then(|node| node.parent.as_ref()) == Some(&folder.id));
+    let holds_only = document.children(&folder.id, Family::Animation).len() == actions.len();
+    (folder.node_type() == NodeType::AnimationGroup
+        && top_level.is_some_and(|parent| parent.node_type() == NodeType::Artboard)
+        && holds_all
+        && holds_only)
+        .then(|| folder.id.clone())
+}
+
 /// Edits that dissolve the folders among or around `ids`, one after the
 /// other. Returns the edits with the actions that were in them.
 pub fn ungroup_edits(
@@ -547,12 +604,16 @@ impl Editor {
         Ok(ids)
     }
 
-    /// Puts the selected actions in a new timeline folder. Returns the
+    /// Puts the selected actions in a new folder on the timeline's top
+    /// level, as [`group_edits`] says, and keeps them selected. Returns the
     /// folder.
     pub fn group_actions(&mut self) -> Result<NodeId, ActionError> {
-        let name = folder_name(&self.document);
-        let (folder, edits) = build::group_animations(&self.document, &self.actions, &name)?;
-        self.apply("Group actions", &edits)?;
+        let document = std::sync::Arc::clone(&self.document);
+        let name = folder_name(&document);
+        let (folder, edits) = group_edits(&document, &self.actions, &name)?;
+        if self.apply("Group actions", &edits)? {
+            self.set_actions(leaf_actions(&document, &self.actions));
+        }
         Ok(folder)
     }
 
@@ -921,6 +982,52 @@ mod tests {
         editor.set_actions([]);
         editor.select_folder(&fade);
         assert!(editor.actions().is_empty());
+    }
+
+    #[test]
+    fn grouping_makes_a_top_level_folder_whatever_was_in_one() {
+        let (mut editor, first, [fade, copy]) = grouped();
+        let artboard = id("ab");
+        let parent =
+            |editor: &Editor, id: &NodeId| editor.document().parent_of(id).unwrap().id.clone();
+        // A loose action on another layer, grouped with one from the folder.
+        editor.selection.select(id("dot"));
+        let pop = editor.add_actions(NodeType::GrowIn, 0.0).unwrap()[0].clone();
+        editor.set_actions([fade.clone(), pop.clone()]);
+        let second = editor.group_actions().unwrap();
+        assert_eq!(parent(&editor, &second), artboard, "not inside the first");
+        assert_eq!(parent(&editor, &fade), second);
+        assert_eq!(parent(&editor, &pop), second);
+        assert_eq!(parent(&editor, &copy), first, "the rest stays");
+        assert_eq!(editor.actions(), [fade.clone(), pop.clone()]);
+        // Both folders show on the timeline, each with its own bars.
+        let groups =
+            super::super::timeline::timeline_groups(editor.document(), &artboard, &HashSet::new());
+        let bars = |folder: &NodeId| {
+            groups
+                .iter()
+                .find(|group| group.key == folder.as_str())
+                .map(|group| group.bars.len())
+        };
+        assert_eq!(bars(&first), Some(1));
+        assert_eq!(bars(&second), Some(2));
+
+        // Across two folders: the one left empty goes, in the same step.
+        editor.set_actions([copy.clone(), pop.clone()]);
+        let third = editor.group_actions().unwrap();
+        assert!(!editor.document().contains(&first));
+        assert_eq!(parent(&editor, &third), artboard);
+        assert_eq!(parent(&editor, &copy), third);
+        assert_eq!(parent(&editor, &fade), second);
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Group actions"));
+        editor.undo().unwrap();
+        assert_eq!(parent(&editor, &copy), first);
+
+        // What one folder holds already stays as it is.
+        editor.select_folder(&second);
+        assert_eq!(editor.group_actions().unwrap(), second);
+        assert!(editor.redo_label().is_some(), "nothing was done");
+        assert_eq!(editor.actions()[0], second);
     }
 
     #[test]
