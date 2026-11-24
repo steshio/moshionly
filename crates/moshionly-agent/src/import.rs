@@ -65,7 +65,8 @@ pub struct ImportNote {
     pub message: String,
 }
 
-/// What the sender asked for. The person decides in the end.
+/// What the sender asked for. The Moshionly app does not act on it: it
+/// always applies a design with [`ImportTarget::ReplaceMatching`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestedMode {
     /// Add the design as new artboards.
@@ -75,7 +76,7 @@ pub enum RequestedMode {
     Replace,
 }
 
-/// Where an accepted design goes.
+/// Where a design goes when it is applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportTarget {
     /// New artboards to the right of the others.
@@ -88,7 +89,7 @@ pub enum ImportTarget {
     ReplaceMatching,
 }
 
-/// What accepting a design did.
+/// What applying a design did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportOutcome {
     /// The top-level layers that were added or put in place of old ones.
@@ -147,6 +148,8 @@ pub struct PendingImport {
     pub notes: Vec<ImportNote>,
     /// What the sender asked for, when it said.
     pub mode: Option<RequestedMode>,
+    /// How large the envelope was, in bytes.
+    pub bytes: usize,
 }
 
 impl fmt::Display for PendingImport {
@@ -231,6 +234,7 @@ pub fn read_envelope(body: &[u8]) -> Result<PendingImport, EnvelopeError> {
         nodes,
         notes,
         mode,
+        bytes: body.len(),
     })
 }
 
@@ -318,25 +322,12 @@ impl PendingImport {
                     outcome.roots = imported.roots;
                 }
                 ImportTarget::ReplaceMatching => {
+                    let parts = self.parts();
+                    let earlier = earlier_versions(&scratch, &parts);
                     // Parts that never came over are added together at the
                     // end, so several new frames keep their arrangement.
                     let mut fresh: Vec<Node> = Vec::new();
-                    for part in self.parts() {
-                        let root = &part[0];
-                        let is_artboard = root.node_type() == NodeType::Artboard;
-                        let earlier = root
-                            .layer()
-                            .and_then(|layer| layer.source_id.as_deref())
-                            .filter(|source| !source.is_empty())
-                            .and_then(|source| layer_from(&scratch, source))
-                            // An artboard only takes an artboard's place. A
-                            // frame moved into another frame in Figma since,
-                            // or out onto the canvas, comes over as new.
-                            .filter(|existing| {
-                                scratch.get(existing).is_some_and(|node| {
-                                    (node.node_type() == NodeType::Artboard) == is_artboard
-                                })
-                            });
+                    for (part, earlier) in parts.into_iter().zip(earlier) {
                         match earlier {
                             Some(existing) => {
                                 let replaced =
@@ -404,15 +395,55 @@ impl PendingImport {
     }
 }
 
+/// The layer each part of a design takes the place of, if any, all found
+/// before anything changes, so the order of the parts does not matter.
+///
+/// - An artboard only takes an artboard's place, and any other layer only a
+///   layer's: a frame moved into another frame in Figma since it came over,
+///   or out onto the canvas, comes over as new the first time, and later
+///   sends update that copy.
+/// - A layer whose earlier version sits inside another part's earlier
+///   version has left it in Figma since. It comes over as new, instead of
+///   being put in a place that is about to be replaced.
+/// - No earlier layer is taken twice.
+fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<NodeId>> {
+    let mut taken = HashSet::new();
+    let found: Vec<Option<NodeId>> = parts
+        .iter()
+        .map(|part| {
+            let root = &part[0];
+            root.layer()
+                .and_then(|layer| layer.source_id.as_deref())
+                .filter(|source| !source.is_empty())
+                .and_then(|source| {
+                    layer_from(document, source, root.node_type() == NodeType::Artboard)
+                })
+                .filter(|existing| taken.insert(existing.clone()))
+        })
+        .collect();
+    found
+        .into_iter()
+        .map(|earlier| {
+            earlier.filter(|existing| {
+                !document
+                    .ancestors(existing)
+                    .any(|above| taken.contains(&above.id))
+            })
+        })
+        .collect()
+}
+
 /// The first layer of the document, in tree order, that was imported from
-/// `source`.
-fn layer_from(document: &Document, source: &str) -> Option<NodeId> {
+/// `source` and is an artboard exactly when `artboard` is true.
+fn layer_from(document: &Document, source: &str, artboard: bool) -> Option<NodeId> {
     document
         .nodes()
         .find(|node| {
-            node.layer()
-                .and_then(|layer| layer.source_id.as_deref())
-                .is_some_and(|id| id == source)
+            (node.node_type() == NodeType::Artboard) == artboard
+                && node
+                    .layer()
+                    .and_then(|layer| layer.source_id.as_deref())
+                    .is_some_and(|id| id == source)
         })
         .map(|node| node.id.clone())
 }

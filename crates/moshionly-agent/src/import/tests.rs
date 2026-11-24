@@ -138,7 +138,10 @@ fn an_accepted_design_is_one_import_step() {
 
 /// The id of the layer imported from `source`.
 fn imported(session: &SessionHandle, source: &str) -> NodeId {
-    layer_from(&session.document(), source).unwrap()
+    let document = session.document();
+    layer_from(&document, source, true)
+        .or_else(|| layer_from(&document, source, false))
+        .unwrap()
 }
 
 #[test]
@@ -180,7 +183,7 @@ fn sending_again_replaces_the_layers_and_keeps_their_animations() {
     let animations = document.animations_targeting(&new_box);
     assert_eq!(animations.len(), 1, "the fade moved over to the new box");
     assert_eq!(document.artboards().len(), 4);
-    assert!(layer_from(&document, "figma:abc:9:1").is_some());
+    assert!(layer_from(&document, "figma:abc:9:1", true).is_some());
 }
 
 #[test]
@@ -196,12 +199,68 @@ fn a_frame_moved_into_another_frame_since_comes_over_as_new() {
     // a group, which cannot take the artboard's place.
     let mut nodes = design("#FF5A1F");
     nodes[0]["type"] = json!("group");
-    let outcome = read(&envelope(nodes))
-        .unwrap()
+    let moved = read(&envelope(nodes)).unwrap();
+    let outcome = moved
         .apply(&session, &ImportTarget::ReplaceMatching)
         .expect("the design comes over instead of being refused");
     assert_eq!(outcome.replaced, 0);
     assert_eq!(session.document().artboards().len(), artboards + 1);
+
+    // Sending it again updates that copy instead of adding another.
+    let outcome = moved
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    assert_eq!(outcome.replaced, 1);
+    let document = session.document();
+    assert_eq!(document.artboards().len(), artboards + 1);
+    let copies = document
+        .nodes()
+        .filter(|node| {
+            node.layer()
+                .and_then(|layer| layer.source_id.as_deref())
+                .is_some_and(|id| id == "figma:abc:1:1")
+        })
+        .count();
+    assert_eq!(copies, 2, "the first artboard and one group");
+}
+
+#[test]
+fn a_layer_moved_out_of_a_frame_is_kept_whatever_the_order() {
+    let session = demo_session();
+    read(&envelope(design("#0D99FF")))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+
+    // In Figma the box now sits on the canvas, beside its old frame, and is
+    // selected before it.
+    let nodes = json!([
+        { "id": "1:2", "type": "rect", "name": "Box", "x": 500, "y": 20,
+          "width": 100, "height": 50, "fill": "#FF5A1F", "source_id": "figma:abc:1:2" },
+        { "id": "1:1", "type": "artboard", "name": "Frame", "width": 400, "height": 300,
+          "fill": "#FFFFFF", "source_id": "figma:abc:1:1" },
+    ]);
+    let outcome = read(&envelope(nodes))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    assert_eq!(outcome.replaced, 1, "only the frame is put in place");
+    let document = session.document();
+    assert!(outcome.roots.iter().all(|id| document.contains(id)));
+    let boxes: Vec<&Node> = document
+        .nodes()
+        .filter(|node| {
+            node.layer()
+                .and_then(|layer| layer.source_id.as_deref())
+                .is_some_and(|id| id == "figma:abc:1:2")
+        })
+        .collect();
+    assert_eq!(boxes.len(), 1, "the box is there once");
+    let frame = imported(&session, "figma:abc:1:1");
+    assert!(
+        !document.is_ancestor(&frame, &boxes[0].id),
+        "and outside its old frame"
+    );
 }
 
 #[test]
