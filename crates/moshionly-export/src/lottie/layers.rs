@@ -169,8 +169,7 @@ impl<'a> Converter<'a> {
         parent_index: Option<i64>,
         transform: &Transform,
     ) -> Map<String, Value> {
-        let mut layer = Map::new();
-        layer.insert("ty".into(), Value::from(ty));
+        let mut layer = layer_start(ty);
         layer.insert("ind".into(), Value::from(index));
         if let Some(parent) = parent_index {
             layer.insert("parent".into(), Value::from(parent));
@@ -575,8 +574,7 @@ impl<'a> Converter<'a> {
         };
         let add = |name: &str, fill: Value, comp: &mut Comp| {
             let index = comp.index();
-            let mut layer = Map::new();
-            layer.insert("ty".into(), Value::from(4));
+            let mut layer = layer_start(4);
             layer.insert("ind".into(), Value::from(index));
             if let Some(parent) = parent_index {
                 layer.insert("parent".into(), Value::from(parent));
@@ -653,6 +651,17 @@ enum Geometry<'g> {
     Ellipse,
     /// Paths, worked out at each frame.
     Contours(Box<dyn Fn(f64) -> Vec<Contour> + 'g>),
+}
+
+/// The first keys of every Lottie layer: its kind `ty`, and `ddd` 0 for a
+/// flat layer. rlottie reads a layer without `ddd` as a 3D one, which turns
+/// by `rz` and ignores `r`, and reads the keys in order, so `ddd` comes
+/// before the transform.
+pub(crate) fn layer_start(ty: u8) -> Map<String, Value> {
+    let mut layer = Map::new();
+    layer.insert("ty".into(), Value::from(ty));
+    layer.insert("ddd".into(), Value::from(0));
+    layer
 }
 
 /// A shape group holding `items`, with the transform it must end with.

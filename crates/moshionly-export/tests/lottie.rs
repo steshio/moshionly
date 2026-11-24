@@ -730,3 +730,40 @@ fn size_and_background_settings_are_kept() {
             .all(|layer| layer["nm"] != "Background")
     );
 }
+
+/// Every layer in the file: at the top and in every precomposition.
+fn all_layers(lottie: &Value) -> Vec<&Value> {
+    let top = lottie["layers"].as_array().unwrap().iter();
+    let inside = lottie["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|asset| asset["layers"].as_array())
+        .flatten();
+    top.chain(inside).collect()
+}
+
+/// The position of `key` among the keys of `object`, which keep the order
+/// they were written in.
+fn key_position(object: &Value, key: &str) -> Option<usize> {
+    object.as_object()?.keys().position(|k| k == key)
+}
+
+#[test]
+fn every_layer_is_flat_before_its_transform() {
+    // rlottie reads a layer without "ddd" as 3D and then ignores its "r",
+    // and it reads keys in order, so "ddd" must come before "ks". The demo
+    // at twice the size has every kind of layer the exporter makes: the
+    // size null, the background, text, a counter's letters and groups.
+    let (lottie, _) = export(Settings::default().with_scale(2.0));
+    let layers = all_layers(&lottie);
+    assert!(layers.len() > 20, "{} layers", layers.len());
+    for layer in layers {
+        assert_eq!(layer["ddd"], 0, "{}", layer["nm"]);
+        assert!(
+            key_position(layer, "ddd") < key_position(layer, "ks"),
+            "{}",
+            layer["nm"]
+        );
+    }
+}

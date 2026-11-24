@@ -27,13 +27,13 @@ use moshionly_core::scene::{Content, SceneNode, ScenePaint, TextContent, TextUni
 use moshionly_core::text::{TextMeasurer, TextRequest, split};
 use moshionly_core::{Affine, Color, Node, NodeData, NodeId, Point, Scene};
 use moshionly_render::skia_safe as sk;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::error::ExportError;
 
 use super::fit::{Animated, Hints};
 use super::json::{num, object, places};
-use super::layers::{Comp, Converter};
+use super::layers::{Comp, Converter, layer_start};
 use super::paint::{self, Role, Source};
 use super::props::{Position, Transform};
 use super::shapes::{Contour, Outline};
@@ -641,8 +641,7 @@ impl<'a> Converter<'a> {
         let asset = self.composition(node, |_, inner| {
             for letter in placed.iter().rev() {
                 let index = inner.index();
-                let mut layer = Map::new();
-                layer.insert("ty".into(), Value::from(0));
+                let mut layer = layer_start(0);
                 layer.insert("ind".into(), Value::from(index));
                 layer.insert("refId".into(), Value::from(letter.asset.as_str()));
                 layer.insert("w".into(), num(letter.size[0].ceil(), 0));
@@ -707,15 +706,14 @@ impl<'a> Converter<'a> {
     /// A composition drawing one letter shape with the text's paints.
     fn letter_composition(&mut self, node: &Node, shapes: Vec<Value>) -> String {
         let out = self.timeline.clock.out_point();
-        let layer = object([
-            ("ty", Value::from(4)),
-            ("ind", Value::from(1)),
-            ("ks", object([])),
-            ("ip", Value::from(0)),
-            ("op", num(out, places::TIME)),
-            ("st", Value::from(0)),
-            ("shapes", Value::Array(shapes)),
-        ]);
+        let mut layer = layer_start(4);
+        layer.insert("ind".into(), Value::from(1));
+        layer.insert("ks".into(), object([]));
+        layer.insert("ip".into(), Value::from(0));
+        layer.insert("op".into(), num(out, places::TIME));
+        layer.insert("st".into(), Value::from(0));
+        layer.insert("shapes".into(), Value::Array(shapes));
+        let layer = Value::Object(layer);
         let id = format!("letter_{}", self.assets.len());
         self.assets.push(object([
             ("id", Value::from(id.as_str())),
