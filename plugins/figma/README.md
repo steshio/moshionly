@@ -109,7 +109,7 @@ Pictures are embedded in what is sent. Large photos are scaled down to twice the
 
 **Sending again added a copy instead of replacing.** Choose **Replace the matching layers and keep their animations** before sending, and send from the same Figma file. Plugins loaded from a manifest learn the file's identity from Figma; if Figma does not give it, the plugin keeps a small identity of its own inside the file (invisible plugin data) so later sends still match.
 
-**Figma refuses the manifest.** Figma may ask for a plugin id of its own. Create a new plugin in Figma (**Plugins → Development → New plugin…**), copy the `id` from its manifest into `plugins/figma/manifest.json`, and import again.
+**Figma refuses the manifest.** Figma's message names the field it does not accept. Check that you picked `plugins/figma/manifest.json` from an up-to-date copy of this repository, and report the message if it persists.
 
 ## For developers
 
