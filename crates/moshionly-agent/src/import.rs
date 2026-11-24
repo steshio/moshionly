@@ -39,7 +39,7 @@ const MAX_NOTE_CHARS: usize = 2000;
 const MAX_NAME_CHARS: usize = 300;
 /// The most designs that wait for the app to take them. More are refused
 /// until the app takes one, so a page that sends designs in a loop cannot
-/// fill memory or bury the person in questions.
+/// fill memory while the app is busy or slowing it down.
 pub const MAX_WAITING: usize = 4;
 
 /// Where a design came from.
@@ -447,8 +447,8 @@ impl ImportSink {
     /// A sink, and the receiver the app takes pending imports from.
     ///
     /// At most [`MAX_WAITING`] designs wait in the receiver; later ones are
-    /// refused until the app takes one. Take a design when it can be shown
-    /// to the person, so the limit also bounds the questions they face.
+    /// refused until the app takes one. An app that takes designs only at a
+    /// pace it chooses makes the limit slow down a sender too.
     pub fn new() -> (ImportSink, mpsc::Receiver<PendingImport>) {
         let (sender, receiver) = mpsc::sync_channel(MAX_WAITING);
         (ImportSink { sender, wake: None }, receiver)

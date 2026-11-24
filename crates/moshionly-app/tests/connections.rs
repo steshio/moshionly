@@ -1,6 +1,6 @@
 //! The app's connections end to end, without a window: an agent editing
 //! the open document over MCP on HTTP, a design posted by the Figma plugin
-//! and accepted, and an export started from the Export dialog.
+//! and added at once, and an export started from the Export dialog.
 //!
 //! The server listens on a free port chosen by the system, never on 47821,
 //! which may be taken where the tests run.
@@ -9,11 +9,12 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use moshionly_agent::import::MAX_WAITING;
 use moshionly_agent::{Origin, SessionHandle};
 use moshionly_app::connect::ServerStatus;
 use moshionly_app::export::RunOutcome;
 use moshionly_app::settings::Settings;
-use moshionly_app::shell::{FileAction, Shell};
+use moshionly_app::shell::{FileAction, MAX_IMPORTS_PER_WINDOW, Shell};
 use moshionly_core::{NodeId, NodeType};
 use moshionly_export::Format;
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
@@ -212,6 +213,30 @@ fn a_design_posted_from_figma_is_added_at_once_as_one_step() {
     shell.editor_mut().undo().unwrap();
     assert_eq!(shell.editor().document().artboards().len(), before);
     assert!(!shell.editor().document().contains(&hero));
+}
+
+/// Nothing asks before a design is added, so a page posting designs in a
+/// loop is slowed down: a few are added a minute, the next wait, and the
+/// server refuses more once a few are waiting.
+#[test]
+fn designs_posted_in_a_loop_are_added_a_few_a_minute() {
+    assert!(MAX_IMPORTS_PER_WINDOW >= MAX_WAITING && MAX_IMPORTS_PER_WINDOW < 2 * MAX_WAITING);
+    let (mut shell, address) = serving_shell();
+    let post = || send(address, "/import", &[JSON, ("Origin", "null")], ENVELOPE);
+    for _ in 0..2 {
+        for _ in 0..MAX_WAITING {
+            assert_eq!(post().status, 202);
+        }
+        shell.receive_imports(None);
+    }
+    // The minute's allowance is used up, so these stay waiting.
+    let waiting = 2 * MAX_WAITING - MAX_IMPORTS_PER_WINDOW;
+    for _ in waiting..MAX_WAITING {
+        assert_eq!(post().status, 202);
+    }
+    let refused = post();
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert!(refused.body.contains("still adding"), "{}", refused.body);
 }
 
 #[test]

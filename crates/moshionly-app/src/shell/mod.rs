@@ -18,8 +18,8 @@ mod parts;
 mod tool_bar;
 mod top_bar;
 
-use std::collections::HashSet;
-use std::time::Duration;
+use std::collections::{HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
 use moshionly_agent::{Session, SessionHandle, Tools};
@@ -32,7 +32,7 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
-    connect::AgentLight,
+    connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORTS_PER_WINDOW},
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
@@ -141,6 +141,8 @@ pub struct Shell {
     agent_port: Option<u16>,
     /// The "Connect an agent" dialog is open.
     connect_open: bool,
+    /// When the designs sent from Figma in the last minute were added.
+    recent_imports: VecDeque<Instant>,
     /// The Export dialog, while it is open.
     export: Option<export_dialog::ExportDialog>,
 }
@@ -254,6 +256,7 @@ impl Shell {
             server: AgentServer::off(),
             agent_port: None,
             connect_open: false,
+            recent_imports: VecDeque::new(),
             export: None,
         }
     }

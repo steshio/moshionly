@@ -1,6 +1,8 @@
 //! The shell's connections: the MCP server agents reach the open document
 //! through, the "Connect an agent" dialog, and designs sent from Figma.
 
+use std::time::{Duration, Instant};
+
 use egui::{Context, Frame, Margin, RichText, ScrollArea, Ui, UserAttentionType, ViewportCommand};
 use moshionly_agent::Tools;
 use moshionly_agent::import::{EnvelopeError, FORMAT, ImportTarget, PendingImport, read_envelope};
@@ -17,6 +19,16 @@ use crate::{
     theme::{Theme, corner, icons},
     widgets::{ButtonKind, IconButton, ModalFrame, TextButton, Toast, modal_footer},
 };
+
+/// At most this many designs sent from Figma are added in one
+/// [`IMPORT_WINDOW`]. A person sends a few a minute at most; nothing asks
+/// before a design is added, so this keeps a page that posts designs in a
+/// loop from growing the project without end. Designs over the limit wait,
+/// and the server refuses more once a few are waiting.
+pub const MAX_IMPORTS_PER_WINDOW: usize = 6;
+
+/// See [`MAX_IMPORTS_PER_WINDOW`].
+pub const IMPORT_WINDOW: Duration = Duration::from_secs(60);
 
 /// How the status item in the top bar looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,20 +113,45 @@ impl Shell {
         self.connect_open
     }
 
-    /// Adds every design sent from Figma since the last frame and, with a
-    /// window, brings it forward. [`show`](Shell::show) calls this every
-    /// frame, and the app also while the window is covered or minimized.
+    /// Adds the designs sent from Figma since the last frame, up to
+    /// [`MAX_IMPORTS_PER_WINDOW`] a minute, and with a window brings it
+    /// forward, or has its Dock icon ask for attention when it is minimized
+    /// or hidden. [`show`](Shell::show) calls this every frame, and the app
+    /// also while the window is covered or minimized.
     pub fn receive_imports(&mut self, ctx: Option<&Context>) {
+        let now = Instant::now();
+        while self
+            .recent_imports
+            .front()
+            .is_some_and(|added| now.duration_since(*added) >= IMPORT_WINDOW)
+        {
+            self.recent_imports.pop_front();
+        }
         let mut arrived = false;
-        while let Some(pending) = self.server.take_import() {
+        while self.recent_imports.len() < MAX_IMPORTS_PER_WINDOW {
+            let Some(pending) = self.server.take_import() else {
+                break;
+            };
+            self.recent_imports.push_back(now);
             self.import_design(&pending);
             arrived = true;
         }
-        if let (true, Some(ctx)) = (arrived, ctx) {
+        let Some(ctx) = ctx else {
+            return;
+        };
+        if arrived {
             ctx.send_viewport_cmd(ViewportCommand::Focus);
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(
                 UserAttentionType::Informational,
             ));
+        }
+        // Over the limit, look again once the oldest design is a minute old.
+        if let Some(oldest) = self
+            .recent_imports
+            .front()
+            .filter(|_| self.recent_imports.len() >= MAX_IMPORTS_PER_WINDOW)
+        {
+            ctx.request_repaint_after(IMPORT_WINDOW.saturating_sub(now.duration_since(*oldest)));
         }
     }
 

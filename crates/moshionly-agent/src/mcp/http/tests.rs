@@ -500,7 +500,7 @@ fn designs_beyond_the_few_waiting_are_refused_until_the_app_takes_one() {
     assert_eq!(reply.status, 429);
     assert_eq!(reply.header("access-control-allow-origin"), Some("null"));
     let error = reply.json()["error"].as_str().unwrap().to_owned();
-    assert!(error.contains("designs waiting to be accepted"), "{error}");
+    assert!(error.contains("still adding"), "{error}");
 
     inbox.try_recv().unwrap();
     assert_eq!(post_design().status, 202);

@@ -17,10 +17,11 @@
 //! and says it is running at `GET /health`. The plugin's panel is a
 //! sandboxed page whose origin is `null`, so these two answer that origin's
 //! cross-origin requests, including the preflight Chromium sends before a
-//! page may reach a private address. Because any sandboxed page looks the
-//! same, what arrives is checked and handed to the app as a
-//! [`PendingImport`](crate::import::PendingImport) the person accepts or
-//! rejects; nothing is applied directly.
+//! page may reach a private address. Any sandboxed page looks the same, so
+//! what arrives is size-capped and checked through core, and handed to the
+//! app as a [`PendingImport`](crate::import::PendingImport). The app adds it
+//! without asking, as one undo step the person can take back, and only a
+//! few a minute, so a page posting designs in a loop cannot flood it.
 
 use std::collections::HashMap;
 use std::io;
@@ -493,8 +494,8 @@ fn receive(state: &Shared, body: &Bytes) -> Response {
             return refuse(
                 StatusCode::TOO_MANY_REQUESTS,
                 format!(
-                    "Moshionly already has {MAX_WAITING} designs waiting to be accepted. Answer \
-                     those in the app, then send again."
+                    "Moshionly is still adding {MAX_WAITING} designs sent before. Send again in \
+                     a moment."
                 ),
             );
         }
