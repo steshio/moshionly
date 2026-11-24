@@ -469,3 +469,51 @@ fn plural(count: usize, noun: &str) -> String {
         format!("{count} {noun}s")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use moshionly_render::{AssetLoader, FontLibrary, Renderer};
+
+    use super::*;
+    use crate::settings::Settings;
+
+    const ENVELOPE: &str = include_str!("../../tests/fixtures/figma-hero.json");
+
+    fn shell() -> Shell {
+        let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+        Shell::headless(
+            Settings::default(),
+            super::super::untitled_session(),
+            renderer,
+        )
+    }
+
+    #[test]
+    fn a_pasted_envelope_asks_where_it_goes() {
+        let mut shell = shell();
+        assert!(shell.paste_envelope(ENVELOPE));
+        assert!(shell.pending_import().is_some());
+        // Layers that only mention the format are pasted as layers.
+        assert!(!shell.paste_envelope(r#"[{"name":"moshionly-import"}]"#));
+        assert!(!shell.paste_envelope("plain text"));
+        // An envelope this app cannot read says so, and is not pasted.
+        assert!(shell.paste_envelope(r#"{"format":"moshionly-import","version":99}"#));
+        assert_eq!(shell.imports.len(), 1);
+        shell.reject_import();
+        assert!(shell.pending_import().is_none());
+    }
+
+    #[test]
+    fn designs_wait_their_turn() {
+        let mut shell = shell();
+        let pending = read_envelope(ENVELOPE.as_bytes()).unwrap();
+        shell.offer_import(pending.clone());
+        shell.offer_import(pending);
+        shell.set_import_choice(ImportChoice::IntoArtboard);
+        assert!(shell.accept_import());
+        assert_eq!(shell.imports.len(), 1);
+        // The next one starts on its own suggestion.
+        assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
+        assert_eq!(AgentLight::of(&ServerStatus::Off), AgentLight::Off);
+    }
+}
