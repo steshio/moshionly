@@ -317,7 +317,7 @@ impl<'a> Converter<'a> {
             }
         }
         let starts = atoms.iter().map(|(atom, _)| atom.start).collect();
-        let poses = Poses::new(self.timeline.scenes, node.id.clone(), starts);
+        let poses = Poses::new(self.timeline, node.id.clone(), starts);
         let transform = self.text_transform(node, &hints, offset, &state.node, &poses);
         let paints = self.text_paints(node, &hints, &state.node, &poses);
         let mut shapes = Vec::new();
@@ -433,7 +433,7 @@ impl<'a> Converter<'a> {
             width: rest.width,
             height: rest.height,
         };
-        let drawn = |frame: f64| poses.at(frame).drawn;
+        let drawn = |frame: f64| poses.drawn(frame);
         let box_center = |node: &Drawn| {
             node.transform
                 .apply(Point::new(node.width / 2.0, node.height / 2.0))
@@ -498,7 +498,7 @@ impl<'a> Converter<'a> {
     ) -> Vec<Value> {
         let id = &node.id;
         let timeline = self.timeline;
-        let size = |frame: f64| match poses.at(frame).drawn {
+        let size = |frame: f64| match poses.drawn(frame) {
             Some(drawn) => (drawn.width, drawn.height),
             None => (rest.width, rest.height),
         };
@@ -567,7 +567,7 @@ impl<'a> Converter<'a> {
     /// animations, and whether it is ever blurred.
     fn piece_transform(&self, poses: &Poses<'_>, index: usize, hints: &Hints) -> (Transform, bool) {
         let timeline = self.timeline;
-        let piece = |frame: f64| poses.at(frame).pieces[index];
+        let piece = |frame: f64| poses.piece(frame, index);
         let length = places_for(tolerance::LENGTH);
         let position = timeline.fit(
             &|frame| piece(frame).position.to_vec(),
