@@ -19,7 +19,7 @@ The plugin now appears under **Plugins → Development → Moshionly**. There is
 3. Run **Plugins → Development → Moshionly**.
 4. Click **Send to Moshionly**.
 
-Moshionly adds the design to the open project straight away, selects what arrived and comes to the front (when it is minimized or hidden, its Dock icon bounces instead). Nothing asks first: if it is not what you wanted, **Undo** in Moshionly takes the whole design back in one step.
+Moshionly adds the design to the open project straight away, selects what arrived and comes to the front (when it is minimized or hidden, its Dock icon bounces instead). Nothing asks first: if it is not what you wanted, **Undo** in Moshionly takes the whole design back in one step. Moshionly adds at most six sent designs a minute (and 32 MB of them), so that a web page cannot fill your project; if you send more, the rest wait their turn and arrive within the minute.
 
 **Copy** puts the same design on the clipboard instead; paste it into Moshionly with Cmd+V. Use it when Moshionly runs on another computer, or when sending is blocked (see [Troubleshooting](#troubleshooting)). If the design took a while to prepare, the button changes to **Copy now**: click it once more, because the clipboard only accepts text right after a click.
 
@@ -35,7 +35,8 @@ Layers are matched by where they came from: the Figma file and the layer's own i
 - A layer you delete in Figma and draw again is a new layer: its old animations are dropped.
 - Send from the same Figma file. A copy of the file (**Duplicate**) has new identities.
 - Frames on the canvas become artboards, and an artboard can only be replaced by an artboard: keep the frame a frame.
-- Layers in the selection that never came over before are added next to the ones that are updated.
+- Layers in the selection that never came over before are added as new artboards to the right of all your artboards, keeping their arrangement among themselves. The ones that came over before are updated where they already are.
+- A frame moved into another frame in Figma, or out onto the canvas, comes over once as a new copy, because a frame on the canvas and a frame inside another one are different kinds of layer in Moshionly. Later sends update that copy.
 
 To get a second, separate copy instead, duplicate the artboard in Moshionly.
 
@@ -108,7 +109,9 @@ Pictures are embedded in what is sent. Large photos are scaled down to twice the
 
 **Fonts look different.** Moshionly uses the fonts installed on your computer. Install the same fonts there as in Figma.
 
-**Sending again added a copy instead of updating.** Send from the same Figma file, and check that the earlier version is still in the open Moshionly project. Plugins loaded from a manifest learn the file's identity from Figma; if Figma does not give it, the plugin keeps a small identity of its own inside the file (invisible plugin data) so later sends still match.
+**Sending again added a copy instead of updating.** Send from the same Figma file, and check that the earlier version is still in the open Moshionly project. A frame you moved into another frame, or out onto the canvas, comes over once as a copy; later sends update it.
+
+**"Moshionly is still adding 4 designs sent before."** You sent more designs in the last minute than Moshionly adds at once. Wait a moment and send again. Plugins loaded from a manifest learn the file's identity from Figma; if Figma does not give it, the plugin keeps a small identity of its own inside the file (invisible plugin data) so later sends still match.
 
 **Figma refuses the manifest.** Figma's message names the field it does not accept. Check that you picked `plugins/figma/manifest.json` from an up-to-date copy of this repository, and report the message if it persists.
 

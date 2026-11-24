@@ -20,8 +20,9 @@
 //! page may reach a private address. Any sandboxed page looks the same, so
 //! what arrives is size-capped and checked through core, and handed to the
 //! app as a [`PendingImport`](crate::import::PendingImport). The app adds it
-//! without asking, as one undo step the person can take back, and only a
-//! few a minute, so a page posting designs in a loop cannot flood it.
+//! without asking, as one undo step the person can take back, and only so
+//! many designs and megabytes a minute: that slows down a page posting
+//! designs in a loop, and turning agents off in the app stops it.
 
 use std::collections::HashMap;
 use std::io;

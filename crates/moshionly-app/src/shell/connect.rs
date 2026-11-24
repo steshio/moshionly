@@ -21,11 +21,18 @@ use crate::{
 };
 
 /// At most this many designs sent from Figma are added in one
-/// [`IMPORT_WINDOW`]. A person sends a few a minute at most; nothing asks
-/// before a design is added, so this keeps a page that posts designs in a
-/// loop from growing the project without end. Designs over the limit wait,
-/// and the server refuses more once a few are waiting.
+/// [`IMPORT_WINDOW`], and no more once they came to
+/// [`MAX_IMPORT_BYTES_PER_WINDOW`]. A person sends a few a minute at most.
+/// Nothing asks before a design is added, so this slows down a page that
+/// posts designs in a loop; turning off "Let agents on this computer
+/// connect" stops it. Designs over the limit wait, and the server refuses
+/// more once a few are waiting.
 pub const MAX_IMPORTS_PER_WINDOW: usize = 6;
+
+/// How many bytes of designs are added in one [`IMPORT_WINDOW`]. The first
+/// design of a window is always added, however large, so one design at the
+/// server's size limit never gets stuck.
+pub const MAX_IMPORT_BYTES_PER_WINDOW: usize = 32 * 1024 * 1024;
 
 /// See [`MAX_IMPORTS_PER_WINDOW`].
 pub const IMPORT_WINDOW: Duration = Duration::from_secs(60);
@@ -113,8 +120,9 @@ impl Shell {
         self.connect_open
     }
 
-    /// Adds the designs sent from Figma since the last frame, up to
-    /// [`MAX_IMPORTS_PER_WINDOW`] a minute, and with a window brings it
+    /// Adds the designs sent from Figma since the last frame, within
+    /// [`MAX_IMPORTS_PER_WINDOW`] and [`MAX_IMPORT_BYTES_PER_WINDOW`] a
+    /// minute, and with a window brings it
     /// forward, or has its Dock icon ask for attention when it is minimized
     /// or hidden. [`show`](Shell::show) calls this every frame, and the app
     /// also while the window is covered or minimized.
@@ -123,16 +131,16 @@ impl Shell {
         while self
             .recent_imports
             .front()
-            .is_some_and(|added| now.duration_since(*added) >= IMPORT_WINDOW)
+            .is_some_and(|(added, _)| now.duration_since(*added) >= IMPORT_WINDOW)
         {
             self.recent_imports.pop_front();
         }
         let mut arrived = false;
-        while self.recent_imports.len() < MAX_IMPORTS_PER_WINDOW {
+        while !self.import_limit_reached() {
             let Some(pending) = self.server.take_import() else {
                 break;
             };
-            self.recent_imports.push_back(now);
+            self.recent_imports.push_back((now, pending.bytes));
             self.import_design(&pending);
             arrived = true;
         }
@@ -146,13 +154,20 @@ impl Shell {
             ));
         }
         // Over the limit, look again once the oldest design is a minute old.
-        if let Some(oldest) = self
+        if let Some((oldest, _)) = self
             .recent_imports
             .front()
-            .filter(|_| self.recent_imports.len() >= MAX_IMPORTS_PER_WINDOW)
+            .filter(|_| self.import_limit_reached())
         {
             ctx.request_repaint_after(IMPORT_WINDOW.saturating_sub(now.duration_since(*oldest)));
         }
+    }
+
+    /// Whether the designs added in the last minute used up the allowance:
+    /// [`MAX_IMPORTS_PER_WINDOW`] of them, or [`MAX_IMPORT_BYTES_PER_WINDOW`].
+    fn import_limit_reached(&self) -> bool {
+        let bytes: usize = self.recent_imports.iter().map(|(_, bytes)| bytes).sum();
+        self.recent_imports.len() >= MAX_IMPORTS_PER_WINDOW || bytes >= MAX_IMPORT_BYTES_PER_WINDOW
     }
 
     /// Adds a design sent from Figma as one undo step, without asking, and
@@ -413,6 +428,26 @@ mod tests {
         // An envelope this app cannot read says so, and adds nothing.
         assert!(shell.paste_envelope(r#"{"format":"moshionly-import","version":99}"#));
         assert_eq!(shell.editor().document().artboards().len(), after);
+    }
+
+    #[test]
+    fn the_minute_allowance_counts_designs_and_bytes() {
+        let mut shell = shell();
+        let now = std::time::Instant::now();
+        assert!(!shell.import_limit_reached());
+        shell
+            .recent_imports
+            .push_back((now, MAX_IMPORT_BYTES_PER_WINDOW));
+        assert!(
+            shell.import_limit_reached(),
+            "one large design uses up the minute's bytes"
+        );
+        shell.recent_imports.clear();
+        for _ in 0..MAX_IMPORTS_PER_WINDOW {
+            assert!(!shell.import_limit_reached());
+            shell.recent_imports.push_back((now, 1));
+        }
+        assert!(shell.import_limit_reached());
     }
 
     #[test]

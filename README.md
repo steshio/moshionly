@@ -195,7 +195,7 @@ Done:
 - [x] Animate tab, editable timeline and playback
 - [x] Export: PNG, PNG sequence, GIF, MP4, WebM and ProRes (with ffmpeg), and Lottie
 - [x] Chat panel and AI settings in the editor
-- [x] Connect an agent to the open file, accept designs from Figma, and the `moshionly export` and `moshionly mcp` commands
+- [x] Connect an agent to the open file, take in designs from Figma, and the `moshionly export` and `moshionly mcp` commands
 - [x] The Mac app: `Moshionly.app` and a `.dmg` from one command, which can also sign, notarize and staple them
 
 Next:

@@ -32,7 +32,7 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
-    connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORTS_PER_WINDOW},
+    connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORT_BYTES_PER_WINDOW, MAX_IMPORTS_PER_WINDOW},
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
@@ -141,8 +141,9 @@ pub struct Shell {
     agent_port: Option<u16>,
     /// The "Connect an agent" dialog is open.
     connect_open: bool,
-    /// When the designs sent from Figma in the last minute were added.
-    recent_imports: VecDeque<Instant>,
+    /// When the designs sent from Figma in the last minute were added, and
+    /// how many bytes each was.
+    recent_imports: VecDeque<(Instant, usize)>,
     /// The Export dialog, while it is open.
     export: Option<export_dialog::ExportDialog>,
 }
