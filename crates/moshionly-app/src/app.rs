@@ -102,6 +102,9 @@ impl MoshionlyApp {
         if let Some(project) = project {
             shell.open_path(&project);
         }
+        // Agents outside the window, and the Figma plugin, reach the open
+        // document here unless the settings turn it off.
+        shell.serve_agents(crate::connect::DEFAULT_PORT);
         Self {
             shell,
             title: APP_NAME.to_owned(),

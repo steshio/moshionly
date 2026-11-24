@@ -94,7 +94,7 @@ impl Shell {
 
     /// Puts what is being made on the canvas into the document: a drag in
     /// progress, the words being typed, the path being drawn with the pen.
-    fn finish_work_in_progress(&mut self) {
+    pub(super) fn finish_work_in_progress(&mut self) {
         self.end_canvas_drag();
         self.finish_text_edit();
         if self.pen.is_some() {

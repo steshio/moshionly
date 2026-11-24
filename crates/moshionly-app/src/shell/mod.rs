@@ -7,6 +7,7 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod connect;
 mod edit_commands;
 mod files;
 mod inspector;
@@ -16,10 +17,11 @@ mod parts;
 mod tool_bar;
 mod top_bar;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
-use moshionly_agent::{Session, SessionHandle};
+use moshionly_agent::import::PendingImport;
+use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId, build};
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
 
@@ -29,6 +31,7 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
+    connect::AgentLight,
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
@@ -37,6 +40,7 @@ pub use self::{
 use crate::{
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
+    connect::{AgentServer, import::ImportChoice},
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{
         Editor,
@@ -124,6 +128,20 @@ pub struct Shell {
     closing: bool,
     /// What is typed into the chat composer.
     chat_draft: String,
+    /// The agent tools over the open document, for the MCP server and the
+    /// chat.
+    tools: Tools,
+    /// The MCP server agents connect to.
+    server: AgentServer,
+    /// The port to serve agents on, once the app asked for a server.
+    agent_port: Option<u16>,
+    /// The "Connect an agent" dialog is open.
+    connect_open: bool,
+    /// Designs sent from Figma, waiting for the person: the first is being
+    /// asked about.
+    imports: VecDeque<PendingImport>,
+    /// Where the design asked about would go.
+    import_choice: ImportChoice,
 }
 
 /// What [`Shell::show`] hands back to the app.
@@ -183,6 +201,7 @@ impl Shell {
         renderer: Renderer,
         pictures: CanvasRenderer,
     ) -> Self {
+        let tools = Tools::new(session.clone(), crate::host::app_host(&renderer));
         Self {
             settings,
             commands: CommandRegistry::new(),
@@ -221,6 +240,12 @@ impl Shell {
             pending: None,
             closing: false,
             chat_draft: String::new(),
+            tools,
+            server: AgentServer::off(),
+            agent_port: None,
+            connect_open: false,
+            imports: VecDeque::new(),
+            import_choice: ImportChoice::NewArtboards,
         }
     }
 
@@ -353,10 +378,14 @@ impl Shell {
             || self.text_edit.is_some()
             || self.pen.is_some()
             || self.renaming.is_some()
-            || self.list_drag.is_some();
+            || self.list_drag.is_some()
+            || self.connect_open
+            || !self.imports.is_empty();
 
         self.now = ctx.input(|i| i.time);
         self.editor.attach(&ctx);
+        self.server.attach(&ctx);
+        self.receive_imports(Some(&ctx));
         if self.editor.sync() {
             self.after_document_change();
         }
@@ -387,6 +416,7 @@ impl Shell {
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         let project_name = self.project_name();
         let recent = self.settings.recent.clone();
+        let agents_status = self.server.status().headline();
         let bar = TopBar {
             project_name: &project_name,
             recent: &recent,
@@ -394,6 +424,8 @@ impl Shell {
             zoom: self.camera.zoom,
             playing: self.playback.is_playing(),
             chat_open: self.settings.panels.chat_open,
+            agents: AgentLight::of(self.server.status()),
+            agents_status: &agents_status,
             theme_mode: self.settings.theme,
             commands: &self.commands,
             leading_inset: self.title_inset.filter(|_| !fullscreen).unwrap_or(0.0),
@@ -473,6 +505,8 @@ impl Shell {
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.palette.show(&ctx, &self.commands));
+        self.connect_dialog(&ctx);
+        self.import_dialog(&ctx);
         self.unsaved_prompt(&ctx);
         if !self.palette.is_open() {
             self.nudge(&ctx);
@@ -1045,6 +1079,7 @@ impl Shell {
                 }
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
+            CommandId::ConnectAgent => self.connect_open = true,
             CommandId::ImportImage => self.import_image_dialog(),
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),

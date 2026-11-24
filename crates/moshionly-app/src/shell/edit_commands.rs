@@ -65,6 +65,11 @@ impl Shell {
         let Some(text) = text else {
             return;
         };
+        // A design copied with the Figma plugin's Copy button asks where it
+        // goes, as one sent to the app does.
+        if self.paste_envelope(text) {
+            return;
+        }
         let mut nodes = match clipboard::read(text) {
             Ok(nodes) => nodes,
             Err(error) => {
