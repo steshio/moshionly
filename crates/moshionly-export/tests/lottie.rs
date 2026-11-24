@@ -1017,3 +1017,27 @@ fn counting_letters_have_room_for_their_stroke() {
         }
     }
 }
+
+#[test]
+fn blurred_groups_keep_what_their_blur_draws_from() {
+    // A full-bleed blurred background: a rect wider than the artboard in a
+    // blurred group. Players that cut a precomposition at its edges before
+    // blurring it need the rect past the artboard's edge, as far as the
+    // blur reaches: three standard deviations, 1.5 times the blur.
+    let nodes = r##",{"id":"back","parent":"board","index":"a0","type":"group","name":"Back",
+            "width":1000,"height":600,"blur":30,"opacity":90}
+        ,{"id":"wide","parent":"back","index":"a0","type":"rect","name":"Wide",
+            "x":-200,"y":-100,"width":1400,"height":800,"fill":"#0D99FF"}"##;
+    let (lottie, _) = export_document(document(1000.0, nodes), Settings::default());
+    let back = layer(&lottie["layers"], "Back");
+    assert_eq!(back["ty"], 0);
+    let reach = 1.5 * 30.0;
+    let (width, height) = (back["w"].as_f64().unwrap(), back["h"].as_f64().unwrap());
+    assert!(width >= 1000.0 + 2.0 * reach, "{width}");
+    assert!(height >= 600.0 + 2.0 * reach, "{height}");
+    // The group's own space still lands where it was.
+    let anchor = &back["ks"]["a"]["k"];
+    let position = position(back, 0.0);
+    assert_eq!(anchor[0].as_f64().unwrap() - position[0], reach);
+    assert_eq!(anchor[1].as_f64().unwrap() - position[1], reach);
+}

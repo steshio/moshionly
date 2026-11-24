@@ -11,9 +11,9 @@
 //! standard deviation. Skottie and the Android player read softness as a
 //! blur radius, which draws shadows somewhat softer.
 
-use moshionly_core::Node;
 use moshionly_core::eval::{Property, PropertyValue};
 use moshionly_core::model::Shadow;
+use moshionly_core::{Node, NodeId};
 use serde_json::{Map, Value};
 
 use super::fit::Hints;
@@ -80,6 +80,24 @@ fn effect(ty: u8, name: &str, values: Vec<Value>) -> Value {
 }
 
 impl Converter<'_> {
+    /// How far a layer's shadow and blur reach past what it draws, in its
+    /// own pixels, at most over the export: the shadow's offset and three
+    /// standard deviations of each blur. 0 for a layer without either.
+    pub fn effect_reach(&self, id: &NodeId) -> f64 {
+        let timeline = self.timeline;
+        self.survey
+            .iter()
+            .map(|frame| {
+                let shadow = match timeline.value(id, Property::Shadow, timeline.clock.ms(*frame)) {
+                    Some(PropertyValue::Shadow(shadow)) => shadow_values(shadow),
+                    _ => shadow_values(None),
+                };
+                let blur = timeline.number(id, Property::Blur, *frame).max(0.0);
+                shadow[6] + 0.75 * shadow[7] + 1.5 * blur
+            })
+            .fold(0.0, f64::max)
+    }
+
     /// Adds a layer's drop shadow and blur to its Lottie layer, when it
     /// ever has them.
     pub fn add_effects(&mut self, node: &Node, layer: &mut Map<String, Value>) {
@@ -172,16 +190,7 @@ impl Converter<'_> {
         }
         // lottie-web draws effects only inside the layer's own box unless
         // told how far they reach, as parts of the box.
-        let reach = self
-            .survey
-            .iter()
-            .map(|frame| {
-                let shadow = shadow_values(shadow_at(*frame));
-                let blur = timeline.number(id, Property::Blur, *frame).max(0.0);
-                // Three standard deviations of each blur, and the offset.
-                shadow[6] + 0.75 * shadow[7] + 1.5 * blur
-            })
-            .fold(0.0, f64::max);
+        let reach = self.effect_reach(id);
         let (width, height) = self
             .survey
             .iter()

@@ -58,6 +58,14 @@ impl Area {
         }
     }
 
+    /// Grows the area by `by` on every side.
+    pub fn grow(&mut self, by: f64) {
+        self.left -= by;
+        self.top -= by;
+        self.right += by;
+        self.bottom += by;
+    }
+
     /// Grows the area to hold `point`.
     pub fn include(&mut self, point: Point) {
         self.left = self.left.min(point.x);
@@ -341,6 +349,9 @@ impl Converter<'_> {
 
     /// The part of a group's own space that can ever be seen: its box, and
     /// the artboard as seen from the group at every frame it is drawn.
+    /// With a shadow or blur, also what they draw from: some players blur
+    /// a precomposition only after cutting it at its edges, which would
+    /// fade the blur at the artboard's edge.
     pub fn area(&self, id: &NodeId) -> Area {
         let (mut width, mut height) = (0.0_f64, 0.0_f64);
         for frame in &self.survey {
@@ -364,6 +375,7 @@ impl Converter<'_> {
                 area.include(inverse.apply(corner));
             }
         }
+        area.grow(self.effect_reach(id));
         area.rounded()
     }
 
