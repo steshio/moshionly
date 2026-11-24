@@ -21,6 +21,8 @@
 //! - [`canvas`]: pictures of the artboards, rendered on worker threads.
 //! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
 //!   and the agent tools.
+//! - [`host`]: what the app does for the agent tools: screenshots, fonts
+//!   and exports.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
 //!
@@ -32,6 +34,7 @@ pub mod chat;
 pub mod commands;
 pub mod dialogs;
 pub mod editor;
+pub mod host;
 pub mod key;
 pub mod raster;
 pub mod settings;
