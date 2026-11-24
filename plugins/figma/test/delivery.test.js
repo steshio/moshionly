@@ -80,8 +80,8 @@ test('a design the app takes is waiting for the person in Moshionly', async () =
   try {
     const outcome = await delivery.sendDesign(envelope, { urls: [url] });
     assert.equal(outcome.ok, true);
-    assert.equal(outcome.kind, 'pending');
-    assert.match(outcome.message, /switch to Moshionly to accept it/);
+    assert.equal(outcome.kind, 'sent');
+    assert.match(outcome.message, /It is in Moshionly now/);
     assert.equal(received.length, 1);
     assert.equal(received[0].method, 'POST');
     assert.equal(received[0].type, 'application/json');
@@ -116,7 +116,7 @@ test('the second address is tried when the first does not answer', async () => {
   const { server, url, received } = await standIn();
   try {
     const outcome = await delivery.sendDesign(envelope, { urls: [await deadUrl(), url] });
-    assert.equal(outcome.kind, 'pending');
+    assert.equal(outcome.kind, 'sent');
     assert.equal(received.length, 1);
   } finally {
     server.close();
@@ -203,30 +203,13 @@ function loadPanel() {
       extra,
     );
   const elements = new Map();
-  const radios = ['new_artboards', 'replace_matching'].map((value) => {
-    const radio = element({ value });
-    let checked = value === 'new_artboards';
-    Object.defineProperty(radio, 'checked', {
-      get: () => checked,
-      set: (on) => {
-        // Checking one radio button unchecks the others, as in a browser.
-        if (on) for (const other of radios) if (other !== radio) other.checked = false;
-        checked = on;
-      },
-    });
-    return radio;
-  });
   const document = {
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, element());
       return elements.get(id);
     },
-    querySelector(selector) {
-      if (selector.endsWith(':checked')) return radios.find((radio) => radio.checked) || null;
-      const value = selector.match(/value="([^"]*)"/);
-      return value ? radios.find((radio) => radio.value === value[1]) || null : null;
-    },
-    querySelectorAll: () => radios,
+    querySelector: () => null,
+    querySelectorAll: () => [],
     createElement: () => element(),
     createTextNode: (text) => ({ text }),
     addEventListener() {},
@@ -250,13 +233,12 @@ function loadPanel() {
     copy: view('copy'),
     notes: view('notes'),
     status: view('status'),
-    radios,
     posted,
     receive: (message) => window.onmessage({ data: { pluginMessage: message } }),
   };
 }
 
-test('a design waiting for “Copy now” is dropped when the selection or the mode changes', async () => {
+test('a design waiting for “Copy now” is dropped when the selection changes', async () => {
   const panel = loadPanel();
   const selection = (name) => ({ type: 'selection', summary: { count: 1, names: [name], more: 0, empty: false, sections: 0 } });
   const prepare = async () => {
@@ -277,23 +259,10 @@ test('a design waiting for “Copy now” is dropped when the selection or the m
   await panel.receive(selection('Frame B'));
   assertDropped('after the selection changed');
   await panel.copy.fire('click');
-  assert.equal(panel.posted.at(-1).type, 'convert', 'Copy converts the new selection instead of copying the old design');
-
-  await panel.receive({ type: 'failed', purpose: 'copy', message: 'Stopped.' });
-  await prepare();
-  panel.radios[1].checked = true;
-  await panel.radios[1].fire('change');
-  assertDropped('after the mode changed in the panel');
-  assert.deepEqual(panel.posted.at(-1), { type: 'set-mode', mode: 'replace_matching' });
-
-  await prepare();
-  await panel.receive({ type: 'mode', mode: 'replace_matching' });
-  assert.equal(panel.copy.textContent, 'Copy now', 'the same mode again changes nothing');
-  await panel.receive({ type: 'mode', mode: 'new_artboards' });
-  assertDropped('after the plugin changed the mode');
+  assert.deepEqual(panel.posted.at(-1), { type: 'convert', purpose: 'copy' }, 'Copy converts the new selection instead of copying the old design');
 });
 
-test('a design read while the selection or the mode changed is not offered for copying', async () => {
+test('a design read while the selection changed is not offered for copying', async () => {
   const panel = loadPanel();
   const selection = (name) => ({ type: 'selection', summary: { count: 1, names: [name], more: 0, empty: false, sections: 0 } });
   const converted = { type: 'converted', purpose: 'copy', json: '{"nodes":[]}', layers: 1, notes: [{ layer_name: 'A', message: 'A note.' }] };
@@ -305,12 +274,6 @@ test('a design read while the selection or the mode changed is not offered for c
   assert.equal(panel.copy.textContent, 'Copy', 'Frame A’s design is not waiting next to Frame B');
   assert.equal(panel.notes.hidden, true);
   assert.match(panel.status.textContent, /changed while the design was being read/);
-
-  await panel.copy.fire('click');
-  panel.radios[1].checked = true;
-  await panel.radios[1].fire('change');
-  await panel.receive(converted);
-  assert.equal(panel.copy.textContent, 'Copy', 'a design made for the old mode is not waiting either');
 
   await panel.copy.fire('click');
   await panel.receive(converted);

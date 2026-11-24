@@ -63,22 +63,17 @@ function card() {
   return frame;
 }
 
-test('the panel opens with Figma’s theme colours and learns the selection and mode', async () => {
-  const { figma, posted, stored } = startWith([card()]);
+test('the panel opens with Figma’s theme colours and learns the selection', async () => {
+  const { figma, posted } = startWith([card()]);
   assert.equal(figma.shownWith.themeColors, true);
-  stored.set('moshionly.mode', 'replace_matching');
   await figma.ui.onmessage({ type: 'ready' });
-  assert.deepEqual(plain(posted[0]), {
-    type: 'selection',
-    fileName: 'Launch',
-    summary: { count: 1, names: ['Card'], more: 0, empty: false, sections: 0 },
-  });
-  assert.deepEqual(plain(posted[1]), { type: 'mode', mode: 'replace_matching' });
-
-  await figma.ui.onmessage({ type: 'set-mode', mode: 'new_artboards' });
-  assert.equal(stored.get('moshionly.mode'), 'new_artboards');
-  await figma.ui.onmessage({ type: 'set-mode', mode: 'something else' });
-  assert.equal(stored.get('moshionly.mode'), 'new_artboards');
+  assert.deepEqual(plain(posted), [
+    {
+      type: 'selection',
+      fileName: 'Launch',
+      summary: { count: 1, names: ['Card'], more: 0, empty: false, sections: 0 },
+    },
+  ]);
 });
 
 test('converting sends the panel the envelope, after the panel shrinks a large picture', async () => {
@@ -91,7 +86,7 @@ test('converting sends the panel the envelope, after the panel shrinks a large p
       setTimeout(() => figma.ui.onmessage({ type: 'shrunk', id: message.id, bytes: PNG.slice(0, 5), mime: 'image/png' }), 0);
     }
   };
-  await figma.ui.onmessage({ type: 'convert', purpose: 'send', mode: 'replace_matching' });
+  await figma.ui.onmessage({ type: 'convert', purpose: 'send' });
   const shrink = posted.find((message) => message.type === 'shrink');
   assert.deepEqual([shrink.width, shrink.height], [1024, 1024]);
   const done = posted.find((message) => message.type === 'converted');
@@ -99,7 +94,8 @@ test('converting sends the panel the envelope, after the panel shrinks a large p
   assert.equal(done.purpose, 'send');
   assert.equal(done.layers, 2);
   const envelope = JSON.parse(done.json);
-  assert.equal(envelope.mode, 'replace_matching');
+  // Moshionly decides where the design goes: the panel asks nothing.
+  assert.equal(envelope.mode, undefined);
   assert.deepEqual(envelope.source, { app: 'figma', file_name: 'Launch', file_key: 'FileKey1' });
   assert.equal(envelope.nodes[1].source, 'data:image/png;base64,' + Buffer.from(PNG.slice(0, 5)).toString('base64'));
 });

@@ -19,7 +19,7 @@ The plugin now appears under **Plugins → Development → Moshionly**. There is
 3. Run **Plugins → Development → Moshionly**.
 4. Click **Send to Moshionly**.
 
-Moshionly then asks where to put the design. Nothing changes in your project until you accept it there.
+Moshionly adds the design to the open project straight away, comes to the front and selects what arrived. Nothing asks first: if it is not what you wanted, **Undo** in Moshionly takes the whole design back in one step.
 
 **Copy** puts the same design on the clipboard instead; paste it into Moshionly with Cmd+V. Use it when Moshionly runs on another computer, or when sending is blocked (see [Troubleshooting](#troubleshooting)). If the design took a while to prepare, the button changes to **Copy now**: click it once more, because the clipboard only accepts text right after a click.
 
@@ -27,7 +27,7 @@ After each send the panel lists **notes**: everything Moshionly shows differentl
 
 ## Send it again after changing it
 
-Animate the design in Moshionly, change it in Figma, then send it again with **Replace the matching layers and keep their animations** chosen in the panel. Moshionly puts the new version in place of the old one and moves each animation over to the same layer in the new version.
+Animate the design in Moshionly, change it in Figma, then send it again. Moshionly sees that it came over before, puts the new version in place of the old one and moves each animation over to the same layer in the new version. There is nothing to choose: a design sent for the first time is added, and one sent before is updated.
 
 Layers are matched by where they came from: the Figma file and the layer's own identity in it, not its name. So:
 
@@ -35,8 +35,9 @@ Layers are matched by where they came from: the Figma file and the layer's own i
 - A layer you delete in Figma and draw again is a new layer: its old animations are dropped.
 - Send from the same Figma file. A copy of the file (**Duplicate**) has new identities.
 - Frames on the canvas become artboards, and an artboard can only be replaced by an artboard: keep the frame a frame.
+- Layers in the selection that never came over before are added next to the ones that are updated.
 
-The first choice, **Add it as new artboards**, always adds a fresh copy next to your other artboards. The panel remembers your choice between runs; it is a suggestion, and the final choice is made in Moshionly when it asks where to put the design.
+To get a second, separate copy instead, duplicate the artboard in Moshionly.
 
 ## What comes over
 
@@ -107,7 +108,7 @@ Pictures are embedded in what is sent. Large photos are scaled down to twice the
 
 **Fonts look different.** Moshionly uses the fonts installed on your computer. Install the same fonts there as in Figma.
 
-**Sending again added a copy instead of replacing.** Choose **Replace the matching layers and keep their animations** before sending, and send from the same Figma file. Plugins loaded from a manifest learn the file's identity from Figma; if Figma does not give it, the plugin keeps a small identity of its own inside the file (invisible plugin data) so later sends still match.
+**Sending again added a copy instead of updating.** Send from the same Figma file, and check that the earlier version is still in the open Moshionly project. Plugins loaded from a manifest learn the file's identity from Figma; if Figma does not give it, the plugin keeps a small identity of its own inside the file (invisible plugin data) so later sends still match.
 
 **Figma refuses the manifest.** Figma's message names the field it does not accept. Check that you picked `plugins/figma/manifest.json` from an up-to-date copy of this repository, and report the message if it persists.
 
@@ -149,7 +150,6 @@ It converts the fixture designs, runs each through the checks behind the app's `
   "format": "moshionly-import",
   "version": 1,
   "source": { "app": "figma", "file_name": "Launch", "file_key": "abc123" },
-  "mode": "replace_matching",
   "nodes": [
     { "id": "1:2", "type": "artboard", "name": "Card", "x": 0, "y": 0, "width": 360, "height": 480,
       "source_id": "figma:abc123:1:2", "fill": "#FFFFFF" },
@@ -162,6 +162,6 @@ It converts the fixture designs, runs each through the checks behind the app's `
 }
 ```
 
-`nodes` are layers in Moshionly's node format ([docs/file-format.md](../../docs/file-format.md)), parents before children, siblings back to front, with Figma's node ids as temporary ids. Every layer has `source_id` = `figma:<file key>:<node id>`; layers the plugin adds for part of a node append `/<part>` (`/frame`, `/fill`, `/overlay`, `/mask`). Images are always embedded `data:` URIs. `mode` is `new_artboards` or `replace_matching`, a suggestion; the person decides in Moshionly. **Copy** puts the same JSON on the clipboard.
+`nodes` are layers in Moshionly's node format ([docs/file-format.md](../../docs/file-format.md)), parents before children, siblings back to front, with Figma's node ids as temporary ids. Every layer has `source_id` = `figma:<file key>:<node id>`; layers the plugin adds for part of a node append `/<part>` (`/frame`, `/fill`, `/overlay`, `/mask`). Images are always embedded `data:` URIs. The panel sends no `mode`: Moshionly puts layers that came over before in place of their earlier versions and adds the rest (the format still accepts `mode`, `new_artboards` or `replace_matching`, as a hint that Moshionly ignores). **Copy** puts the same JSON on the clipboard.
 
 In fixtures, which are JSON, Figma's mixed value (`figma.mixed`) is written as the string `"MIXED"`, and text runs that Figma reports through `getStyledTextSegments` are listed under `styledTextSegments`.
