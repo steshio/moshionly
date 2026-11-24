@@ -11,6 +11,8 @@
 //!
 //! Either way the playhead goes to the end of the move while dragging, so
 //! the layer stays under the pointer, and the whole drag is one undo step.
+//! A layer inside a group moves in the group's space as the canvas shows
+//! it at that moment, turned, scaled and moved by the group's own actions.
 //!
 //! [`Editor::motion_path`] gives the path a layer's centre travels through
 //! its moves and slides, for drawing on the canvas.
@@ -18,7 +20,7 @@
 use egui::{Modifiers, Pos2, Vec2};
 use moshionly_core::eval::{Property, PropertyValue, value_at};
 use moshionly_core::model::NodeData;
-use moshionly_core::{Edit, EditError, Family, NodeId, NodeType, Point, build};
+use moshionly_core::{Affine, Document, Edit, EditError, Family, NodeId, NodeType, Point, build};
 use serde_json::json;
 
 use super::Editor;
@@ -70,6 +72,41 @@ fn move_to(data: &NodeData) -> Option<(f64, f64)> {
     }
 }
 
+/// The transform from the coordinates of `layer`'s parent to those of its
+/// artboard at `time`, as the canvas draws that moment: the parent and the
+/// groups above it in their animated place, turn and scale. `None` when a
+/// value cannot be worked out.
+fn parent_at(document: &Document, layer: &NodeId, time: f64) -> Option<Affine> {
+    let mut transform = Affine::IDENTITY;
+    for ancestor in document.ancestors(layer) {
+        if ancestor.node_type() == NodeType::Artboard {
+            break;
+        }
+        let number = |property| match value_at(document, &ancestor.id, property, time) {
+            Some(PropertyValue::Number(n)) => Some(n),
+            _ => None,
+        };
+        let own = Affine::layer(
+            number(Property::X)?,
+            number(Property::Y)?,
+            number(Property::Width)?,
+            number(Property::Height)?,
+            number(Property::Rotation)?,
+            number(Property::Scale)?,
+        );
+        transform = own * transform;
+    }
+    Some(transform)
+}
+
+/// `item` with its parent as the canvas draws it at `time`.
+fn animated(document: &Document, mut item: Item, time: f64) -> Item {
+    if let Some(parent) = parent_at(document, &item.id, time) {
+        item.parent = parent;
+    }
+    item
+}
+
 /// Whether an action changes where its layer is.
 fn moves_layer(ty: NodeType) -> bool {
     matches!(ty, NodeType::Move | NodeType::SlideIn | NodeType::SlideOut)
@@ -102,6 +139,7 @@ impl Editor {
             self.begin_gesture("Change move");
             self.set_playhead(end);
             let item = items.into_iter().next().expect("one item");
+            let item = animated(&document, item, end);
             return Ok(Some(MoveDrag {
                 start: world,
                 moves: vec![(action, item, to)],
@@ -136,6 +174,11 @@ impl Editor {
         }
         self.actions = moves.iter().map(|(id, ..)| id.clone()).collect();
         self.set_playhead(start + length);
+        // The pointer moves the layers where the canvas now draws them.
+        let document = std::sync::Arc::clone(&self.document);
+        for (_, item, _) in &mut moves {
+            *item = animated(&document, item.clone(), start + length);
+        }
         Ok(Some(MoveDrag {
             start: world,
             moves,
@@ -213,7 +256,8 @@ impl Editor {
             let y = number(Property::Y, time)?;
             let w = number(Property::Width, time)?;
             let h = number(Property::Height, time)?;
-            let at = item.parent.apply(Point::new(x + w / 2.0, y + h / 2.0));
+            let parent = parent_at(document, layer, time).unwrap_or(item.parent);
+            let at = parent.apply(Point::new(x + w / 2.0, y + h / 2.0));
             Some(Pos2::new(
                 (origin.0 + at.x) as f32,
                 (origin.1 + at.y) as f32,
@@ -346,6 +390,61 @@ mod tests {
         let (x, y) = to_of(&editor, &drag.actions()[0]);
         assert!((x - 50.0).abs() < 1e-6 && y.abs() < 1e-6, "{x}, {y}");
         editor.end_animate_move(&drag);
+    }
+
+    /// Where the canvas draws the centre of `layer` at the playhead.
+    fn drawn_centre(editor: &Editor, layer: &NodeId) -> Point {
+        let scene = moshionly_core::evaluate(
+            editor.document(),
+            &id("ab"),
+            editor.playhead(),
+            &moshionly_core::MonospaceMeasurer::default(),
+        )
+        .unwrap();
+        let box_ = editor.document().get(layer).unwrap().layer().unwrap();
+        let centre = Point::new(box_.width / 2.0, box_.height / 2.0);
+        scene.transform_of(layer).unwrap().apply(centre)
+    }
+
+    #[test]
+    fn moves_inside_a_turning_group_follow_the_pointer_where_it_is_drawn() {
+        let mut editor = editor();
+        // The card turns a quarter in its first half second, and stays so.
+        editor.selection.select(id("card"));
+        let turn = editor.add_actions(NodeType::Rotate, 0.0).unwrap()[0].clone();
+        let timing = [("start", json!(0)), ("end", json!(500)), ("to", json!(90))];
+        editor.apply("Turn", &[Edit::update(turn, timing)]).unwrap();
+
+        editor.selection.select(id("dot"));
+        editor.set_actions([]);
+        editor.set_playhead(0.0);
+        let drag = editor.begin_animate_move(pos2(0.0, 0.0)).unwrap().unwrap();
+        // The move ends after the turn, so the canvas shows the card turned.
+        assert!(editor.playhead() >= 500.0);
+        let before = drawn_centre(&editor, &id("dot"));
+        editor
+            .drag_animate_move(&drag, pos2(0.0, 50.0), Modifiers::NONE)
+            .unwrap();
+        // The dot is drawn 50 down, under the pointer.
+        let after = drawn_centre(&editor, &id("dot"));
+        assert!((after.x - before.x).abs() < 1e-6, "{before:?} {after:?}");
+        assert!(
+            (after.y - before.y - 50.0).abs() < 1e-6,
+            "{before:?} {after:?}"
+        );
+        editor.end_animate_move(&drag);
+
+        // Its path ends where it is drawn when the move ends.
+        let path = editor.motion_path(&id("dot")).unwrap();
+        let end = path.points.last().unwrap();
+        assert!(
+            (f64::from(end.x) - after.x).abs() < 1e-3,
+            "{end:?} {after:?}"
+        );
+        assert!(
+            (f64::from(end.y) - after.y).abs() < 1e-3,
+            "{end:?} {after:?}"
+        );
     }
 
     #[test]
