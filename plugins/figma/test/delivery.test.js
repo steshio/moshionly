@@ -74,14 +74,14 @@ test('the panel sends to the Moshionly app on this computer only', () => {
   assert.equal(delivery.MAX_BODY_BYTES, 64 * 1024 * 1024);
 });
 
-test('a design the app takes is waiting for the person in Moshionly', async () => {
+test('a design the app takes is being added in Moshionly', async () => {
   const delivery = loadDelivery();
   const { server, url, received } = await standIn();
   try {
     const outcome = await delivery.sendDesign(envelope, { urls: [url] });
     assert.equal(outcome.ok, true);
     assert.equal(outcome.kind, 'sent');
-    assert.match(outcome.message, /It is in Moshionly now/);
+    assert.match(outcome.message, /Moshionly is adding it/);
     assert.equal(received.length, 1);
     assert.equal(received[0].method, 'POST');
     assert.equal(received[0].type, 'application/json');

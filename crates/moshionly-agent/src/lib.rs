@@ -16,7 +16,7 @@
 //! |---|---|
 //! | [`bridge`] | [`ToolBridge`]: the same tools as plain data, for the built-in chat |
 //! | [`guide`] | [`guide::GUIDE`] and [`guide::system_prompt`]: how to work in a file, written for a model |
-//! | [`import`] | [`import::PendingImport`]: designs sent from Figma, waiting for the person to accept them |
+//! | [`import`] | [`import::PendingImport`]: designs sent from Figma, checked and ready to add as one undo step |
 //! | [`mcp`] | [`mcp::McpServer`]: the Model Context Protocol server, for agents outside the app |
 //! | [`session`] | [`Session`] and [`SessionHandle`]: the open document, its undo history, and who changed what |
 //! | [`host`] | [`Host`]: what the embedding app supplies, as traits: [`FrameSource`], [`Exporter`], [`FontSource`] |

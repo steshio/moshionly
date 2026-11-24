@@ -131,8 +131,9 @@ impl MoshionlyApp {
 
 impl eframe::App for MoshionlyApp {
     /// Runs before every frame and also while the window is covered or
-    /// minimized, when `ui` does not: a design sent from Figma then still
-    /// brings Moshionly forward and asks for attention.
+    /// minimized, when `ui` does not: a design sent from Figma is then still
+    /// added, a covered window comes forward, and a minimized or hidden one
+    /// has its Dock icon ask for attention.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.shell.receive_imports(Some(ctx));
     }

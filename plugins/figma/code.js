@@ -2404,13 +2404,16 @@ async function convertSelection(selection, options) {
 const ENVELOPE_FORMAT = 'moshionly-import';
 const ENVELOPE_VERSION = 1;
 
-/** What the person chose in the panel for a design sent before. */
+/**
+ * The modes the envelope format accepts. The panel sends none: Moshionly
+ * replaces what came over before and adds the rest, and ignores a mode.
+ */
 const IMPORT_MODES = new Set(['new_artboards', 'replace_matching']);
 
 /**
  * The envelope Moshionly's `/import` endpoint and its paste take:
- * the layers, where they came from, the person's choice for designs sent
- * before, and the notes about what was approximated or flattened.
+ * the layers, where they came from, a mode if one is given, and the notes
+ * about what was approximated or flattened.
  *
  * @param {{nodes: object[], notes: object[]}} result  a conversion whose
  *   pictures have been fetched (see `resolveAssets`)

@@ -65,8 +65,8 @@ impl Shell {
         let Some(text) = text else {
             return;
         };
-        // A design copied with the Figma plugin's Copy button asks where it
-        // goes, as one sent to the app does.
+        // A design copied with the Figma plugin's Copy button is added at
+        // once, as one sent to the app is.
         if self.paste_envelope(text) {
             return;
         }

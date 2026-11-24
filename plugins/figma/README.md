@@ -19,7 +19,7 @@ The plugin now appears under **Plugins → Development → Moshionly**. There is
 3. Run **Plugins → Development → Moshionly**.
 4. Click **Send to Moshionly**.
 
-Moshionly adds the design to the open project straight away, comes to the front and selects what arrived. Nothing asks first: if it is not what you wanted, **Undo** in Moshionly takes the whole design back in one step.
+Moshionly adds the design to the open project straight away, selects what arrived and comes to the front (when it is minimized or hidden, its Dock icon bounces instead). Nothing asks first: if it is not what you wanted, **Undo** in Moshionly takes the whole design back in one step.
 
 **Copy** puts the same design on the clipboard instead; paste it into Moshionly with Cmd+V. Use it when Moshionly runs on another computer, or when sending is blocked (see [Troubleshooting](#troubleshooting)). If the design took a while to prepare, the button changes to **Copy now**: click it once more, because the clipboard only accepts text right after a click.
 
