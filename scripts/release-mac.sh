@@ -545,12 +545,25 @@ notarize() {
     "Read the messages above. Nothing was copied to $(shown_path "$out_dir")."
 }
 
+# A ticket Apple has just issued can take a little while to be published,
+# so stapling is tried a few times before giving up.
 staple() {
-  local file=$1 what=$2
+  local file=$1 what=$2 attempt output
   step "Stapling the notarization ticket to ${what}…"
-  xcrun stapler staple -q "$file"
-  if ! xcrun stapler validate -q "$file"; then
-    die "the ticket stapled to $what does not validate."
+  for attempt in 1 2 3 4 5; do
+    if output=$(xcrun stapler staple "$file" 2>&1); then
+      break
+    fi
+    if [[ $attempt -eq 5 ]]; then
+      die "the notarization ticket could not be stapled to $what. stapler says:" "$output" \
+        "Apple accepted it, so running the script again usually works once the" \
+        "internet connection is fine (it builds and notarizes again)."
+    fi
+    say "  The ticket is not available yet; trying again in 20 seconds…"
+    sleep 20
+  done
+  if ! output=$(xcrun stapler validate "$file" 2>&1); then
+    die "the ticket stapled to $what does not validate. stapler says:" "$output"
   fi
 }
 
