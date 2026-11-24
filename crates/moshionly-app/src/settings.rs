@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    export::ExportChoices,
     shell::PanelSizes,
     theme::{Theme, ThemeMode},
 };
@@ -27,6 +28,8 @@ pub struct Settings {
     pub recent: Vec<PathBuf>,
     /// Whether agents outside the app may connect.
     pub agents: AgentSettings,
+    /// The Export dialog's last choices.
+    pub export: ExportChoices,
 }
 
 /// Whether agents outside the app (Claude Code, Cursor, the Figma plugin)
@@ -120,6 +123,10 @@ mod tests {
             },
             recent: vec![PathBuf::from("/projects/teaser.moshi")],
             agents: AgentSettings { serve: false },
+            export: ExportChoices {
+                scale: 2.0,
+                ..ExportChoices::default()
+            },
         };
         settings.save(&mut storage);
         assert_eq!(Settings::load(Some(&storage)), settings);

@@ -23,6 +23,8 @@
 //!   document through, and the choices for designs sent from Figma.
 //! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
 //!   and the agent tools.
+//! - [`export`]: the Export dialog's choices as an export job, run off the
+//!   UI thread.
 //! - [`host`]: what the app does for the agent tools: screenshots, fonts
 //!   and exports.
 //! - [`shell`]: the window's layout and its panels.
@@ -37,6 +39,7 @@ pub mod commands;
 pub mod connect;
 pub mod dialogs;
 pub mod editor;
+pub mod export;
 pub mod host;
 pub mod key;
 pub mod raster;
