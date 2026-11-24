@@ -38,6 +38,8 @@ There is nothing to keyframe and nothing breaks when you change the design later
 2. Open it, and drag Moshionly onto the Applications folder next to it.
 3. Open Moshionly from Applications, Launchpad or Spotlight. The first time, macOS checks that you want to open an app from the internet: choose Open.
 
+Signed releases are not published yet. Until they are, a `.dmg` someone shares with you is not signed by Apple, and macOS refuses to open it at first: see [Without an Apple account](#without-an-apple-account) for how to open it anyway.
+
 Moshionly runs on Macs with Apple silicon (M1 and later). It is built for macOS 11 or later and tested on the latest macOS. Intel Macs are not supported (macOS 27 itself runs only on Apple silicon).
 
 Double-clicking a `.moshi` file does not open it in Moshionly yet: open projects from the File menu.
@@ -194,7 +196,7 @@ Done:
 - [x] Export: PNG, PNG sequence, GIF, MP4, WebM and ProRes (with ffmpeg), and Lottie
 - [x] Chat panel and AI settings in the editor
 - [x] Connect an agent to the open file, accept designs from Figma, and the `moshionly export` and `moshionly mcp` commands
-- [x] The Mac app: `Moshionly.app` and a `.dmg`, signed, notarized and stapled by one command
+- [x] The Mac app: `Moshionly.app` and a `.dmg` from one command, which can also sign, notarize and staple them
 
 Next:
 
