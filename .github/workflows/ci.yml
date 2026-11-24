@@ -39,6 +39,38 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  mac-app:
+    name: Mac app (ad-hoc signed)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No Apple account on CI: the same script as a release, with an ad-hoc
+      # signature and no notarization.
+      - name: Build Moshionly.app and the .dmg
+        run: scripts/release-mac.sh --ad-hoc
+      - name: Check the app
+        run: |
+          codesign --verify --strict --deep --verbose=2 dist/Moshionly.app
+          signature="$(codesign -dvvv dist/Moshionly.app 2>&1)"
+          case "$signature" in
+            *flags=*runtime*) echo "Signed with the hardened runtime." ;;
+            *) echo "The app is not signed with the hardened runtime."; exit 1 ;;
+          esac
+          plutil -lint dist/Moshionly.app/Contents/Info.plist
+          dist/Moshionly.app/Contents/MacOS/moshionly --version
+      - name: Check the installer
+        run: |
+          dmg="$(ls dist/Moshionly-*.dmg)"
+          hdiutil verify "$dmg"
+          mount="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          test -d "$mount/Moshionly.app"
+          test "$(readlink "$mount/Applications")" = /Applications
+          codesign --verify --strict --deep --verbose=2 "$mount/Moshionly.app"
+          hdiutil detach "$mount"
+
   figma-plugin:
     name: Figma plugin tests
     runs-on: ubuntu-latest

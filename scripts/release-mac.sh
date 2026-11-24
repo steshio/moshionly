@@ -1,0 +1,733 @@
+#!/usr/bin/env bash
+#
+# Builds Moshionly.app and Moshionly-<version>.dmg for Apple silicon Macs,
+# signs them with a Developer ID, has Apple notarize them and staples the
+# tickets, so that macOS opens a downloaded copy without a warning.
+#
+#   scripts/release-mac.sh                  the full release
+#   scripts/release-mac.sh --skip-notarize  sign, but do not notarize
+#   scripts/release-mac.sh --ad-hoc         no Apple account needed
+#   scripts/release-mac.sh --help           every option
+#
+# Signing settings come from the environment, never from the repository.
+# README.md ("Build the Mac app yourself") explains the one-time setup.
+
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd "$script_dir/.." && pwd -P)
+readonly script_dir repo_root
+
+readonly app_name="Moshionly"
+readonly bin_name="moshionly"
+readonly package="moshionly-app"
+readonly plist_template="packaging/macos/Info.plist"
+readonly app_id_source="crates/moshionly-app/src/app.rs"
+# The oldest macOS the app is built for. macOS 11 was the first to run on
+# Apple silicon, and what the binary links needs it too: Skia's prebuilt
+# library is built for 11.0 and UniformTypeIdentifiers arrived in 11.
+readonly minimum_macos="11.0"
+readonly default_notary_profile="moshionly-notary"
+readonly setup_help="the \"One-time signing setup\" section of README.md"
+
+# What to do: release (sign, notarize, staple), skip-notarize or ad-hoc.
+mode="release"
+out_dir="$repo_root/dist"
+notary_profile="${MOSHIONLY_NOTARY_PROFILE:-$default_notary_profile}"
+# Set as the script goes.
+work_dir=""
+problems=0
+sign_identity=""
+sign_name=""
+target_dir=""
+version=""
+build_number=""
+copyright_year=""
+binary=""
+icon_tool=""
+app=""
+dmg=""
+
+usage() {
+  cat <<EOF
+Usage: scripts/release-mac.sh [--ad-hoc | --skip-notarize] [--out <folder>]
+
+Builds Moshionly.app and Moshionly-<version>.dmg for Apple silicon Macs and
+puts them in dist/ at the top of the repository.
+
+  (no option)        The release: sign with your Developer ID, have Apple
+                     notarize the app and the .dmg, and staple the tickets,
+                     so macOS opens a downloaded copy without a warning.
+  --skip-notarize    Sign with your Developer ID, without notarizing.
+  --ad-hoc           No Apple account needed: an ad-hoc signature and no
+                     notarization. The app runs on this Mac, but macOS warns
+                     people who download it.
+  --out <folder>     Put the app and the .dmg in this folder instead of dist/.
+  -h, --help         Show this text.
+
+Settings, from the environment:
+  MOSHIONLY_SIGN_IDENTITY    The Developer ID Application identity to sign
+                             with, by name or SHA-1 hash. Needed only when
+                             your keychain has more than one.
+  MOSHIONLY_NOTARY_PROFILE   The notarytool keychain profile to notarize with.
+                             Default: $default_notary_profile.
+  CARGO_TARGET_DIR           Where cargo builds, as usual.
+
+The one-time signing setup is in README.md, "Build the Mac app yourself".
+EOF
+}
+
+# One line for each step, so the person can follow along.
+step() {
+  printf '\n→ %s\n' "$1"
+}
+
+say() {
+  printf '%s\n' "$@"
+}
+
+# Prints every line of every argument after the first, starting each with
+# the first argument.
+indented() {
+  local prefix=$1 text line
+  shift
+  for text in "$@"; do
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ -n $line ]]; then
+        printf '%s%s\n' "$prefix" "$line"
+      else
+        printf '\n'
+      fi
+    done <<<"$text"
+  done
+}
+
+# Stops with a message: the first argument says what went wrong, the others
+# what to do about it.
+die() {
+  printf '\nStopped: %s\n' "$1" >&2
+  shift
+  indented "  " "$@" >&2
+  exit 1
+}
+
+usage_error() {
+  printf 'release-mac.sh: %s\nRun scripts/release-mac.sh --help for the options.\n' "$1" >&2
+  exit 2
+}
+
+# Notes a problem found before building; every problem is reported before
+# the script stops, so they can all be fixed in one go.
+problem() {
+  if [[ $problems -eq 0 ]]; then
+    printf '\n%s\n' "$app_name.app cannot be built yet:" >&2
+  fi
+  problems=$((problems + 1))
+  printf '\n  • %s\n' "$1" >&2
+  shift
+  indented "    " "$@" >&2
+}
+
+cleanup() {
+  if [[ -n $work_dir && -d $work_dir ]]; then
+    rm -rf "$work_dir"
+  fi
+}
+
+absolute_path() {
+  case $1 in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "$PWD/$1" ;;
+  esac
+}
+
+# A path as the person would like to read it: relative to the repository
+# when it is inside it.
+shown_path() {
+  case $1 in
+    "$repo_root"/*) printf '%s\n' "${1#"$repo_root"/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+set_mode() {
+  if [[ $mode != release && $mode != "$1" ]]; then
+    usage_error "use --ad-hoc or --skip-notarize, not both (--ad-hoc never notarizes)."
+  fi
+  mode=$1
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --ad-hoc) set_mode ad-hoc ;;
+      --skip-notarize) set_mode skip-notarize ;;
+      --out)
+        if [[ $# -lt 2 || -z $2 ]]; then
+          usage_error "--out needs a folder."
+        fi
+        out_dir=$(absolute_path "$2")
+        shift
+        ;;
+      --out=*)
+        if [[ -z ${1#--out=} ]]; then
+          usage_error "--out needs a folder."
+        fi
+        out_dir=$(absolute_path "${1#--out=}")
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *) usage_error "unknown option: $1" ;;
+    esac
+    shift
+  done
+}
+
+check_platform() {
+  if [[ $(uname -s) != Darwin ]]; then
+    die "this script builds the Mac app, so it runs only on macOS."
+  fi
+  if [[ $(uname -m) != arm64 ]]; then
+    die "Moshionly.app is built for Apple silicon, and this terminal is not running on it (it reports $(uname -m))." \
+      "Use an Apple silicon Mac, in a terminal that does not run under Rosetta."
+  fi
+}
+
+# Runs a developer tool once to see that it works; prints what it said when
+# it does not. Xcode's tools refuse to run until its licence is accepted.
+tool_runs() {
+  local output
+  if output=$("$@" 2>&1 >/dev/null); then
+    return 0
+  fi
+  if [[ $output == *"license"* ]]; then
+    problem "Apple's developer tools do not run yet: Xcode's licence has not been accepted." \
+      "Accept it once with:  sudo xcodebuild -license accept" \
+      "(or open Xcode and agree), then run this again."
+  else
+    problem "\"$*\" does not run:" "${output:-it stopped without saying why.}"
+  fi
+  return 1
+}
+
+check_tools() {
+  # rustup puts cargo here; a terminal opened before installing Rust may
+  # not know yet.
+  if ! command -v cargo >/dev/null 2>&1 && [[ -x $HOME/.cargo/bin/cargo ]]; then
+    PATH="$HOME/.cargo/bin:$PATH"
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    problem "Rust is not installed (cargo was not found)." "Install it from https://rustup.rs, then open a new terminal."
+  fi
+  # Everything else comes with macOS or with the Xcode command line tools,
+  # which also provide the linker cargo needs.
+  if ! xcode-select -p >/dev/null 2>&1; then
+    problem "The Xcode command line tools are not installed." "Install them with:  xcode-select --install"
+    return
+  fi
+  if ! tool_runs cc --version; then
+    return
+  fi
+  local tool
+  for tool in codesign ditto hdiutil iconutil lipo otool plutil spctl vtool; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      problem "$tool was not found. It comes with macOS and the Xcode command line tools."
+    fi
+  done
+  if [[ $mode != ad-hoc ]] && ! command -v security >/dev/null 2>&1; then
+    problem "security was not found. It comes with macOS."
+  fi
+  if [[ $mode == release ]]; then
+    if tool_runs xcrun notarytool --version && ! xcrun --find stapler >/dev/null 2>&1; then
+      problem "stapler was not found. It comes with Xcode and the Xcode command line tools."
+    fi
+  fi
+}
+
+# Finds the Developer ID Application identity to sign with, as its SHA-1
+# hash, which names it to codesign without any doubt.
+find_identity() {
+  local listing
+  listing=$(security find-identity -v -p codesigning 2>/dev/null || true)
+  local wanted="${MOSHIONLY_SIGN_IDENTITY:-}"
+  local wanted_hash
+  wanted_hash=$(printf '%s' "$wanted" | tr '[:lower:]' '[:upper:]')
+  local re='^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-F]{40})[[:space:]]+"(.*)"$'
+  local line hash name seen=" "
+  local exact="" exact_count=0 partial="" partial_count=0 developer_ids="" developer_id_count=0
+  while IFS= read -r line; do
+    if ! [[ $line =~ $re ]]; then
+      continue
+    fi
+    hash=${BASH_REMATCH[1]}
+    name=${BASH_REMATCH[2]}
+    # The same identity can be listed once for each keychain it is in.
+    if [[ $seen == *" $hash "* ]]; then
+      continue
+    fi
+    seen="$seen$hash "
+    if [[ $name == "Developer ID Application:"* ]]; then
+      developer_ids="$developer_ids$hash $name"$'\n'
+      developer_id_count=$((developer_id_count + 1))
+    fi
+    if [[ -n $wanted ]]; then
+      if [[ $hash == "$wanted_hash" || $name == "$wanted" ]]; then
+        exact="$hash $name"
+        exact_count=$((exact_count + 1))
+      elif [[ $name == *"$wanted"* ]]; then
+        partial="$partial$hash $name"$'\n'
+        partial_count=$((partial_count + 1))
+      fi
+    fi
+  done <<<"$listing"
+
+  local chosen=""
+  if [[ -n $wanted ]]; then
+    if [[ $exact_count -eq 1 ]]; then
+      chosen=$exact
+    elif [[ $exact_count -eq 0 && $partial_count -eq 1 ]]; then
+      chosen=${partial%$'\n'}
+    elif [[ $exact_count -eq 0 && $partial_count -eq 0 ]]; then
+      problem "No valid signing identity in your keychain matches MOSHIONLY_SIGN_IDENTITY (\"$wanted\")." \
+        "Check the name or SHA-1 hash with:  security find-identity -v -p codesigning" \
+        "Setting up a Developer ID is explained in $setup_help."
+      return
+    else
+      problem "MOSHIONLY_SIGN_IDENTITY (\"$wanted\") matches more than one identity." \
+        "Use the SHA-1 hash of the one you want; this lists them:" \
+        "  security find-identity -v -p codesigning"
+      return
+    fi
+  elif [[ $developer_id_count -eq 1 ]]; then
+    chosen=${developer_ids%$'\n'}
+  elif [[ $developer_id_count -eq 0 ]]; then
+    problem "No \"Developer ID Application\" signing identity is in your keychain." \
+      "Apple notarizes only apps signed with one. Setting it up once is explained in" \
+      "$setup_help." \
+      "To build without an Apple account, run:  scripts/release-mac.sh --ad-hoc" \
+      "(macOS will then warn people who download the app)."
+    return
+  else
+    problem "Your keychain has more than one \"Developer ID Application\" identity:" \
+      "" \
+      "${developer_ids%$'\n'}" \
+      "" \
+      "Choose one by its SHA-1 hash (the first column), for example:" \
+      "  export MOSHIONLY_SIGN_IDENTITY=${developer_ids%% *}"
+    return
+  fi
+
+  sign_identity=${chosen%% *}
+  sign_name=${chosen#* }
+  if [[ $sign_name != "Developer ID Application:"* ]]; then
+    problem "MOSHIONLY_SIGN_IDENTITY picks \"$sign_name\", which is not a Developer ID Application identity." \
+      "Apple notarizes only apps signed with Developer ID Application. See $setup_help."
+    sign_identity=""
+    sign_name=""
+  fi
+}
+
+# Asks Apple's notary service for the profile's past submissions, which
+# shows the stored credentials work without sending anything.
+check_notary_profile() {
+  local output
+  if output=$(xcrun notarytool history --keychain-profile "$notary_profile" 2>&1 >/dev/null); then
+    return
+  fi
+  problem "The notarization profile \"$notary_profile\" does not work. notarytool says:" \
+    "" \
+    "$(indented "  " "${output:-(nothing)}")" \
+    "" \
+    "Create it once (it asks for an app-specific password and keeps it in your keychain):" \
+    "  xcrun notarytool store-credentials $notary_profile --apple-id <your Apple ID> --team-id <your Team ID>" \
+    "See $setup_help for where these come from." \
+    "To use a profile with another name, set MOSHIONLY_NOTARY_PROFILE."
+}
+
+# Everything that can stop the release is checked here, before the build.
+preflight() {
+  step "Checking the tools and the signing setup…"
+  check_tools
+  # Without working tools the rest cannot be checked. Otherwise the identity
+  # and the profile are both checked, so both can be fixed in one go.
+  if [[ $problems -eq 0 ]]; then
+    if [[ $mode == release ]]; then
+      say "  Asking Apple whether the notarization profile \"$notary_profile\" works…"
+      check_notary_profile
+    fi
+    if [[ $mode != ad-hoc ]]; then
+      find_identity
+    fi
+  fi
+  if [[ $problems -gt 0 ]]; then
+    printf '\nNothing was built.\n' >&2
+    exit 1
+  fi
+  if [[ $mode == ad-hoc ]]; then
+    sign_identity="-"
+    sign_name="an ad-hoc signature"
+  fi
+  say "  Signing with $sign_name."
+}
+
+read_metadata() {
+  local metadata="$work_dir/metadata.json"
+  cargo metadata --format-version 1 --no-deps --locked >"$metadata"
+  target_dir=$(plutil -extract target_directory raw -o - "$metadata")
+  local count index
+  count=$(plutil -extract packages raw -o - "$metadata")
+  for ((index = 0; index < count; index++)); do
+    if [[ $(plutil -extract "packages.$index.name" raw -o - "$metadata") == "$package" ]]; then
+      version=$(plutil -extract "packages.$index.version" raw -o - "$metadata")
+    fi
+  done
+  if [[ -z $version ]]; then
+    die "cargo does not know the $package package." "Run this script from a Moshionly checkout."
+  fi
+  if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    die "the version in Cargo.toml, $version, is not one macOS accepts." \
+      "An app's version is three numbers, such as 1.2.0."
+  fi
+  # The build number goes up with every commit, so two builds of one
+  # version can be told apart. A shallow clone does not know the count.
+  if git -C "$repo_root" rev-parse --verify --quiet HEAD >/dev/null 2>&1 &&
+    [[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]]; then
+    copyright_year=$(git -C "$repo_root" log -1 --format=%cd --date=format:%Y)
+    if [[ $(git -C "$repo_root" rev-parse --is-shallow-repository) == false ]]; then
+      build_number=$(git -C "$repo_root" rev-list --count HEAD)
+    fi
+  fi
+  build_number=${build_number:-$version}
+  copyright_year=${copyright_year:-$(date +%Y)}
+}
+
+build_binary() {
+  step "Building the release binary (the first build takes several minutes)…"
+  # Two cargo runs: built together, the example's test-only dependencies
+  # could switch features on in the app's own binary.
+  MACOSX_DEPLOYMENT_TARGET=$minimum_macos \
+    cargo build --release --locked -p "$package" --bin "$bin_name"
+  MACOSX_DEPLOYMENT_TARGET=$minimum_macos \
+    cargo build --release --locked -p "$package" --example app_icon
+  binary="$target_dir/release/$bin_name"
+  icon_tool="$target_dir/release/examples/app_icon"
+  if [[ ! -x $binary || ! -x $icon_tool ]]; then
+    die "cargo finished, but $binary is not there." \
+      "If CARGO_BUILD_TARGET or a cargo config changes where builds go, unset it and try again."
+  fi
+}
+
+# The binary must be for Apple silicon, built for the oldest macOS the app
+# promises, and link nothing but the system's own libraries: anything else
+# would be missing on other people's Macs.
+check_binary() {
+  step "Checking the binary: Apple silicon, macOS $minimum_macos or later, system libraries only…"
+  local archs minos libraries library foreign=""
+  archs=$(lipo -archs "$binary")
+  if [[ $archs != arm64 ]]; then
+    die "the binary is built for \"$archs\", not for Apple silicon (arm64)."
+  fi
+  minos=$(vtool -show-build "$binary" | awk '$1 == "minos" { print $2; exit }')
+  if [[ $minos != "$minimum_macos" ]]; then
+    die "the binary says it needs macOS ${minos:-(unknown)}, but the app is for macOS $minimum_macos and later." \
+      "An earlier build made with other settings may be in the way. Run  cargo clean --release  and try again."
+  fi
+  libraries=$(otool -L "$binary" | tail -n +2 | awk '{ print $1 }')
+  while IFS= read -r library; do
+    case $library in
+      /usr/lib/* | /System/Library/*) ;;
+      *) foreign="$foreign  $library"$'\n' ;;
+    esac
+  done <<<"$libraries"
+  if [[ -n $foreign ]]; then
+    die "the binary links libraries that other Macs do not have:" "$foreign" \
+      "Moshionly.app may only use libraries that come with macOS."
+  fi
+}
+
+make_icon() {
+  step "Drawing the app icon…"
+  "$icon_tool" "$work_dir/AppIcon.iconset" >/dev/null
+  iconutil --convert icns --output "$work_dir/AppIcon.icns" "$work_dir/AppIcon.iconset"
+}
+
+write_info_plist() {
+  local plist=$1 text placeholder='@[A-Z_]+@'
+  text=$(<"$repo_root/$plist_template")
+  text=${text//@VERSION@/$version}
+  text=${text//@BUILD_NUMBER@/$build_number}
+  text=${text//@MINIMUM_SYSTEM_VERSION@/$minimum_macos}
+  text=${text//@COPYRIGHT_YEAR@/$copyright_year}
+  if [[ $text =~ $placeholder ]]; then
+    die "$plist_template has a placeholder this script does not fill in: ${BASH_REMATCH[0]}"
+  fi
+  printf '%s\n' "$text" >"$plist"
+  if ! plutil -lint -s "$plist"; then
+    die "the Info.plist made from $plist_template is not valid."
+  fi
+  # Rewritten by plutil, without the template's comment.
+  plutil -convert xml1 "$plist"
+
+  local bundle_id app_id executable
+  bundle_id=$(plutil -extract CFBundleIdentifier raw -o - "$plist")
+  executable=$(plutil -extract CFBundleExecutable raw -o - "$plist")
+  app_id=$(sed -n 's/^pub const APP_ID: &str = "\(.*\)";$/\1/p' "$repo_root/$app_id_source")
+  if [[ $bundle_id != "$app_id" ]]; then
+    die "the bundle identifier in $plist_template ($bundle_id) differs from APP_ID in $app_id_source (${app_id:-not found})." \
+      "macOS and the app must agree on it: make them the same."
+  fi
+  if [[ $executable != "$bin_name" ]]; then
+    die "CFBundleExecutable in $plist_template should be $bin_name, not $executable."
+  fi
+}
+
+assemble_bundle() {
+  step "Assembling $app_name.app (version $version, build $build_number)…"
+  app="$work_dir/build/$app_name.app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  cp -X "$binary" "$app/Contents/MacOS/$bin_name"
+  cp -X "$work_dir/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+  write_info_plist "$app/Contents/Info.plist"
+}
+
+sign_app() {
+  # Code inside a bundle is signed before the bundle. The only code here is
+  # the main binary, which signing the bundle signs; anything else would
+  # need signing first, so stop if something has appeared.
+  local contents expected
+  contents=$(cd "$app" && find . -type f -o -type l | LC_ALL=C sort)
+  expected=$(printf '%s\n' ./Contents/Info.plist "./Contents/MacOS/$bin_name" ./Contents/Resources/AppIcon.icns)
+  if [[ $contents != "$expected" ]]; then
+    die "the app holds files this script does not know how to sign:" "$contents"
+  fi
+
+  # The hardened runtime is on for ad-hoc builds too, so they run under the
+  # same rules as the release. No entitlements: the app needs none.
+  local -a args=(--force --options runtime --sign "$sign_identity")
+  if [[ $mode == ad-hoc ]]; then
+    step "Signing the app (ad-hoc, with the hardened runtime)…"
+  else
+    step "Signing the app with ${sign_name}…"
+    args+=(--timestamp)
+  fi
+  local output details
+  if ! output=$(codesign "${args[@]}" "$app" 2>&1); then
+    die "codesign could not sign the app:" "$output"
+  fi
+  if ! output=$(codesign --verify --strict --deep --verbose=2 "$app" 2>&1); then
+    die "the signed app does not verify:" "$output"
+  fi
+  details=$(codesign -dvvv "$app" 2>&1)
+  if [[ $details != *"flags="*"runtime"* ]]; then
+    die "the app was signed without the hardened runtime, which notarization requires."
+  fi
+}
+
+# Sends a file to Apple's notary service and waits for the verdict. On
+# anything but Accepted, prints Apple's log, which says what to fix.
+notarize() {
+  local file=$1 what=$2
+  local result="$work_dir/notary-result.json" status id
+  xcrun notarytool submit "$file" --keychain-profile "$notary_profile" --wait --output-format json >"$result" || true
+  status=$(plutil -extract status raw -o - "$result" 2>/dev/null || true)
+  id=$(plutil -extract id raw -o - "$result" 2>/dev/null || true)
+  if [[ $status == Accepted ]]; then
+    say "  Apple accepted $what."
+    return
+  fi
+  if [[ -n $id ]]; then
+    printf '\nApple did not accept %s (status: %s). Its log says:\n\n' "$what" "${status:-unknown}" >&2
+    xcrun notarytool log "$id" --keychain-profile "$notary_profile" >&2 || true
+  fi
+  die "notarization of $what did not succeed (status: ${status:-no answer})." \
+    "Read the messages above. Nothing was copied to $(shown_path "$out_dir")."
+}
+
+# A ticket Apple has just issued can take a little while to be published,
+# so stapling is tried a few times before giving up.
+staple() {
+  local file=$1 what=$2 attempt output
+  step "Stapling the notarization ticket to ${what}…"
+  for attempt in 1 2 3 4 5; do
+    if output=$(xcrun stapler staple "$file" 2>&1); then
+      break
+    fi
+    if [[ $attempt -eq 5 ]]; then
+      die "the notarization ticket could not be stapled to $what. stapler says:" "$output" \
+        "Apple accepted it, so running the script again usually works once the" \
+        "internet connection is fine (it builds and notarizes again)."
+    fi
+    say "  The ticket is not available yet; trying again in 20 seconds…"
+    sleep 20
+  done
+  if ! output=$(xcrun stapler validate "$file" 2>&1); then
+    die "the ticket stapled to $what does not validate. stapler says:" "$output"
+  fi
+}
+
+# Apple usually answers within minutes, but a team's first submissions can
+# take hours, and the script shows nothing while it waits.
+notary_wait_note() {
+  say "  This usually takes a few minutes, but Apple can take hours over a team's first" \
+    "  submissions. Leave it running. To see where Apple is, run this in another window:" \
+    "    xcrun notarytool history --keychain-profile $notary_profile"
+}
+
+notarize_app() {
+  step "Sending the app to Apple for notarization…"
+  notary_wait_note
+  local zip="$work_dir/$app_name.zip"
+  ditto -c -k --keepParent "$app" "$zip"
+  notarize "$zip" "the app"
+  rm -f "$zip"
+  staple "$app" "the app"
+}
+
+make_dmg() {
+  local dmg_name="$app_name-$version.dmg"
+  step "Making the installer, ${dmg_name}…"
+  local staging="$work_dir/dmg" attempt output
+  mkdir -p "$staging"
+  ditto "$app" "$staging/$app_name.app"
+  ln -s /Applications "$staging/Applications"
+  dmg="$work_dir/$dmg_name"
+  # hdiutil now and then finds the disk busy, on CI especially; it works on
+  # a later try.
+  for attempt in 1 2 3 4 5; do
+    if output=$(hdiutil create -volname "$app_name" -srcfolder "$staging" -ov -format UDZO "$dmg" 2>&1); then
+      return
+    fi
+    if [[ $output != *"Resource busy"* || $attempt -eq 5 ]]; then
+      die "the disk image could not be made. hdiutil says:" "$output"
+    fi
+    say "  The disk was busy; trying again in 5 seconds…"
+    sleep 5
+  done
+}
+
+sign_dmg() {
+  local -a args=(--force --sign "$sign_identity")
+  if [[ $mode == ad-hoc ]]; then
+    step "Signing the installer (ad-hoc)…"
+  else
+    step "Signing the installer with ${sign_name}…"
+    args+=(--timestamp)
+  fi
+  local output
+  if ! output=$(codesign "${args[@]}" "$dmg" 2>&1); then
+    die "codesign could not sign the installer:" "$output"
+  fi
+  if ! output=$(codesign --verify --strict --verbose=2 "$dmg" 2>&1); then
+    die "the signed installer does not verify:" "$output"
+  fi
+}
+
+notarize_dmg() {
+  step "Sending the installer to Apple for notarization…"
+  notary_wait_note
+  notarize "$dmg" "the installer"
+  staple "$dmg" "the installer"
+}
+
+# The results are copied out only once everything has worked, so a failed
+# run never leaves half a release behind.
+install_outputs() {
+  step "Copying the results to $(shown_path "$out_dir")…"
+  mkdir -p "$out_dir"
+  local out_app out_dmg
+  out_app="$out_dir/$app_name.app"
+  out_dmg="$out_dir/$(basename "$dmg")"
+  rm -rf "$out_app"
+  ditto "$app" "$out_app"
+  cp -X "$dmg" "$out_dmg"
+  app=$out_app
+  dmg=$out_dmg
+}
+
+# Asks macOS what it will make of the results. Gatekeeper's verdict is
+# what people who download them will meet.
+final_checks() {
+  step "Checking the results the way macOS will…"
+  local output app_verdict dmg_verdict app_ok=yes dmg_ok=yes
+  if ! output=$(codesign --verify --strict --deep "$app" 2>&1); then
+    die "the copied app does not verify:" "$output"
+  fi
+  app_verdict=$(spctl --assess --type execute --verbose=4 "$app" 2>&1) || app_ok=no
+  dmg_verdict=$(spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" 2>&1) || dmg_ok=no
+  # spctl starts with the path, and says the rest over a few lines.
+  app_verdict=${app_verdict//"$app": /}
+  dmg_verdict=${dmg_verdict//"$dmg": /}
+  say "  Gatekeeper on the app:       ${app_verdict//$'\n'/, }"
+  say "  Gatekeeper on the installer: ${dmg_verdict//$'\n'/, }"
+
+  if [[ $mode == release ]]; then
+    local stapled=yes
+    xcrun stapler validate -q "$app" || stapled=no
+    xcrun stapler validate -q "$dmg" || stapled=no
+    say "  Notarization tickets stapled to both: $stapled"
+    if [[ $app_ok != yes || $dmg_ok != yes || $stapled != yes ]]; then
+      die "macOS does not accept the results, so they are not ready to share." \
+        "They are in $(shown_path "$out_dir") to look into; the lines above say what macOS thinks."
+    fi
+  fi
+}
+
+summary() {
+  say "" "Done." \
+    "  App:        $(shown_path "$app")" \
+    "  Installer:  $(shown_path "$dmg")" \
+    "  Version $version (build $build_number), for Apple silicon Macs with macOS $minimum_macos or later."
+  case $mode in
+    release)
+      say "" "Signed, notarized and stapled: people can download the .dmg and open the app" \
+        "without a warning, even offline."
+      ;;
+    skip-notarize)
+      say "" "Signed with your Developer ID but not notarized. Apple has not checked this build," \
+        "so macOS will warn people who download it and refuse to open it until they choose" \
+        "Open Anyway in System Settings › Privacy & Security. Run without --skip-notarize" \
+        "for a release."
+      ;;
+    ad-hoc)
+      say "" "Ad-hoc signed and not notarized. It runs on this Mac, but macOS will warn people" \
+        "who download it, because no Apple-issued certificate vouches for it: they would need" \
+        "System Settings › Privacy & Security › Open Anyway. For a release others can open" \
+        "without a warning, see $setup_help."
+      ;;
+  esac
+}
+
+main() {
+  parse_args "$@"
+  cd "$repo_root"
+  check_platform
+  preflight
+
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  local tmp_root="${TMPDIR:-/tmp}"
+  work_dir=$(mktemp -d "${tmp_root%/}/moshionly-release.XXXXXX")
+
+  read_metadata
+  build_binary
+  check_binary
+  make_icon
+  assemble_bundle
+  sign_app
+  if [[ $mode == release ]]; then
+    notarize_app
+  fi
+  make_dmg
+  sign_dmg
+  if [[ $mode == release ]]; then
+    notarize_dmg
+  fi
+  install_outputs
+  final_checks
+  summary
+}
+
+main "$@"
