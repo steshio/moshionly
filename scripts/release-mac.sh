@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Builds Moshionly.app for Apple silicon Macs, signs it with a Developer
-# ID, has Apple notarize it and staples the ticket, so that macOS opens a
-# downloaded copy without a warning.
+# Builds Moshionly.app and Moshionly-<version>.dmg for Apple silicon Macs,
+# signs them with a Developer ID, has Apple notarize them and staples the
+# tickets, so that macOS opens a downloaded copy without a warning.
 #
 #   scripts/release-mac.sh                  the full release
 #   scripts/release-mac.sh --skip-notarize  sign, but do not notarize
@@ -46,22 +46,23 @@ copyright_year=""
 binary=""
 icon_tool=""
 app=""
+dmg=""
 
 usage() {
   cat <<EOF
 Usage: scripts/release-mac.sh [--ad-hoc | --skip-notarize] [--out <folder>]
 
-Builds Moshionly.app for Apple silicon Macs and puts it in dist/ at the
-top of the repository.
+Builds Moshionly.app and Moshionly-<version>.dmg for Apple silicon Macs and
+puts them in dist/ at the top of the repository.
 
   (no option)        The release: sign with your Developer ID, have Apple
-                     notarize the app and staple the ticket, so macOS
-                     opens a downloaded copy without a warning.
+                     notarize the app and the .dmg, and staple the tickets,
+                     so macOS opens a downloaded copy without a warning.
   --skip-notarize    Sign with your Developer ID, without notarizing.
   --ad-hoc           No Apple account needed: an ad-hoc signature and no
                      notarization. The app runs on this Mac, but macOS warns
                      people who download it.
-  --out <folder>     Put the app in this folder instead of dist/.
+  --out <folder>     Put the app and the .dmg in this folder instead of dist/.
   -h, --help         Show this text.
 
 Settings, from the environment:
@@ -230,7 +231,7 @@ check_tools() {
     return
   fi
   local tool
-  for tool in codesign ditto iconutil lipo otool plutil spctl vtool; do
+  for tool in codesign ditto hdiutil iconutil lipo otool plutil spctl vtool; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       problem "$tool was not found. It comes with macOS and the Xcode command line tools."
     fi
@@ -562,48 +563,102 @@ notarize_app() {
   staple "$app" "the app"
 }
 
+make_dmg() {
+  local dmg_name="$app_name-$version.dmg"
+  step "Making the installer, ${dmg_name}…"
+  local staging="$work_dir/dmg" attempt output
+  mkdir -p "$staging"
+  ditto "$app" "$staging/$app_name.app"
+  ln -s /Applications "$staging/Applications"
+  dmg="$work_dir/$dmg_name"
+  # hdiutil now and then finds the disk busy, on CI especially; it works on
+  # a later try.
+  for attempt in 1 2 3 4 5; do
+    if output=$(hdiutil create -volname "$app_name" -srcfolder "$staging" -ov -format UDZO "$dmg" 2>&1); then
+      return
+    fi
+    if [[ $output != *"Resource busy"* || $attempt -eq 5 ]]; then
+      die "the disk image could not be made. hdiutil says:" "$output"
+    fi
+    say "  The disk was busy; trying again in 5 seconds…"
+    sleep 5
+  done
+}
+
+sign_dmg() {
+  local -a args=(--force --sign "$sign_identity")
+  if [[ $mode == ad-hoc ]]; then
+    step "Signing the installer (ad-hoc)…"
+  else
+    step "Signing the installer with ${sign_name}…"
+    args+=(--timestamp)
+  fi
+  local output
+  if ! output=$(codesign "${args[@]}" "$dmg" 2>&1); then
+    die "codesign could not sign the installer:" "$output"
+  fi
+  if ! output=$(codesign --verify --strict --verbose=2 "$dmg" 2>&1); then
+    die "the signed installer does not verify:" "$output"
+  fi
+}
+
+notarize_dmg() {
+  step "Sending the installer to Apple for notarization…"
+  notarize "$dmg" "the installer"
+  staple "$dmg" "the installer"
+}
+
 # The results are copied out only once everything has worked, so a failed
 # run never leaves half a release behind.
 install_outputs() {
   step "Copying the results to $(shown_path "$out_dir")…"
   mkdir -p "$out_dir"
-  local out_app="$out_dir/$app_name.app"
+  local out_app out_dmg
+  out_app="$out_dir/$app_name.app"
+  out_dmg="$out_dir/$(basename "$dmg")"
   rm -rf "$out_app"
   ditto "$app" "$out_app"
+  cp -X "$dmg" "$out_dmg"
   app=$out_app
+  dmg=$out_dmg
 }
 
-# Asks macOS what it will make of the app. Gatekeeper's verdict is what
-# people who download it will meet.
+# Asks macOS what it will make of the results. Gatekeeper's verdict is
+# what people who download them will meet.
 final_checks() {
-  step "Checking the app the way macOS will…"
-  local output app_verdict app_ok=yes
+  step "Checking the results the way macOS will…"
+  local output app_verdict dmg_verdict app_ok=yes dmg_ok=yes
   if ! output=$(codesign --verify --strict --deep "$app" 2>&1); then
     die "the copied app does not verify:" "$output"
   fi
   app_verdict=$(spctl --assess --type execute --verbose=4 "$app" 2>&1) || app_ok=no
+  dmg_verdict=$(spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" 2>&1) || dmg_ok=no
   # spctl starts with the path, and says the rest over a few lines.
   app_verdict=${app_verdict//"$app": /}
-  say "  Gatekeeper on the app: ${app_verdict//$'\n'/, }"
+  dmg_verdict=${dmg_verdict//"$dmg": /}
+  say "  Gatekeeper on the app:       ${app_verdict//$'\n'/, }"
+  say "  Gatekeeper on the installer: ${dmg_verdict//$'\n'/, }"
 
   if [[ $mode == release ]]; then
     local stapled=yes
     xcrun stapler validate -q "$app" || stapled=no
-    say "  Notarization ticket stapled: $stapled"
-    if [[ $app_ok != yes || $stapled != yes ]]; then
-      die "macOS does not accept the app, so it is not ready to share." \
-        "It is in $(shown_path "$out_dir") to look into; the lines above say what macOS thinks."
+    xcrun stapler validate -q "$dmg" || stapled=no
+    say "  Notarization tickets stapled to both: $stapled"
+    if [[ $app_ok != yes || $dmg_ok != yes || $stapled != yes ]]; then
+      die "macOS does not accept the results, so they are not ready to share." \
+        "They are in $(shown_path "$out_dir") to look into; the lines above say what macOS thinks."
     fi
   fi
 }
 
 summary() {
   say "" "Done." \
-    "  App:  $(shown_path "$app")" \
+    "  App:        $(shown_path "$app")" \
+    "  Installer:  $(shown_path "$dmg")" \
     "  Version $version (build $build_number), for Apple silicon Macs with macOS $minimum_macos or later."
   case $mode in
     release)
-      say "" "Signed, notarized and stapled: people who download the app can open it" \
+      say "" "Signed, notarized and stapled: people can download the .dmg and open the app" \
         "without a warning, even offline."
       ;;
     skip-notarize)
@@ -641,6 +696,11 @@ main() {
   sign_app
   if [[ $mode == release ]]; then
     notarize_app
+  fi
+  make_dmg
+  sign_dmg
+  if [[ $mode == release ]]; then
+    notarize_dmg
   fi
   install_outputs
   final_checks
