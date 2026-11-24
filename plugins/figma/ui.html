@@ -104,8 +104,12 @@
   'use strict';
 
   const MoshionlyDelivery = (() => {
-    /** Where the Moshionly app listens for designs, on this computer only. */
-    const IMPORT_URLS = ['http://localhost:47821/import', 'http://127.0.0.1:47821/import'];
+    /**
+     * Where the Moshionly app listens for designs, on this computer only.
+     * The panel can reach only what the manifest lists, and Figma refuses
+     * an IP address such as 127.0.0.1 there, so localhost is the one way in.
+     */
+    const IMPORT_URLS = ['http://localhost:47821/import'];
 
     /** The largest design the app takes at once. */
     const MAX_BODY_BYTES = 64 * 1024 * 1024;

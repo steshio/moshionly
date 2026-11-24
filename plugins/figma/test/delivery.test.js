@@ -70,7 +70,7 @@ const envelope = JSON.stringify({ format: 'moshionly-import', version: 1, source
 
 test('the panel sends to the Moshionly app on this computer only', () => {
   const delivery = loadDelivery();
-  assert.deepEqual(Array.from(delivery.IMPORT_URLS), ['http://localhost:47821/import', 'http://127.0.0.1:47821/import']);
+  assert.deepEqual(Array.from(delivery.IMPORT_URLS), ['http://localhost:47821/import']);
   assert.equal(delivery.MAX_BODY_BYTES, 64 * 1024 * 1024);
 });
 

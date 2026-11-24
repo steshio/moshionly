@@ -25,7 +25,9 @@ test('the plugin loads pages on demand, as Figma requires of new plugins', () =>
 
 test('network access is limited to the Moshionly app on this computer', () => {
   const access = manifest.networkAccess;
-  assert.deepEqual(access.allowedDomains, ['http://localhost:47821', 'http://127.0.0.1:47821']);
+  // Figma refuses the manifest when an IP address such as 127.0.0.1 is listed:
+  // "Invalid value for allowedDomains. 'http://127.0.0.1:47821' must be a valid URL."
+  assert.deepEqual(access.allowedDomains, ['http://localhost:47821']);
   // Figma asks for a reason whenever a local server is listed.
   assert.ok(access.reasoning && access.reasoning.length > 20);
   assert.equal(access.devAllowedDomains, undefined);

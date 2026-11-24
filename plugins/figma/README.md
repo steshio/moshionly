@@ -142,7 +142,7 @@ It converts the fixture designs, runs each through the checks behind the app's `
 
 ### What the plugin sends
 
-`POST http://localhost:47821/import` (then `http://127.0.0.1:47821/import`), with a JSON body:
+`POST http://localhost:47821/import`, with a JSON body:
 
 ```json
 {
