@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# Builds Moshionly.app for Apple silicon Macs and signs it with a
-# Developer ID.
+# Builds Moshionly.app for Apple silicon Macs, signs it with a Developer
+# ID, has Apple notarize it and staples the ticket, so that macOS opens a
+# downloaded copy without a warning.
 #
-#   scripts/release-mac.sh           sign with your Developer ID
-#   scripts/release-mac.sh --ad-hoc  no Apple account needed
-#   scripts/release-mac.sh --help    every option
+#   scripts/release-mac.sh                  the full release
+#   scripts/release-mac.sh --skip-notarize  sign, but do not notarize
+#   scripts/release-mac.sh --ad-hoc         no Apple account needed
+#   scripts/release-mac.sh --help           every option
 #
 # Signing settings come from the environment, never from the repository.
 # README.md ("Build the Mac app yourself") explains the one-time setup.
@@ -25,11 +27,13 @@ readonly app_id_source="crates/moshionly-app/src/app.rs"
 # Apple silicon, and what the binary links needs it too: Skia's prebuilt
 # library is built for 11.0 and UniformTypeIdentifiers arrived in 11.
 readonly minimum_macos="11.0"
+readonly default_notary_profile="moshionly-notary"
 readonly setup_help="the \"One-time signing setup\" section of README.md"
 
-# What to do: release (sign with a Developer ID) or ad-hoc.
+# What to do: release (sign, notarize, staple), skip-notarize or ad-hoc.
 mode="release"
 out_dir="$repo_root/dist"
+notary_profile="${MOSHIONLY_NOTARY_PROFILE:-$default_notary_profile}"
 # Set as the script goes.
 work_dir=""
 problems=0
@@ -45,14 +49,18 @@ app=""
 
 usage() {
   cat <<EOF
-Usage: scripts/release-mac.sh [--ad-hoc] [--out <folder>]
+Usage: scripts/release-mac.sh [--ad-hoc | --skip-notarize] [--out <folder>]
 
 Builds Moshionly.app for Apple silicon Macs and puts it in dist/ at the
 top of the repository.
 
-  (no option)        Sign with your Developer ID.
-  --ad-hoc           No Apple account needed: an ad-hoc signature. The app
-                     runs on this Mac, but macOS warns people who download it.
+  (no option)        The release: sign with your Developer ID, have Apple
+                     notarize the app and staple the ticket, so macOS
+                     opens a downloaded copy without a warning.
+  --skip-notarize    Sign with your Developer ID, without notarizing.
+  --ad-hoc           No Apple account needed: an ad-hoc signature and no
+                     notarization. The app runs on this Mac, but macOS warns
+                     people who download it.
   --out <folder>     Put the app in this folder instead of dist/.
   -h, --help         Show this text.
 
@@ -60,6 +68,8 @@ Settings, from the environment:
   MOSHIONLY_SIGN_IDENTITY    The Developer ID Application identity to sign
                              with, by name or SHA-1 hash. Needed only when
                              your keychain has more than one.
+  MOSHIONLY_NOTARY_PROFILE   The notarytool keychain profile to notarize with.
+                             Default: $default_notary_profile.
   CARGO_TARGET_DIR           Where cargo builds, as usual.
 
 The one-time signing setup is in README.md, "Build the Mac app yourself".
@@ -139,10 +149,18 @@ shown_path() {
   esac
 }
 
+set_mode() {
+  if [[ $mode != release && $mode != "$1" ]]; then
+    usage_error "use --ad-hoc or --skip-notarize, not both (--ad-hoc never notarizes)."
+  fi
+  mode=$1
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      --ad-hoc) mode=ad-hoc ;;
+      --ad-hoc) set_mode ad-hoc ;;
+      --skip-notarize) set_mode skip-notarize ;;
       --out)
         if [[ $# -lt 2 || -z $2 ]]; then
           usage_error "--out needs a folder."
@@ -219,6 +237,11 @@ check_tools() {
   done
   if [[ $mode != ad-hoc ]] && ! command -v security >/dev/null 2>&1; then
     problem "security was not found. It comes with macOS."
+  fi
+  if [[ $mode == release ]]; then
+    if tool_runs xcrun notarytool --version && ! xcrun --find stapler >/dev/null 2>&1; then
+      problem "stapler was not found. It comes with Xcode and the Xcode command line tools."
+    fi
   fi
 }
 
@@ -305,13 +328,37 @@ find_identity() {
   fi
 }
 
+# Asks Apple's notary service for the profile's past submissions, which
+# shows the stored credentials work without sending anything.
+check_notary_profile() {
+  local output
+  if output=$(xcrun notarytool history --keychain-profile "$notary_profile" 2>&1 >/dev/null); then
+    return
+  fi
+  problem "The notarization profile \"$notary_profile\" does not work. notarytool says:" \
+    "" \
+    "$(indented "  " "${output:-(nothing)}")" \
+    "" \
+    "Create it once (it asks for an app-specific password and keeps it in your keychain):" \
+    "  xcrun notarytool store-credentials $notary_profile --apple-id <your Apple ID> --team-id <your Team ID>" \
+    "See $setup_help for where these come from." \
+    "To use a profile with another name, set MOSHIONLY_NOTARY_PROFILE."
+}
+
 # Everything that can stop the release is checked here, before the build.
 preflight() {
   step "Checking the tools and the signing setup…"
   check_tools
-  # Without working tools the identity cannot be checked.
-  if [[ $problems -eq 0 && $mode != ad-hoc ]]; then
-    find_identity
+  # Without working tools the rest cannot be checked. Otherwise the identity
+  # and the profile are both checked, so both can be fixed in one go.
+  if [[ $problems -eq 0 ]]; then
+    if [[ $mode == release ]]; then
+      say "  Asking Apple whether the notarization profile \"$notary_profile\" works…"
+      check_notary_profile
+    fi
+    if [[ $mode != ad-hoc ]]; then
+      find_identity
+    fi
   fi
   if [[ $problems -gt 0 ]]; then
     printf '\nNothing was built.\n' >&2
@@ -473,8 +520,46 @@ sign_app() {
   fi
   details=$(codesign -dvvv "$app" 2>&1)
   if [[ $details != *"flags="*"runtime"* ]]; then
-    die "the app was signed without the hardened runtime."
+    die "the app was signed without the hardened runtime, which notarization requires."
   fi
+}
+
+# Sends a file to Apple's notary service and waits for the verdict. On
+# anything but Accepted, prints Apple's log, which says what to fix.
+notarize() {
+  local file=$1 what=$2
+  local result="$work_dir/notary-result.json" status id
+  xcrun notarytool submit "$file" --keychain-profile "$notary_profile" --wait --output-format json >"$result" || true
+  status=$(plutil -extract status raw -o - "$result" 2>/dev/null || true)
+  id=$(plutil -extract id raw -o - "$result" 2>/dev/null || true)
+  if [[ $status == Accepted ]]; then
+    say "  Apple accepted $what."
+    return
+  fi
+  if [[ -n $id ]]; then
+    printf '\nApple did not accept %s (status: %s). Its log says:\n\n' "$what" "${status:-unknown}" >&2
+    xcrun notarytool log "$id" --keychain-profile "$notary_profile" >&2 || true
+  fi
+  die "notarization of $what did not succeed (status: ${status:-no answer})." \
+    "Read the messages above. Nothing was copied to $(shown_path "$out_dir")."
+}
+
+staple() {
+  local file=$1 what=$2
+  step "Stapling the notarization ticket to ${what}…"
+  xcrun stapler staple -q "$file"
+  if ! xcrun stapler validate -q "$file"; then
+    die "the ticket stapled to $what does not validate."
+  fi
+}
+
+notarize_app() {
+  step "Sending the app to Apple for notarization (this usually takes a few minutes)…"
+  local zip="$work_dir/$app_name.zip"
+  ditto -c -k --keepParent "$app" "$zip"
+  notarize "$zip" "the app"
+  rm -f "$zip"
+  staple "$app" "the app"
 }
 
 # The results are copied out only once everything has worked, so a failed
@@ -492,14 +577,24 @@ install_outputs() {
 # people who download it will meet.
 final_checks() {
   step "Checking the app the way macOS will…"
-  local output app_verdict
+  local output app_verdict app_ok=yes
   if ! output=$(codesign --verify --strict --deep "$app" 2>&1); then
     die "the copied app does not verify:" "$output"
   fi
-  app_verdict=$(spctl --assess --type execute --verbose=4 "$app" 2>&1) || true
+  app_verdict=$(spctl --assess --type execute --verbose=4 "$app" 2>&1) || app_ok=no
   # spctl starts with the path, and says the rest over a few lines.
   app_verdict=${app_verdict//"$app": /}
   say "  Gatekeeper on the app: ${app_verdict//$'\n'/, }"
+
+  if [[ $mode == release ]]; then
+    local stapled=yes
+    xcrun stapler validate -q "$app" || stapled=no
+    say "  Notarization ticket stapled: $stapled"
+    if [[ $app_ok != yes || $stapled != yes ]]; then
+      die "macOS does not accept the app, so it is not ready to share." \
+        "It is in $(shown_path "$out_dir") to look into; the lines above say what macOS thinks."
+    fi
+  fi
 }
 
 summary() {
@@ -508,14 +603,20 @@ summary() {
     "  Version $version (build $build_number), for Apple silicon Macs with macOS $minimum_macos or later."
   case $mode in
     release)
+      say "" "Signed, notarized and stapled: people who download the app can open it" \
+        "without a warning, even offline."
+      ;;
+    skip-notarize)
       say "" "Signed with your Developer ID but not notarized. Apple has not checked this build," \
         "so macOS will warn people who download it and refuse to open it until they choose" \
-        "Open Anyway in System Settings › Privacy & Security."
+        "Open Anyway in System Settings › Privacy & Security. Run without --skip-notarize" \
+        "for a release."
       ;;
     ad-hoc)
-      say "" "Ad-hoc signed. It runs on this Mac, but macOS will warn people who download it," \
-        "because no Apple-issued certificate vouches for it: they would need" \
-        "System Settings › Privacy & Security › Open Anyway."
+      say "" "Ad-hoc signed and not notarized. It runs on this Mac, but macOS will warn people" \
+        "who download it, because no Apple-issued certificate vouches for it: they would need" \
+        "System Settings › Privacy & Security › Open Anyway. For a release others can open" \
+        "without a warning, see $setup_help."
       ;;
   esac
 }
@@ -538,6 +639,9 @@ main() {
   make_icon
   assemble_bundle
   sign_app
+  if [[ $mode == release ]]; then
+    notarize_app
+  fi
   install_outputs
   final_checks
   summary
