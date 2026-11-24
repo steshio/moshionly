@@ -20,7 +20,7 @@ use super::groups::{Masks, Place};
 use super::images::Images;
 use super::json::{num, object, places};
 use super::paint::{self, Notes, Role, Source};
-use super::props::{Position, Transform, array, property};
+use super::props::{Position, Transform, array, fixed_property, property};
 use super::shapes::{self, Contour, Outline};
 use super::timeline::{Timeline, places_for, tolerance};
 use super::warnings::Warnings;
@@ -569,7 +569,7 @@ impl<'a> Converter<'a> {
                 ("ty", Value::from("rc")),
                 ("p", property(&half, places::LENGTH)),
                 ("s", property(&whole, places::LENGTH)),
-                ("r", object([("k", Value::from(0))])),
+                ("r", fixed_property(Value::from(0))),
             ])
         };
         let add = |name: &str, fill: Value, comp: &mut Comp| {
@@ -608,8 +608,8 @@ impl<'a> Converter<'a> {
             let [r, g, b, a] = [color.r, color.g, color.b, color.a].map(|c| f64::from(c) / 255.0);
             let fill = object([
                 ("ty", Value::from("fl")),
-                ("c", object([("k", array(&[r, g, b], places::COLOR))])),
-                ("o", object([("k", num(a * 100.0, places::PERCENT))])),
+                ("c", fixed_property(array(&[r, g, b], places::COLOR))),
+                ("o", fixed_property(num(a * 100.0, places::PERCENT))),
             ]);
             add("Background colour", fill, comp);
         }

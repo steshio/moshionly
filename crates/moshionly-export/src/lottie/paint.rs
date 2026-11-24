@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use super::fit::{Animated, Hints};
 use super::json::{num, object, places};
-use super::props::property;
+use super::props::{fixed_property, property};
 use super::timeline::{Timeline, places_for, tolerance};
 
 /// The stroke miter limit the renderer uses.
@@ -347,7 +347,7 @@ fn gradient(
         "g".into(),
         object([("p", Value::from(count)), ("k", property(&g, color_places))]),
     );
-    item.insert("o".into(), object([("k", Value::from(100))]));
+    item.insert("o".into(), fixed_property(Value::from(100)));
     item
 }
 

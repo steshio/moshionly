@@ -651,7 +651,7 @@ impl<'a> Converter<'a> {
                     "ks".into(),
                     object([(
                         "p",
-                        object([("k", super::props::array(&at, places::LENGTH))]),
+                        super::props::fixed_property(super::props::array(&at, places::LENGTH)),
                     )]),
                 );
                 layer.insert("ip".into(), num(letter.start, places::TIME));

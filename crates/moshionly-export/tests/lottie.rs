@@ -325,7 +325,7 @@ fn every_shape_and_paint_converts() {
     let kinds = |name: &str| -> String { layer(layers, name)["shapes"].to_string() };
     assert!(kinds("Rounded").contains(r#""ty":"rc""#));
     assert!(
-        kinds("Rounded").contains(r#""s":{"k":[192,112]}"#),
+        kinds("Rounded").contains(r#""s":{"a":0,"k":[192,112]}"#),
         "an inside stroke sits inside"
     );
     assert!(
@@ -794,4 +794,61 @@ fn every_shape_item_starts_with_its_kind() {
     for item in items {
         assert_eq!(key_position(item, "ty"), Some(0), "{item}");
     }
+}
+
+/// Every property in a part of the file: each object with a value `k`,
+/// except a gradient's colours, whose `k` is a property itself.
+fn properties<'a>(value: &'a Value, into: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("k") && !map.contains_key("p") {
+                into.push(value);
+            }
+            for child in map.values() {
+                properties(child, into);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                properties(item, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_property_says_whether_it_is_animated() {
+    // The Lottie specification's schema requires "a" on every property:
+    // 0 for a fixed value, 1 for keyframes. The demo has every kind of
+    // layer and paint; the shadow test adds effects and a clip.
+    let mut found = Vec::new();
+    let (demo, demo_export) = export(Settings::default());
+    properties(&demo, &mut found);
+    let nodes = r##",{"id":"card","parent":"board","index":"a0","type":"rect","name":"Card",
+            "width":200,"height":100,"fill":"#FFFFFF","blur":6,
+            "shadow":{"color":"#00000040","x":0,"y":16,"blur":40}}
+        ,{"id":"clip","parent":"board","index":"a1","type":"group","name":"Clip",
+            "x":300,"width":200,"height":100,"clip":true,"corner_radius":[20,0,0,0]}
+        ,{"id":"inside","parent":"clip","index":"a0","type":"ellipse","name":"Inside",
+            "width":300,"height":300,
+            "fill":{"type":"linear_gradient","start":[0,0],"end":[1,1],"stops":[
+                {"offset":0,"color":"#FF5A5F"},{"offset":1,"color":"#06D6A080"}]}}"##;
+    let settings = Settings::default().with_background(moshionly_export::Background::Over(
+        moshionly_core::Color::rgb(10, 20, 30),
+    ));
+    let (effects, _) = export_document(document(1000.0, nodes), settings);
+    properties(&effects, &mut found);
+    assert!(found.len() > 100, "{} properties", found.len());
+    for property in found {
+        let a = property["a"].as_i64();
+        assert!(a == Some(0) || a == Some(1), "{property}");
+        assert_eq!(
+            a == Some(1),
+            property["k"][0]["t"].is_number(),
+            "{property}"
+        );
+    }
+    // Saying so costs little.
+    assert!(demo_export.bytes < 200_000, "{} bytes", demo_export.bytes);
 }

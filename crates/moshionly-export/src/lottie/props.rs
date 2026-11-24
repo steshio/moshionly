@@ -6,12 +6,12 @@ use serde_json::{Map, Value};
 use super::fit::{Animated, Ease, Keyframe};
 use super::json::{num, object, places};
 
-/// A property as Lottie writes it: `{"k": value}` when fixed, or
+/// A property as Lottie writes it: `{"a": 0, "k": value}` when fixed, or
 /// `{"a": 1, "k": [keyframes]}`. One-component values are written as a
 /// plain number when fixed, as Lottie expects.
 pub(crate) fn property(animated: &Animated, places: i32) -> Value {
     match animated {
-        Animated::Static(value) => object([("k", fixed(value, places))]),
+        Animated::Static(value) => fixed_property(fixed(value, places)),
         Animated::Keyframes(keys) => {
             let frames = keys
                 .iter()
@@ -21,6 +21,12 @@ pub(crate) fn property(animated: &Animated, places: i32) -> Value {
             object([("a", Value::from(1)), ("k", Value::Array(frames))])
         }
     }
+}
+
+/// A property that keeps `value` the whole time. Players read `k` alone,
+/// but the Lottie specification's schema requires `"a": 0` with it.
+pub(crate) fn fixed_property(value: Value) -> Value {
+    object([("a", Value::from(0)), ("k", value)])
 }
 
 /// A fixed value: a number for one component, else an array.
@@ -204,7 +210,7 @@ impl Transform {
         map.insert("ty".into(), Value::from("tr"));
         self.write_into(&mut map, |_, _| true);
         if !map.contains_key("p") {
-            map.insert("p".into(), object([("k", array(&[0.0, 0.0], 0))]));
+            map.insert("p".into(), fixed_property(array(&[0.0, 0.0], 0)));
         }
         Value::Object(map)
     }
@@ -267,11 +273,11 @@ mod tests {
     fn fixed_and_keyframed_values() {
         assert_eq!(
             property(&Animated::Static(vec![12.5]), 3).to_string(),
-            r#"{"k":12.5}"#
+            r#"{"a":0,"k":12.5}"#
         );
         assert_eq!(
             property(&Animated::Static(vec![1.0, 2.0]), 3).to_string(),
-            r#"{"k":[1,2]}"#
+            r#"{"a":0,"k":[1,2]}"#
         );
         let mut animated = keys(&[(0.0, 0.0), (10.0, 100.0)]);
         if let Animated::Keyframes(keys) = &mut animated {
@@ -303,10 +309,13 @@ mod tests {
             scale: Animated::Static(vec![50.0]),
             ..Transform::default()
         };
-        assert_eq!(transform.to_json().to_string(), r#"{"s":{"k":[50,50]}}"#);
+        assert_eq!(
+            transform.to_json().to_string(),
+            r#"{"s":{"a":0,"k":[50,50]}}"#
+        );
         assert_eq!(
             Transform::default().to_group_item().to_string(),
-            r#"{"ty":"tr","a":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":0},"o":{"k":100},"p":{"k":[0,0]}}"#
+            r#"{"ty":"tr","a":{"a":0,"k":[0,0]},"s":{"a":0,"k":[100,100]},"r":{"a":0,"k":0},"o":{"a":0,"k":100},"p":{"a":0,"k":[0,0]}}"#
         );
     }
 }

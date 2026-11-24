@@ -26,7 +26,7 @@ use crate::error::ExportError;
 use super::fit::{Animated, Hints};
 use super::json::{num, object, places};
 use super::layers::{Comp, Converter, Parts};
-use super::props::{Position, Transform, map};
+use super::props::{Position, Transform, fixed_property, map};
 use super::shapes::{self, Contour, Outline};
 use super::timeline::{places_for, tolerance};
 
@@ -561,8 +561,8 @@ fn mask(name: &str, outline: &Outline) -> Value {
         ("mode", Value::from("a")),
         ("inv", Value::Bool(false)),
         ("pt", outline.path_property(0, places::LENGTH)),
-        ("o", object([("k", Value::from(100))])),
-        ("x", object([("k", Value::from(0))])),
+        ("o", fixed_property(Value::from(100))),
+        ("x", fixed_property(Value::from(0))),
     ])
 }
 

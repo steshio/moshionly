@@ -166,7 +166,9 @@ impl Outline {
             found
         };
         match &self.numbers {
-            Animated::Static(numbers) => object([("k", contour(numbers).to_json(places))]),
+            Animated::Static(numbers) => {
+                super::props::fixed_property(contour(numbers).to_json(places))
+            }
             Animated::Keyframes(keys) => {
                 let frames: Vec<Keyframe> = keys.to_vec();
                 let mut value = super::props::property(&self.numbers, places);

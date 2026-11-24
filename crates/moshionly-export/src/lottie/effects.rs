@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 use super::fit::Hints;
 use super::json::{object, places};
 use super::layers::Converter;
-use super::props::property;
+use super::props::{fixed_property, property};
 use super::timeline::{places_for, tolerance};
 
 /// Lottie's number for a Drop Shadow effect.
@@ -144,7 +144,7 @@ impl Converter<'_> {
                 tolerance::LENGTH,
                 places_for(tolerance::LENGTH),
             );
-            let fixed = |number: i64| object([("k", Value::from(number))]);
+            let fixed = |number: i64| fixed_property(Value::from(number));
             effects.push(effect(
                 GAUSSIAN_BLUR,
                 "Gaussian Blur",
