@@ -19,6 +19,7 @@ mod tool_bar;
 mod top_bar;
 
 use std::collections::{HashSet, VecDeque};
+use std::time::Duration;
 
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
 use moshionly_agent::import::PendingImport;
@@ -157,6 +158,10 @@ pub struct ShellOutput {
     pub close_window: bool,
 }
 
+/// How long quitting waits for work in the background to clean up after
+/// it was cancelled.
+const QUIT_PATIENCE: Duration = Duration::from_secs(2);
+
 /// A new document: one empty 1080 by 1080 artboard named "Scene 1".
 pub fn new_document() -> Document {
     let mut document = Document::new("Untitled");
@@ -251,6 +256,13 @@ impl Shell {
             import_choice: ImportChoice::NewArtboards,
             export: None,
         }
+    }
+
+    /// Stops what runs in the background before the app quits: the work
+    /// agents asked for is cancelled and gets a moment to clean up, so no
+    /// half-written file is left behind. The app calls this as it exits.
+    pub fn prepare_to_quit(&mut self) {
+        self.shut_down_agent_server();
     }
 
     /// Tells the shell that its top bar doubles as the window's title bar,

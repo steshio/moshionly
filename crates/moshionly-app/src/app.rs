@@ -155,6 +155,12 @@ impl eframe::App for MoshionlyApp {
         self.shell.settings().save(storage);
     }
 
+    /// `main` ends the process as soon as the window has closed, so what
+    /// runs in the background is stopped and cleaned up here.
+    fn on_exit(&mut self) {
+        self.shell.prepare_to_quit();
+    }
+
     /// The shell keeps its own state; egui's memory of open popups and
     /// scroll positions is better started fresh.
     fn persist_egui_memory(&self) -> bool {

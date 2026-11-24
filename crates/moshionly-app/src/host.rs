@@ -24,14 +24,32 @@ use moshionly_render::{FontLibrary, RenderOptions, Renderer};
 /// its stroke and shadow show.
 pub const LAYER_MARGIN: f64 = 16.0;
 
+/// What a tool hears when its work was cancelled, for example because the
+/// person stopped the server agents reach the app through.
+const CANCELLED: &str = "Moshionly stopped this work: agents were disconnected";
+
 /// Everything the app can do for the tools, drawn with `renderer`: the
 /// screenshots, the fonts, the exports and text measured with real fonts.
 pub fn app_host(renderer: &Renderer) -> Host {
+    cancellable_app_host(renderer, &CancelToken::new())
+}
+
+/// Like [`app_host`], with work that ends when `cancel` is cancelled: a
+/// running export stops and leaves nothing behind, and no new screenshot
+/// or export starts. The MCP server's tools use it, so stopping the server
+/// stops what agents asked for.
+pub fn cancellable_app_host(renderer: &Renderer, cancel: &CancelToken) -> Host {
     let fonts = renderer.fonts().clone();
     Host::new()
-        .with_frames(Arc::new(RendererFrames::new(renderer.clone())))
+        .with_frames(Arc::new(
+            RendererFrames::new(renderer.clone()).with_cancel(cancel.clone()),
+        ))
         .with_fonts(Arc::new(LibraryFonts::new(fonts.clone())))
-        .with_exporter(Arc::new(AppExporter::new().with_renderer(renderer.clone())))
+        .with_exporter(Arc::new(
+            AppExporter::new()
+                .with_renderer(renderer.clone())
+                .with_cancel(cancel.clone()),
+        ))
         .with_measurer(Arc::new(fonts))
 }
 
@@ -43,17 +61,31 @@ pub fn app_host(renderer: &Renderer) -> Host {
 #[derive(Clone)]
 pub struct RendererFrames {
     renderer: Renderer,
+    cancel: CancelToken,
 }
 
 impl RendererFrames {
     /// Screenshots drawn with `renderer`.
     pub fn new(renderer: Renderer) -> Self {
-        Self { renderer }
+        Self {
+            renderer,
+            cancel: CancelToken::new(),
+        }
+    }
+
+    /// The same screenshots, refused once `cancel` is cancelled. A tool
+    /// that takes several stops between them.
+    pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
+        self.cancel = cancel;
+        self
     }
 }
 
 impl FrameSource for RendererFrames {
     fn render(&self, request: &FrameRequest<'_>) -> Result<Frame, HostError> {
+        if self.cancel.is_cancelled() {
+            return Err(HostError::Failed(CANCELLED.into()));
+        }
         let fonts = self.renderer.fonts();
         let scene = match request.time_ms {
             Some(time) => evaluate(request.document, request.artboard, time, fonts),
@@ -156,6 +188,7 @@ impl FontSource for LibraryFonts {
 pub struct AppExporter {
     renderer: Option<Renderer>,
     ffmpeg: Option<Ffmpeg>,
+    cancel: CancelToken,
 }
 
 impl AppExporter {
@@ -175,6 +208,13 @@ impl AppExporter {
     /// The same exporter, writing WebM and ProRes with `ffmpeg`.
     pub fn with_ffmpeg(mut self, ffmpeg: Ffmpeg) -> Self {
         self.ffmpeg = Some(ffmpeg);
+        self
+    }
+
+    /// The same exporter, whose exports stop, leaving nothing behind, once
+    /// `cancel` is cancelled.
+    pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
+        self.cancel = cancel;
         self
     }
 }
@@ -222,7 +262,7 @@ impl Exporter for AppExporter {
                         frames_total: saturate(done.frames_total),
                     });
                 },
-                &CancelToken::new(),
+                &self.cancel,
             )
             .map_err(host_error)?;
         Ok(Exported {
@@ -258,6 +298,7 @@ fn host_error(error: ExportError) -> HostError {
         ExportError::FfmpegMissing { .. } | ExportError::Settings(_) => {
             HostError::Unsupported(error.to_string())
         }
+        ExportError::Cancelled => HostError::Failed(CANCELLED.into()),
         other => HostError::Failed(other.to_string()),
     }
 }
@@ -450,6 +491,45 @@ mod tests {
         let answer: Value = serde_json::from_str(&output.joined_text()).unwrap();
         let path = answer["path"].as_str().expect("the export says where");
         assert!(std::fs::read(path).unwrap().starts_with(b"\x89PNG"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn once_cancelled_the_host_starts_no_export_or_screenshot() {
+        let dir = std::env::temp_dir().join(format!(
+            "moshionly-app-host-cancel-{}-{}",
+            std::process::id(),
+            NodeId::generate()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = SessionHandle::from_document(demo());
+        session.write(|s| s.set_path(Some(dir.join("demo.moshi"))));
+        let cancel = CancelToken::new();
+        let tools = Tools::new(session, cancellable_app_host(&renderer(), &cancel));
+        cancel.cancel();
+
+        let shot = tools.call("screenshot", json!({ "artboard": "scene" }));
+        assert!(shot.is_error);
+        assert!(
+            shot.joined_text().contains("stopped"),
+            "{}",
+            shot.joined_text()
+        );
+
+        let output = tools.call(
+            "export",
+            json!({ "artboard": "scene", "format": "mp4", "scale": 2 }),
+        );
+        assert!(output.is_error);
+        assert!(
+            output.joined_text().contains("stopped"),
+            "{}",
+            output.joined_text()
+        );
+        let left: Vec<_> = std::fs::read_dir(dir.join("exports"))
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "nothing is left behind: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

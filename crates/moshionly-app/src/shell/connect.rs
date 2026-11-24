@@ -5,14 +5,16 @@
 use egui::{Context, Frame, Margin, RichText, ScrollArea, Ui, UserAttentionType, ViewportCommand};
 use moshionly_agent::Tools;
 use moshionly_agent::import::{EnvelopeError, FORMAT, PendingImport, read_envelope};
+use moshionly_export::CancelToken;
 
-use super::Shell;
+use super::{QUIT_PATIENCE, Shell};
 use crate::{
     connect::{
         AgentServer, ServerStatus,
         clients::{client_setups, stdio_command},
         import::{ImportChoice, contents, import_target, is_possible, origin, suggested_choice},
     },
+    host::cancellable_app_host,
     theme::{Theme, corner, icons},
     widgets::{ButtonKind, IconButton, ModalFrame, TextButton, Toast, modal_footer},
 };
@@ -56,13 +58,26 @@ impl Shell {
         self.restart_agent_server();
     }
 
+    /// Starts the server afresh, or stops it when agents are not allowed.
+    /// Neither waits for what agents are running: that is cancelled.
     fn restart_agent_server(&mut self) {
-        self.server.stop();
-        if let Some(port) = self.agent_port
-            && self.settings.agents.serve
-        {
-            self.server = AgentServer::start(self.tools.clone(), port);
+        match self.agent_port.filter(|_| self.settings.agents.serve) {
+            Some(port) => {
+                // The server's own tools, so that stopping it cancels what
+                // agents started and leaves the chat's work alone.
+                let cancel = CancelToken::new();
+                let host = cancellable_app_host(self.editor.renderer(), &cancel);
+                let tools = Tools::new(self.tools.session().clone(), host);
+                self.server.restart(tools, port, cancel);
+            }
+            None => self.server.stop(),
         }
+    }
+
+    /// Stops the server before the app quits, and gives what agents were
+    /// running a moment to clean up after being cancelled.
+    pub(super) fn shut_down_agent_server(&mut self) {
+        self.server.shut_down(QUIT_PATIENCE);
     }
 
     /// The MCP server and whether agents can connect.
