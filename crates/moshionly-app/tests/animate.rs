@@ -288,7 +288,7 @@ fn layer_commands_work_on_the_layer_once_the_person_turns_to_it() {
     let (dot, dotin) = (NodeId::from("dot"), NodeId::from("dotin"));
     let undo = |harness: &Harness<'_, Shell>| harness.state().editor().undo_label();
 
-    // In the Animate tab, Delete works on the selected action.
+    // In the Animate tab, Duplicate works on the selected action.
     select_action(&mut harness, &dotin);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
     harness.run();
@@ -347,6 +347,65 @@ fn layer_commands_work_on_the_layer_once_the_person_turns_to_it() {
     harness.run();
     assert_eq!(undo(&harness).as_deref(), Some("Undo Delete layer"));
     assert!(!harness.state().editor().document().contains(&dot));
+}
+
+#[test]
+fn a_folder_header_and_delete_take_the_folder_away() {
+    let mut harness = demo();
+    // The dot's pop and the count, grouped from the timeline's selection.
+    // A folder is listed first, so it is in view.
+    let (pop, count) = (NodeId::from("dotin"), NodeId::from("count"));
+    select_action(&mut harness, &pop);
+    let at = bar_center(&harness, &count);
+    harness.hover_at(at);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::SHIFT,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run();
+    assert_eq!(
+        harness.state().editor().actions(),
+        [pop.clone(), count.clone()]
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    harness.run();
+    let folder = harness
+        .state()
+        .editor()
+        .document()
+        .parent_of(&pop)
+        .unwrap()
+        .id
+        .clone();
+
+    // A click on the folder's header selects it, with what is in it.
+    harness.get_by_label("Folder 1").click();
+    harness.run();
+    assert_eq!(
+        harness.state().editor().actions(),
+        [folder.clone(), count.clone(), pop.clone()]
+    );
+    assert_eq!(harness.state().inspector_tab(), InspectorTab::Animate);
+    harness.key_press(Key::Backspace);
+    harness.run();
+    let document = harness.state().editor().document();
+    for gone in [&folder, &pop, &count] {
+        assert!(!document.contains(gone), "{gone}");
+    }
+    for layer in ["dot", "raised"] {
+        assert!(document.contains(&NodeId::from(layer)), "{layer}");
+    }
+    assert!(harness.query_by_label("Folder 1").is_none());
 }
 
 #[test]

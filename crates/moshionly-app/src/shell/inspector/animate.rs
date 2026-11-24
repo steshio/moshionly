@@ -14,7 +14,7 @@ use moshionly_core::{Node, NodeId, NodeType};
 use super::{Bind, action};
 use crate::{
     editor::{
-        actions::{MenuSection, actions_of, menu_for},
+        actions::{MenuSection, actions_of, leaf_actions, menu_for},
         describe::{display_name, type_label},
         inspect::Inspected,
         timeline::action_icon,
@@ -89,14 +89,34 @@ pub(super) fn animate_tab(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspecte
     }
 
     let selected: Vec<NodeId> = bind.editor.actions().to_vec();
-    match selected.as_slice() {
-        [] => {}
-        [one] => {
-            if let Some(node) = bind.editor.document().get(one).cloned() {
+    // A folder chosen on the timeline comes first, then what is in it.
+    let folder = selected.split_first().and_then(|(first, rest)| {
+        let folder = document.get(first)?;
+        let inside = rest
+            .iter()
+            .all(|id| document.ancestors(id).any(|above| above.id == *first));
+        (folder.node_type() == NodeType::AnimationGroup && inside).then_some(folder)
+    });
+    match (folder, selected.as_slice()) {
+        (_, []) => {}
+        (Some(folder), _) => several_actions(ui, bind, &display_name(folder)),
+        (None, [one]) => {
+            if let Some(node) = document.get(one).cloned() {
                 action::action_settings(ui, bind, &node);
             }
         }
-        several => several_actions(ui, bind, several.len()),
+        (None, _) => {
+            let count = leaf_actions(&document, &selected).len();
+            several_actions(ui, bind, &actions_title(count));
+        }
+    }
+}
+
+/// The heading of several actions: "2 actions".
+fn actions_title(count: usize) -> String {
+    match count {
+        1 => "1 action".to_owned(),
+        count => format!("{count} actions"),
     }
 }
 
@@ -216,14 +236,14 @@ fn action_list(
     }
 }
 
-/// What several selected actions can do together.
-fn several_actions(ui: &mut Ui, bind: &mut Bind<'_>, count: usize) {
+/// What several selected actions, or a folder, can do together, under the
+/// heading `title`.
+fn several_actions(ui: &mut Ui, bind: &mut Bind<'_>, title: &str) {
     let theme = Theme::of(ui);
     divider(ui);
-    let title = format!("{count} actions");
     let mut duplicate = false;
     let mut delete = false;
-    section_header(ui, &title, None, |ui| {
+    section_header(ui, title, None, |ui| {
         delete = ui
             .add(IconButton::new(icons::TRASH).tooltip("Delete actions"))
             .clicked();

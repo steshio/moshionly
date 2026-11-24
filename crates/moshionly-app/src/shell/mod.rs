@@ -40,7 +40,7 @@ use crate::{
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{
         Editor,
-        actions::ActionError,
+        actions::{ActionError, targets_of, with_emptied_folders},
         pen::Pen,
         playback::{Playback, step_frames},
         text::TextEditing,
@@ -643,16 +643,16 @@ impl Shell {
         for id in &selection {
             self.tree.reveal(&document, id);
         }
-        // Actions stay selected only while the layers they animate are.
+        // Actions stay selected only while the layers they animate are; a
+        // folder while a layer its actions animate is.
         let kept: Vec<NodeId> = self
             .editor
             .actions()
             .iter()
             .filter(|action| {
-                document
-                    .get(action)
-                    .and_then(|node| node.target())
-                    .is_some_and(|target| selection.contains(target))
+                targets_of(&document, std::slice::from_ref(action))
+                    .iter()
+                    .any(|target| selection.contains(target))
             })
             .cloned()
             .collect();
@@ -680,11 +680,19 @@ impl Shell {
             .as_ref()
             .and_then(|id| moshionly_core::eval::duration_of(&document, id))
             .unwrap_or(0.0);
-        let selected_layer = self
+        // A selected folder's row is tinted, or else the selected layer's.
+        let selected_folder = self
             .editor
-            .selection
-            .single()
-            .map(|id| Key::new(id.as_str()));
+            .actions()
+            .first()
+            .map(|id| Key::new(id.as_str()))
+            .filter(|key| is_folder(&document, key));
+        let selected_layer = selected_folder.or_else(|| {
+            self.editor
+                .selection
+                .single()
+                .map(|id| Key::new(id.as_str()))
+        });
         let selected_bars: Vec<Key> = self
             .editor
             .actions()
@@ -737,11 +745,9 @@ impl Shell {
             TimelineEvent::GroupClicked { key } => {
                 let document = std::sync::Arc::clone(self.editor.document());
                 if is_folder(&document, &key) {
-                    // A folder stands for the actions in it.
-                    let inside = document
-                        .walk(&node(&key), moshionly_core::Family::Animation)
-                        .map(|(_, action)| action.id.clone());
-                    self.editor.set_actions(inside);
+                    // The folder itself, so that Delete, Duplicate and
+                    // Ungroup work on it whole, with the actions in it.
+                    self.editor.select_folder(&node(&key));
                     self.editor.select_targets();
                     self.inspector.tab = InspectorTab::Animate;
                 } else {
@@ -1089,13 +1095,21 @@ impl Shell {
         }
     }
 
-    /// Removes the selected layers.
+    /// Removes the selected layers, with their actions and the timeline
+    /// folders that leaves empty.
     pub(super) fn delete_selection(&mut self) {
         let ids = self.editor.selection.ids().to_vec();
         if ids.is_empty() {
             return;
         }
-        let edits = build::remove(self.editor.document(), &ids);
+        let document = std::sync::Arc::clone(self.editor.document());
+        let edits = match with_emptied_folders(&document, build::remove(&document, &ids)) {
+            Ok(edits) => edits,
+            Err(error) => {
+                self.toasts.push(Toast::error(error.problem.to_string()));
+                return;
+            }
+        };
         let summary = if ids.len() == 1 {
             "Delete layer"
         } else {
@@ -1323,6 +1337,54 @@ mod tests {
         shell.action_command(BarCommand::Delete);
         assert!(!shell.editor().document().contains(&NodeId::from("dotin")));
         assert!(shell.editor().document().contains(&NodeId::from("dot")));
+    }
+
+    /// The demo with the card's fade and slide in a folder. Returns the
+    /// folder.
+    fn card_folder(shell: &mut Shell) -> NodeId {
+        let editor = shell.editor_mut();
+        editor.set_actions([NodeId::from("cardfade"), NodeId::from("cardslide")]);
+        let folder = editor.group_actions().unwrap();
+        editor.set_actions([]);
+        folder
+    }
+
+    #[test]
+    fn a_folder_clicked_on_the_timeline_is_deleted_whole() {
+        let mut shell = demo_shell();
+        let folder = card_folder(&mut shell);
+        shell.timeline_event(TimelineEvent::GroupClicked {
+            key: Key::new(folder.as_str()),
+        });
+        assert_eq!(shell.inspector_tab(), InspectorTab::Animate);
+        assert_eq!(shell.editor().selection.ids(), [NodeId::from("card")]);
+        // The folder stays selected with its layer.
+        shell.follow_selection();
+        assert_eq!(shell.editor().actions().len(), 3);
+        assert_eq!(shell.editor().actions()[0], folder);
+        assert!(shell.run(&Context::default(), CommandId::Delete));
+        let document = shell.editor().document();
+        for gone in [folder.as_str(), "cardfade", "cardslide"] {
+            assert!(!document.contains(&NodeId::from(gone)), "{gone}");
+        }
+        assert!(document.contains(&NodeId::from("card")), "not the layer");
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Delete folder")
+        );
+    }
+
+    #[test]
+    fn deleting_a_layer_takes_the_folders_it_empties() {
+        let mut shell = demo_shell();
+        let folder = card_folder(&mut shell);
+        shell.editor_mut().selection.select(NodeId::from("card"));
+        shell.delete_selection();
+        let document = shell.editor().document();
+        assert!(!document.contains(&NodeId::from("card")));
+        assert!(!document.contains(&folder));
+        shell.editor_mut().undo().unwrap();
+        assert!(shell.editor().document().contains(&folder));
     }
 
     #[test]

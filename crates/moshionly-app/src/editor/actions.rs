@@ -311,6 +311,73 @@ pub fn folders_of(document: &Document, ids: &[NodeId]) -> Vec<NodeId> {
     folders
 }
 
+/// Whether `id` is a timeline folder (`animation_group`).
+fn is_folder_id(document: &Document, id: &NodeId) -> bool {
+    document
+        .get(id)
+        .is_some_and(|node| node.node_type() == NodeType::AnimationGroup)
+}
+
+/// The actions among `ids`, with the folders among them standing for the
+/// actions in them, each once. Folders themselves are left out.
+pub fn leaf_actions(document: &Document, ids: &[NodeId]) -> Vec<NodeId> {
+    let mut leaves: Vec<NodeId> = Vec::new();
+    let mut push = |node: &Node| {
+        if node.node_type() != NodeType::AnimationGroup && !leaves.contains(&node.id) {
+            leaves.push(node.id.clone());
+        }
+    };
+    for id in ids {
+        let Some(node) = document.get(id).filter(|node| node.is_animation()) else {
+            continue;
+        };
+        push(node);
+        for (_, inner) in document.walk(id, Family::Animation) {
+            push(inner);
+        }
+    }
+    leaves
+}
+
+/// The layers the actions among `ids` animate, each once; a folder stands
+/// for the actions in it.
+pub fn targets_of(document: &Document, ids: &[NodeId]) -> Vec<NodeId> {
+    let mut targets: Vec<NodeId> = Vec::new();
+    for action in leaf_actions(document, ids) {
+        if let Some(target) = document.get(&action).and_then(Node::target)
+            && !targets.contains(target)
+        {
+            targets.push(target.clone());
+        }
+    }
+    targets
+}
+
+/// `edits`, followed by the removal of the folders they empty: those that
+/// held actions before and hold none after. A folder with nothing in it
+/// has no bars to click on the timeline, so it goes with its last action,
+/// in the same undo step.
+pub fn with_emptied_folders(document: &Document, edits: Vec<Edit>) -> Result<Vec<Edit>, EditError> {
+    let mut after = document.clone();
+    after.apply(&edits)?;
+    let holds_actions = |document: &Document, folder: &NodeId| {
+        !leaf_actions(document, std::slice::from_ref(folder)).is_empty()
+    };
+    let emptied: Vec<NodeId> = after
+        .artboards()
+        .iter()
+        .flat_map(|artboard| after.walk(artboard, Family::Animation))
+        .map(|(_, node)| &node.id)
+        .filter(|id| is_folder_id(&after, id))
+        .filter(|id| holds_actions(document, id) && !holds_actions(&after, id))
+        .cloned()
+        .collect();
+    let mut edits = edits;
+    // A folder inside another emptied one goes with it.
+    edits.extend(build::remove(&after, &emptied));
+    Ok(edits)
+}
+
 /// Edits that dissolve the folders among or around `ids`, one after the
 /// other. Returns the edits with the actions that were in them.
 pub fn ungroup_edits(
@@ -365,7 +432,10 @@ impl Editor {
         &self.actions
     }
 
-    /// Selects exactly these actions. Ids that are not actions are left out.
+    /// Selects exactly these actions. Ids that are not actions are left out,
+    /// and so is a folder without every action in it: a folder is selected
+    /// as a whole or not at all, so that Delete never takes away an action
+    /// the person let go of.
     pub fn set_actions(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         let document = std::sync::Arc::clone(&self.document);
         self.actions.clear();
@@ -375,6 +445,18 @@ impl Editor {
                 self.actions.push(id);
             }
         }
+        let partial: Vec<NodeId> = self
+            .actions
+            .iter()
+            .filter(|id| is_folder_id(&document, id))
+            .filter(|folder| {
+                leaf_actions(&document, std::slice::from_ref(*folder))
+                    .iter()
+                    .any(|inside| !self.actions.contains(inside))
+            })
+            .cloned()
+            .collect();
+        self.actions.retain(|id| !partial.contains(id));
     }
 
     /// The one selected action, when exactly one is selected.
@@ -385,13 +467,22 @@ impl Editor {
         }
     }
 
+    /// Selects a timeline folder: the folder itself, so that commands work
+    /// on it as a whole, and the actions in it.
+    pub fn select_folder(&mut self, folder: &NodeId) {
+        let document = std::sync::Arc::clone(&self.document);
+        if !is_folder_id(&document, folder) {
+            return;
+        }
+        let inside = document
+            .walk(folder, Family::Animation)
+            .map(|(_, node)| node.id.clone());
+        self.set_actions(std::iter::once(folder.clone()).chain(inside));
+    }
+
     /// Selects the layers the selected actions target, each once.
     pub fn select_targets(&mut self) {
-        let targets: Vec<NodeId> = self
-            .actions
-            .iter()
-            .filter_map(|id| self.document.get(id)?.target().cloned())
-            .collect();
+        let targets = targets_of(&self.document, &self.actions);
         if !targets.is_empty() {
             self.selection.set(targets);
         }
@@ -416,14 +507,25 @@ impl Editor {
         Ok(ids)
     }
 
-    /// Removes the selected actions, as one undo step.
+    /// Removes the selected actions, as one undo step. A selected folder
+    /// goes with everything in it, and a folder left empty goes too.
     pub fn delete_actions(&mut self) -> Result<bool, ActionError> {
         let ids = std::mem::take(&mut self.actions);
-        let edits = build::remove(&self.document, &ids);
-        let summary = if ids.len() == 1 {
-            "Delete action"
-        } else {
-            "Delete actions"
+        let document = std::sync::Arc::clone(&self.document);
+        let edits = with_emptied_folders(&document, build::remove(&document, &ids))?;
+        // What is selected besides what is in a selected folder.
+        let outermost: Vec<&NodeId> = ids
+            .iter()
+            .filter(|id| {
+                !document
+                    .ancestors(id)
+                    .any(|ancestor| ids.contains(&ancestor.id))
+            })
+            .collect();
+        let summary = match outermost.as_slice() {
+            [one] if is_folder_id(&document, one) => "Delete folder",
+            [_] => "Delete action",
+            _ => "Delete actions",
         };
         Ok(self.apply(summary, &edits)?)
     }
@@ -751,6 +853,125 @@ mod tests {
         assert!(!editor.document().contains(&fade));
         assert!(editor.actions().is_empty());
         assert_eq!(editor.undo_label().as_deref(), Some("Undo Delete actions"));
+    }
+
+    /// The editor with two fades on the loose rect, grouped in a folder.
+    fn grouped() -> (Editor, NodeId, [NodeId; 2]) {
+        let mut editor = editor();
+        editor.selection.select(id("loose"));
+        let fade = editor.add_actions(NodeType::FadeIn, 0.0).unwrap()[0].clone();
+        let copy = editor.duplicate_actions().unwrap()[0].clone();
+        editor.set_actions([fade.clone(), copy.clone()]);
+        let folder = editor.group_actions().unwrap();
+        (editor, folder, [fade, copy])
+    }
+
+    #[test]
+    fn deleting_the_last_actions_of_a_folder_takes_the_folder_too() {
+        let (mut editor, folder, [fade, copy]) = grouped();
+        // One of two: the folder stays.
+        editor.set_actions([fade.clone()]);
+        editor.delete_actions().unwrap();
+        assert!(editor.document().contains(&folder));
+        editor.undo().unwrap();
+        // Both: it goes, in the same step.
+        editor.set_actions([fade.clone(), copy.clone()]);
+        editor.delete_actions().unwrap();
+        assert!(!editor.document().contains(&folder));
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Delete actions"));
+        editor.undo().unwrap();
+        for back in [&folder, &fade, &copy] {
+            assert!(editor.document().contains(back), "{back}");
+        }
+        assert_eq!(editor.document().parent_of(&fade).unwrap().id, folder);
+    }
+
+    #[test]
+    fn a_selected_folder_is_deleted_and_copied_whole() {
+        let (mut editor, folder, [fade, copy]) = grouped();
+        editor.select_folder(&folder);
+        assert_eq!(
+            editor.actions(),
+            [folder.clone(), fade.clone(), copy.clone()]
+        );
+        // Its layer, through its actions.
+        editor.selection.clear();
+        editor.select_targets();
+        assert_eq!(editor.selection.ids(), [id("loose")]);
+
+        let copies = editor.duplicate_actions().unwrap();
+        assert_eq!(copies.len(), 3, "the folder and both actions");
+        let new_folder = copies[0].clone();
+        let node = editor.document().get(&new_folder).unwrap();
+        assert_eq!(node.node_type(), NodeType::AnimationGroup);
+        assert_eq!(
+            leaf_actions(editor.document(), std::slice::from_ref(&new_folder)).len(),
+            2
+        );
+        editor.undo().unwrap();
+
+        editor.select_folder(&folder);
+        editor.delete_actions().unwrap();
+        for gone in [&folder, &fade, &copy] {
+            assert!(!editor.document().contains(gone), "{gone}");
+        }
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Delete folder"));
+        // Not a folder: nothing is selected.
+        editor.undo().unwrap();
+        editor.set_actions([]);
+        editor.select_folder(&fade);
+        assert!(editor.actions().is_empty());
+    }
+
+    #[test]
+    fn a_folder_stays_selected_only_with_everything_in_it() {
+        let (mut editor, folder, [fade, copy]) = grouped();
+        editor.select_folder(&folder);
+        // Shift-clicking one of its actions away lets go of the folder,
+        // so Delete takes only what is still selected.
+        editor.set_actions([folder.clone(), copy.clone()]);
+        assert_eq!(editor.actions(), std::slice::from_ref(&copy));
+        editor.delete_actions().unwrap();
+        assert!(editor.document().contains(&fade));
+        assert!(editor.document().contains(&folder));
+        assert!(!editor.document().contains(&copy));
+    }
+
+    #[test]
+    fn an_empty_folder_can_be_selected_ungrouped_and_deleted() {
+        let mut editor = editor();
+        // As a file or an agent might leave one.
+        let folder = Node::new(moshionly_core::model::AnimationGroup {
+            name: "Empty".to_owned(),
+        })
+        .with_parent(id("ab"))
+        .with_index(moshionly_core::index::keys_between(None, None, 1).unwrap()[0].clone());
+        let folder_id = folder.id.clone();
+        editor.apply("Add folder", &[Edit::add(folder)]).unwrap();
+        editor.select_folder(&folder_id);
+        assert_eq!(editor.actions(), std::slice::from_ref(&folder_id));
+        assert!(editor.ungroup_actions().unwrap());
+        assert!(!editor.document().contains(&folder_id));
+        assert!(editor.actions().is_empty());
+        editor.undo().unwrap();
+        editor.select_folder(&folder_id);
+        assert!(editor.delete_actions().unwrap());
+        assert!(!editor.document().contains(&folder_id));
+    }
+
+    #[test]
+    fn emptied_folders_are_found_inside_others() {
+        let (mut editor, folder, [fade, copy]) = grouped();
+        // Put the folder in another one.
+        let (outer, edits) =
+            build::group_animations(editor.document(), std::slice::from_ref(&folder), "Outer")
+                .unwrap();
+        editor.apply("Nest", &edits).unwrap();
+        let removed = build::remove(editor.document(), &[fade, copy]);
+        let edits = with_emptied_folders(editor.document(), removed).unwrap();
+        editor.apply("Delete", &edits).unwrap();
+        assert!(!editor.document().contains(&folder));
+        assert!(!editor.document().contains(&outer));
     }
 
     #[test]
