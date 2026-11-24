@@ -1162,3 +1162,35 @@ fn cancelling_stops_in_the_middle_of_a_long_text() {
     assert!(took < Duration::from_secs(2), "took {took:?} to stop");
     assert!(!destination.exists());
 }
+
+#[test]
+fn a_long_count_shows_progress_and_can_be_cancelled() {
+    // A counter shows a new text for every value; a long count has
+    // thousands, converted one after another within one layer.
+    let nodes = r##",{"id":"total","parent":"board","index":"a0","type":"text","name":"Total",
+            "content":"0","font_size":40,"fill":"#111111"}
+        ,{"id":"count","parent":"board","index":"a1","type":"counter","target":"total",
+            "start":0,"end":60000,"easing":{"type":"linear"},"from":0,"to":100000}"##;
+    let document = document(60_000.0, nodes);
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("animation.json");
+    let artboard = document.artboards()[0].clone();
+    let job = ExportJob::new(document, artboard, Format::Lottie, &destination).with_renderer(
+        Renderer::new(FontLibrary::bundled(), AssetLoader::default()),
+    );
+    let token = CancelToken::new();
+    let mut seen = Vec::new();
+    let result = job.run(
+        |progress| {
+            if progress.phase == Phase::Rendering && progress.frames_done > 0 {
+                seen.push(progress.frames_done);
+                token.cancel();
+            }
+        },
+        &token,
+    );
+    assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
+    // The one layer reported progress before it was done, and stopped.
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(seen[0] < 1800, "{seen:?}");
+}

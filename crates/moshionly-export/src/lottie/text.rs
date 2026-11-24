@@ -643,7 +643,8 @@ impl<'a> Converter<'a> {
             .fold(PAD, f64::max);
         let mut letters: HashMap<String, (String, [f64; 2])> = HashMap::new();
         let mut placed: Vec<Placed> = Vec::new();
-        for state in states {
+        for (done, state) in states.iter().enumerate() {
+            self.step(done as f64 / states.len() as f64)?;
             let frame = state.frame;
             let (width, height) = self.size(id, frame);
             let stored = Affine::layer(
