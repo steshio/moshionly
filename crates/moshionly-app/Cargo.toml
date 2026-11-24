@@ -32,6 +32,7 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 moshionly-agent = { version = "0.1.0", path = "../moshionly-agent" }
 moshionly-ai = { version = "0.1.0", path = "../moshionly-ai" }
 moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
+moshionly-export = { version = "0.1.0", path = "../moshionly-export" }
 moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
 rfd = "0.18"
 serde = { version = "1", features = ["derive"] }

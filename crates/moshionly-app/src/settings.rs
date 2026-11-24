@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    export::ExportChoices,
     shell::PanelSizes,
     theme::{Theme, ThemeMode},
 };
@@ -25,6 +26,26 @@ pub struct Settings {
     pub panels: PanelSizes,
     /// Projects opened or saved lately, the most recent first.
     pub recent: Vec<PathBuf>,
+    /// Whether agents outside the app may connect.
+    pub agents: AgentSettings,
+    /// The Export dialog's last choices.
+    pub export: ExportChoices,
+}
+
+/// Whether agents outside the app (Claude Code, Cursor, the Figma plugin)
+/// may reach the open document over MCP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSettings {
+    /// Run the MCP server on this machine's loopback address while the app
+    /// is open. On unless turned off.
+    pub serve: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { serve: true }
+    }
 }
 
 /// How many recent projects are remembered.
@@ -101,6 +122,11 @@ mod tests {
                 chat_open: true,
             },
             recent: vec![PathBuf::from("/projects/teaser.moshi")],
+            agents: AgentSettings { serve: false },
+            export: ExportChoices {
+                scale: 2.0,
+                ..ExportChoices::default()
+            },
         };
         settings.save(&mut storage);
         assert_eq!(Settings::load(Some(&storage)), settings);
@@ -143,6 +169,10 @@ mod tests {
         let settings = Settings::load(Some(&storage));
         assert_eq!(settings.theme, ThemeMode::Light);
         assert_eq!(settings.panels, PanelSizes::default());
+        assert!(
+            settings.agents.serve,
+            "agents may connect unless turned off"
+        );
 
         storage.set_string(
             STORAGE_KEY,

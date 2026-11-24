@@ -102,6 +102,12 @@ impl MoshionlyApp {
         if let Some(project) = project {
             shell.open_path(&project);
         }
+        // Agents outside the window, and the Figma plugin, reach the open
+        // document here unless the settings turn it off.
+        shell.serve_agents(crate::connect::DEFAULT_PORT);
+        // The AI chat, with the person's AI settings and keys in the
+        // system's keychain. Nothing is checked until the panel is shown.
+        shell.set_chat(crate::chat::Chat::new());
         Self {
             shell,
             title: APP_NAME.to_owned(),
@@ -115,7 +121,6 @@ impl MoshionlyApp {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
         for id in output.commands {
-            // TODO: export is connected by the export task.
             self.shell.toast(Toast::info(format!(
                 "\"{}\" is not available yet",
                 id.name().trim_end_matches('…')
@@ -148,6 +153,12 @@ impl eframe::App for MoshionlyApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.shell.settings().save(storage);
+    }
+
+    /// `main` ends the process as soon as the window has closed, so what
+    /// runs in the background is stopped and cleaned up here.
+    fn on_exit(&mut self) {
+        self.shell.prepare_to_quit();
     }
 
     /// The shell keeps its own state; egui's memory of open popups and

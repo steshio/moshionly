@@ -31,6 +31,10 @@ pub struct TopBar<'a> {
     pub playing: bool,
     /// Whether the chat panel is open.
     pub chat_open: bool,
+    /// Whether agents can connect, as a light on the agents button.
+    pub agents: super::AgentLight,
+    /// What the light means, for the agents button's tooltip.
+    pub agents_status: &'a str,
     /// The theme choice, for the check marks in the menu.
     pub theme_mode: ThemeMode,
     /// Which commands are enabled.
@@ -140,6 +144,9 @@ pub fn top_bar(ui: &mut Ui, rect: Rect, bar: &TopBar<'_>) -> TopBarOutput {
     );
     run(CommandId::ToggleChat, chat.clicked(), &mut out);
 
+    let agents = agents_button(&mut right, bar.agents, bar.agents_status);
+    run(CommandId::ConnectAgent, agents.clicked(), &mut out);
+
     let export = right.add_enabled(
         bar.commands.is_enabled(CommandId::Export),
         TextButton::primary("Export")
@@ -180,6 +187,29 @@ pub fn top_bar(ui: &mut Ui, rect: Rect, bar: &TopBar<'_>) -> TopBarOutput {
         });
 
     out
+}
+
+/// The button that opens "Connect an agent", with a light that says
+/// whether agents can connect.
+fn agents_button(ui: &mut Ui, light: super::AgentLight, status: &str) -> Response {
+    let theme = Theme::of(ui);
+    let tooltip = format!("{status}. Connect an agent…");
+    let response = ui.add(
+        IconButton::new(icons::ROBOT)
+            .dimmed(light == super::AgentLight::Off)
+            .tooltip(&tooltip),
+    );
+    let colour = match light {
+        super::AgentLight::Off => None,
+        super::AgentLight::Running => Some(theme.color.success),
+        super::AgentLight::Unavailable => Some(theme.color.warning),
+    };
+    if let Some(colour) = colour {
+        let dot = response.rect.right_bottom() - Vec2::splat(6.0);
+        ui.painter().circle_filled(dot, 3.5, theme.color.surface);
+        ui.painter().circle_filled(dot, 2.5, colour);
+    }
+    response
 }
 
 /// The zoom as the percentage shown on the zoom button.

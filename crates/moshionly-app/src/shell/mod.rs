@@ -7,7 +7,9 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod connect;
 mod edit_commands;
+mod export_dialog;
 mod files;
 mod inspector;
 mod layers_panel;
@@ -16,10 +18,12 @@ mod parts;
 mod tool_bar;
 mod top_bar;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::time::Duration;
 
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
-use moshionly_agent::{Session, SessionHandle};
+use moshionly_agent::import::PendingImport;
+use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId, build};
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
 
@@ -29,14 +33,17 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
+    connect::AgentLight,
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
     tool_bar::Tool,
 };
+use crate::host::HostWork;
 use crate::{
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
+    connect::{AgentServer, import::ImportChoice},
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{
         Editor,
@@ -122,8 +129,26 @@ pub struct Shell {
     pending: Option<FileAction>,
     /// The window may close: the person said so.
     closing: bool,
-    /// What is typed into the chat composer.
-    chat_draft: String,
+    /// The AI chat in the chat panel, once the app set one.
+    chat: Option<Box<crate::chat::Chat>>,
+    /// The agent tools over the open document, for the chat. The MCP
+    /// server has tools of its own, whose work stops with the server.
+    tools: Tools,
+    /// The exports and screenshots `tools` do, stopped when the app quits.
+    own_work: HostWork,
+    /// The MCP server agents connect to.
+    server: AgentServer,
+    /// The port to serve agents on, once the app asked for a server.
+    agent_port: Option<u16>,
+    /// The "Connect an agent" dialog is open.
+    connect_open: bool,
+    /// Designs sent from Figma, waiting for the person: the first is being
+    /// asked about.
+    imports: VecDeque<PendingImport>,
+    /// Where the design asked about would go.
+    import_choice: ImportChoice,
+    /// The Export dialog, while it is open.
+    export: Option<export_dialog::ExportDialog>,
 }
 
 /// What [`Shell::show`] hands back to the app.
@@ -135,6 +160,10 @@ pub struct ShellOutput {
     /// The person agreed to close the window: close it.
     pub close_window: bool,
 }
+
+/// How long quitting waits for work in the background to clean up after
+/// it was cancelled.
+const QUIT_PATIENCE: Duration = Duration::from_secs(2);
 
 /// A new document: one empty 1080 by 1080 artboard named "Scene 1".
 pub fn new_document() -> Document {
@@ -183,6 +212,11 @@ impl Shell {
         renderer: Renderer,
         pictures: CanvasRenderer,
     ) -> Self {
+        let own_work = HostWork::new();
+        let tools = Tools::new(
+            session.clone(),
+            crate::host::stoppable_app_host(&renderer, &own_work),
+        );
         Self {
             settings,
             commands: CommandRegistry::new(),
@@ -220,8 +254,29 @@ impl Shell {
             clipboard: None,
             pending: None,
             closing: false,
-            chat_draft: String::new(),
+            chat: None,
+            tools,
+            own_work,
+            server: AgentServer::off(),
+            agent_port: None,
+            connect_open: false,
+            imports: VecDeque::new(),
+            import_choice: ImportChoice::NewArtboards,
+            export: None,
         }
+    }
+
+    /// Stops what runs in the background before the app quits: a running
+    /// export, and the work agents asked for, are cancelled and get a
+    /// moment to clean up, so no half-written file is left behind. The app
+    /// calls this as it exits.
+    pub fn prepare_to_quit(&mut self) {
+        // The chat's exports stop while the rest shuts down.
+        self.own_work.cancel();
+        // Closing the dialog cancels its export and waits for it to stop.
+        self.export = None;
+        self.shut_down_agent_server();
+        self.own_work.wait(QUIT_PATIENCE);
     }
 
     /// Tells the shell that its top bar doubles as the window's title bar,
@@ -353,10 +408,15 @@ impl Shell {
             || self.text_edit.is_some()
             || self.pen.is_some()
             || self.renaming.is_some()
-            || self.list_drag.is_some();
+            || self.list_drag.is_some()
+            || self.connect_open
+            || !self.imports.is_empty()
+            || self.export.is_some();
 
         self.now = ctx.input(|i| i.time);
         self.editor.attach(&ctx);
+        self.server.attach(&ctx);
+        self.receive_imports(Some(&ctx));
         if self.editor.sync() {
             self.after_document_change();
         }
@@ -387,6 +447,7 @@ impl Shell {
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         let project_name = self.project_name();
         let recent = self.settings.recent.clone();
+        let agents_status = self.server.status().headline();
         let bar = TopBar {
             project_name: &project_name,
             recent: &recent,
@@ -394,6 +455,8 @@ impl Shell {
             zoom: self.camera.zoom,
             playing: self.playback.is_playing(),
             chat_open: self.settings.panels.chat_open,
+            agents: AgentLight::of(self.server.status()),
+            agents_status: &agents_status,
             theme_mode: self.settings.theme,
             commands: &self.commands,
             leading_inset: self.title_inset.filter(|_| !fullscreen).unwrap_or(0.0),
@@ -451,18 +514,8 @@ impl Shell {
         self.advance_playback(&ctx);
         self.timeline_panel(ui, &layout);
 
-        if let Some(chat) = layout.chat {
-            let out = parts::panel(ui, "chat", chat, c.surface, |ui| {
-                chat_panel::chat_panel(ui, &mut self.chat_draft)
-            });
-            edge_line(ui, chat, Edge::Left);
-            if out.close {
-                requested.push(CommandId::ToggleChat);
-            }
-            if out.sent.is_some() {
-                self.toasts
-                    .push(Toast::info("Chat is not connected to a provider yet"));
-            }
+        if self.chat_panel(ui, layout.chat) {
+            requested.push(CommandId::ToggleChat);
         }
 
         self.splitters(ui, window, &layout);
@@ -473,6 +526,9 @@ impl Shell {
         self.toasts.show(&ctx, toast_anchor);
 
         requested.extend(self.palette.show(&ctx, &self.commands));
+        self.connect_dialog(&ctx);
+        self.export_dialog(&ctx);
+        self.import_dialog(&ctx);
         self.unsaved_prompt(&ctx);
         if !self.palette.is_open() {
             self.nudge(&ctx);
@@ -1045,6 +1101,8 @@ impl Shell {
                 }
             }
             CommandId::AskAi => self.settings.panels.chat_open = true,
+            CommandId::ConnectAgent => self.connect_open = true,
+            CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),

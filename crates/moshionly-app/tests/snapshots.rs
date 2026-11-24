@@ -418,6 +418,36 @@ fn demo_shell() -> Shell {
     Shell::headless(Settings::default(), session, renderer)
 }
 
+/// A chat whose only AI is a scripted stand-in for Claude Code, already
+/// checked, with keys in memory: nothing reaches a real AI.
+fn scripted_chat() -> moshionly_app::chat::Chat {
+    use moshionly_app::chat::testing::{ScriptedProvider, ScriptedSource, status, statuses};
+    let mut ready = statuses(&[]);
+    ready[0] = status(
+        "claude-code",
+        moshionly_ai::ReadyState::Ready,
+        "Claude Code is installed and signed in.",
+    )
+    .unwrap();
+    let source = ScriptedSource::new(ready).with_provider(
+        ScriptedProvider::new("claude-code", Vec::new())
+            .with_models(vec![moshionly_ai::ModelInfo::new("sonnet", "Sonnet")]),
+    );
+    let registry = moshionly_ai::ProviderRegistry::new(
+        moshionly_ai::AiSettings::default(),
+        std::sync::Arc::new(moshionly_ai::MemoryKeyStore::new()),
+    );
+    let mut chat =
+        moshionly_app::chat::Chat::with_source(registry, std::sync::Arc::new(source), None);
+    chat.controller_mut().ensure_checked();
+    assert!(
+        chat.controller_mut()
+            .settle(std::time::Duration::from_secs(10)),
+        "the stand-in AI was not checked"
+    );
+    chat
+}
+
 /// The whole editor window with the demo project.
 #[test]
 fn shell() {
@@ -449,6 +479,9 @@ fn shell_with_chat() {
     let size = vec2(1440.0, 900.0);
     for variant in Variant::ALL {
         let mut shell = demo_shell();
+        shell.set_chat(scripted_chat());
+        // Agents can connect, as in the app; any free port will do.
+        shell.serve_agents(0);
         shell.panels_mut().chat_open = true;
         shell.inspector_mut().tab = InspectorTab::Animate;
         let editor = shell.editor_mut();
@@ -674,5 +707,50 @@ fn command_palette() {
         });
         assert_rendered(&image, size, variant);
         println!("wrote {}", path.display());
+    }
+}
+
+/// The dialogs of round 3 over the window: Export, Connect an agent (with
+/// the server on a free port), and a design sent from Figma waiting to be
+/// accepted.
+#[test]
+fn connection_dialogs() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1280.0, 820.0);
+    let envelope = include_str!("fixtures/figma-hero.json");
+    for (name, open) in [
+        ("dialog-export", 0),
+        ("dialog-connect", 1),
+        ("dialog-import", 2),
+    ] {
+        for variant in Variant::ALL {
+            let mut shell = demo_shell();
+            match open {
+                0 => shell.open_export_dialog(),
+                1 => {
+                    shell.serve_agents(0);
+                    shell.open_connect_dialog();
+                }
+                _ => {
+                    let mut pending =
+                        moshionly_agent::import::read_envelope(envelope.as_bytes()).unwrap();
+                    pending.notes.push(moshionly_agent::import::ImportNote {
+                        source_id: None,
+                        layer_name: Some("Headline".into()),
+                        message: "Mixed text styles: the whole text takes the style of most of \
+                                  its characters."
+                            .into(),
+                    });
+                    shell.offer_import(pending);
+                }
+            }
+            let (path, image) = snapshot(name, size, variant, move |ui| {
+                shell.show(ui);
+            });
+            assert_rendered(&image, size, variant);
+            println!("wrote {}", path.display());
+        }
     }
 }

@@ -10,49 +10,13 @@
 
 use std::path::{Path, PathBuf};
 
+use moshionly_export::Format;
+
 /// File extension of Moshionly projects, without the dot.
 pub const PROJECT_EXTENSION: &str = "moshi";
 
 /// Image formats that can be placed on the canvas.
 pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
-
-/// A format the editor can export to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ExportFormat {
-    /// H.264 video.
-    Mp4,
-    /// Animated GIF.
-    Gif,
-    /// A single PNG frame or a PNG sequence.
-    Png,
-    /// Lottie JSON.
-    Lottie,
-}
-
-impl ExportFormat {
-    /// Every format, in menu order.
-    pub const ALL: [Self; 4] = [Self::Mp4, Self::Gif, Self::Png, Self::Lottie];
-
-    /// The name shown in menus.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Mp4 => "MP4 video",
-            Self::Gif => "Animated GIF",
-            Self::Png => "PNG image",
-            Self::Lottie => "Lottie",
-        }
-    }
-
-    /// The file extension, without the dot.
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Mp4 => "mp4",
-            Self::Gif => "gif",
-            Self::Png => "png",
-            Self::Lottie => "json",
-        }
-    }
-}
 
 /// The questions the editor asks with a file dialog.
 pub trait Dialogs {
@@ -62,6 +26,13 @@ pub trait Dialogs {
     fn save_project(&self, suggested_name: &str) -> Option<PathBuf>;
     /// Which images to import.
     fn import_images(&self) -> Option<Vec<PathBuf>>;
+    /// Where to write an export in `format`, named after `suggested_name`.
+    /// For a PNG sequence this is a new folder. Nothing is asked unless a
+    /// dialog says otherwise.
+    fn export_to(&self, suggested_name: &str, format: Format) -> Option<PathBuf> {
+        let _ = (suggested_name, format);
+        None
+    }
 }
 
 /// The operating system's own dialogs.
@@ -79,6 +50,10 @@ impl Dialogs for NativeDialogs {
 
     fn import_images(&self) -> Option<Vec<PathBuf>> {
         import_images()
+    }
+
+    fn export_to(&self, suggested_name: &str, format: Format) -> Option<PathBuf> {
+        export_to(suggested_name, format)
     }
 }
 
@@ -144,13 +119,26 @@ pub fn import_images() -> Option<Vec<PathBuf>> {
 }
 
 /// Asks where to write an export in `format`. `suggested_name` is usually the
-/// project's or the artboard's name.
-pub fn export_to(suggested_name: &str, format: ExportFormat) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Export")
-        .add_filter(format.label(), &[format.extension()])
-        .set_file_name(file_name(suggested_name, format.extension()))
-        .save_file()
+/// project's or the artboard's name. A PNG sequence is written as a new
+/// folder of that name.
+pub fn export_to(suggested_name: &str, format: Format) -> Option<PathBuf> {
+    let dialog = rfd::FileDialog::new().set_title(format!("Export {}", format.label()));
+    match format.extension() {
+        Some(extension) => dialog
+            .add_filter(format.label(), &[extension])
+            .set_file_name(file_name(suggested_name, extension))
+            .save_file(),
+        None => dialog
+            .set_file_name(folder_name(suggested_name))
+            .save_file(),
+    }
+}
+
+/// A folder name made from a display name, as [`file_name`] without the
+/// extension.
+pub fn folder_name(name: &str) -> String {
+    let named = file_name(name, "x");
+    named.strip_suffix(".x").unwrap_or(&named).to_owned()
 }
 
 /// A file name made from a display name: characters a file system rejects
@@ -212,10 +200,10 @@ mod tests {
     }
 
     #[test]
-    fn every_export_format_has_a_label_and_an_extension() {
-        for format in ExportFormat::ALL {
-            assert!(!format.label().is_empty());
-            assert!(!format.extension().is_empty());
-        }
+    fn exports_are_named_after_the_scene() {
+        assert_eq!(folder_name("Scene 1"), "Scene 1");
+        assert_eq!(folder_name("a/b"), "a-b");
+        assert_eq!(folder_name(" "), "Untitled");
+        assert_eq!(NoDialogs.export_to("Scene", Format::Gif), None);
     }
 }

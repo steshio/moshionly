@@ -175,6 +175,7 @@ commands! {
     ToolText: Tools, "Text", Some(icons::TEXT_T), key(Key::T);
     ToolImage: Tools, "Image", Some(icons::IMAGE), key(Key::I);
     AskAi: Tools, "Ask AI", Some(icons::SPARKLE), None;
+    ConnectAgent: Tools, "Connect an agent…", Some(icons::ROBOT), None;
 }
 
 impl CommandId {

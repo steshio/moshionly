@@ -94,7 +94,7 @@ impl Shell {
 
     /// Puts what is being made on the canvas into the document: a drag in
     /// progress, the words being typed, the path being drawn with the pen.
-    fn finish_work_in_progress(&mut self) {
+    pub(super) fn finish_work_in_progress(&mut self) {
         self.end_canvas_drag();
         self.finish_text_edit();
         if self.pen.is_some() {
@@ -267,6 +267,19 @@ impl Shell {
         self.inspector.tab = InspectorTab::Design;
         self.fitted = false;
         self.playback.pause();
+        // The Export dialog was set up for the old document. Closing it
+        // cancels an export still running and waits for it to clean up.
+        if let Some(dialog) = self.export.take()
+            && dialog.is_running()
+        {
+            self.toasts.push(Toast::info(
+                "Export cancelled: another project took its place",
+            ));
+        }
+        // The AI should not carry on about a file that is gone.
+        if let Some(chat) = self.chat.as_deref_mut() {
+            chat.new_conversation();
+        }
     }
 
     /// The question about unsaved changes, while it is open.

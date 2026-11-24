@@ -19,19 +19,31 @@
 //!   Its rules (what a click selects, how a drag becomes edits) are plain
 //!   functions that are tested without a window.
 //! - [`canvas`]: pictures of the artboards, rendered on worker threads.
+//! - [`connect`]: the MCP server agents and the Figma plugin reach the open
+//!   document through, and the choices for designs sent from Figma.
 //! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
 //!   and the agent tools.
+//! - [`export`]: the Export dialog's choices as an export job, run off the
+//!   UI thread.
+//! - [`host`]: what the app does for the agent tools: screenshots, fonts
+//!   and exports.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
+//! - [`cli`]: the `moshionly` command's arguments, and its headless `mcp`
+//!   and `export` modes.
 //!
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
 pub mod canvas;
 pub mod chat;
+pub mod cli;
 pub mod commands;
+pub mod connect;
 pub mod dialogs;
 pub mod editor;
+pub mod export;
+pub mod host;
 pub mod key;
 pub mod raster;
 pub mod settings;

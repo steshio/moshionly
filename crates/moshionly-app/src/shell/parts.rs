@@ -1,11 +1,11 @@
 //! Small pieces shared by the parts of the shell.
 
-use egui::{Align, Align2, Color32, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2};
+use egui::{Align, Color32, Layout, Rect, Ui, UiBuilder, pos2};
 
 use crate::{
     commands::{CommandId, CommandRegistry},
-    theme::{Theme, Tone},
-    widgets::{MenuItem, paint, tooltip},
+    theme::Theme,
+    widgets::MenuItem,
 };
 
 /// Fills `rect` and runs `add` in a child that is laid out top to bottom,
@@ -55,23 +55,6 @@ pub fn edge_line(ui: &Ui, rect: Rect, edge: Edge) {
         Edge::Right => Rect::from_min_max(pos2(rect.right() - 1.0, rect.top()), rect.max),
     };
     ui.painter().rect_filled(strip, 0.0, color);
-}
-
-/// A small "Sample" tag for the header of a panel that shows placeholder
-/// content instead of the document.
-pub fn sample_tag(ui: &mut Ui) {
-    let theme = Theme::of(ui);
-    let tone = theme.color.tone(Tone::Amber);
-    let galley = paint::line(ui, "Sample", theme.caption(), tone.text);
-    let size = Vec2::new(galley.size().x + theme.space.sm * 2.0, 16.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect_filled(rect, theme.radius.xs, tone.soft);
-    paint::galley_in(ui.painter(), rect, Align2::CENTER_CENTER, galley);
-    tooltip(
-        response,
-        "Placeholder content: this panel is not connected to a document yet",
-        None,
-    );
 }
 
 /// One menu line for a command, with its icon and shortcut, greyed out when
