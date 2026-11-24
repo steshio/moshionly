@@ -4,7 +4,7 @@
 
 Moshionly is a native app written in Rust. It runs on macOS first, with Linux and Windows to follow. Your projects are files on your own disk.
 
-> **Status: early.** The project is being built in the open, crate by crate. The engine, the renderer, the AI providers, the agent tools with their MCP server, the Figma plugin and the editor's window are in place; the editor still shows sample content because it is not yet wired to the engine. See [the roadmap](#roadmap) for exactly what works today.
+> **Status: early, and usable end to end.** You can design and animate in the editor, play it back, export video, GIF, PNG and Lottie, chat with the AI you choose, let outside agents work in the open file, and bring designs in from Figma. It is young software: expect rough edges, and keep copies of work that matters. See [the roadmap](#roadmap) for what works today and what is next.
 
 ![The Moshionly editor](docs/images/editor-light.png)
 
@@ -42,33 +42,32 @@ cd moshionly
 cargo run --release
 ```
 
-The first build downloads and compiles dependencies and takes a few minutes. Later builds are fast. Today this opens the editor with sample content.
-
-To try the engine on a real file, print a frame of the demo project as data:
+The first build downloads and compiles dependencies and takes a few minutes. Later builds are fast. This opens the editor with a new, empty project. To open the demo project instead:
 
 ```bash
-cargo run -p moshionly-core --example inspect -- crates/moshionly-core/examples/demo.moshi 800
+cargo run --release -- crates/moshionly-core/examples/demo.moshi
 ```
 
-Or draw that frame as a picture (the last number is the scale):
+In the editor:
+
+- **Design** in the Design tab: draw shapes and text, style them in the inspector, arrange layers.
+- **Animate** in the Animate tab (press M): pick a layer, choose "Add action", then drag its bar on the timeline. Space plays.
+- **Export** with the Export button or ⌘E: PNG, PNG sequence, GIF, MP4, WebM, ProRes or Lottie.
+- **Chat** with the chat button in the top bar. Its settings let you pick a subscription you already have (Claude Code and other command-line agents) or an API key.
+- **Connect an agent** with the agents button in the top bar. It shows the exact setup for Claude Code, Cursor, VS Code and other MCP clients, which then work in the open file while you watch, and every change they make can be undone.
+- **Bring a design in from Figma** with the plugin, loaded in Figma's desktop app as [plugins/figma/README.md](plugins/figma/README.md) explains. A design sent from Figma, or pasted after the plugin's Copy button, waits for you to accept it.
+
+The same `moshionly` command also works without a window:
 
 ```bash
-cargo run --release -p moshionly-render --example render -- crates/moshionly-core/examples/demo.moshi 800 frame.png 1
+# Export an artboard (the format comes from the file extension, or --format)
+cargo run --release -- export crates/moshionly-core/examples/demo.moshi --out demo.mp4
+
+# Serve a file to an agent over MCP on standard input and output
+cargo run --release -- mcp --save crates/moshionly-core/examples/demo.moshi
 ```
 
-To let an AI agent such as Claude Code work in a file, serve it over MCP and point the agent at the address it prints:
-
-```bash
-cargo run -p moshionly-agent --example serve -- crates/moshionly-core/examples/demo.moshi
-```
-
-To see which AI providers are ready on your machine:
-
-```bash
-cargo run -p moshionly-ai --example chat -- --list
-```
-
-To bring a design over from Figma, load the plugin in Figma's desktop app as [plugins/figma/README.md](plugins/figma/README.md) explains.
+`moshionly --help`, `moshionly export --help` and `moshionly mcp --help` list every option.
 
 Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`) to unlock ProRes and WebM export.
 
@@ -104,16 +103,20 @@ Done:
 - [x] Document model, edits, undo, the `.moshi` file format
 - [x] Animation engine: actions, presets, easing, text animation, counters
 - [x] AI providers: Claude Code, Cursor Agent, Codex and Gemini command-line agents, the Anthropic API and any OpenAI-compatible API
-- [x] Editor window: theme, controls, canvas with pan and zoom, timeline, command palette (showing sample content)
+- [x] Editor window: theme, controls, canvas with pan and zoom, timeline, command palette
 - [x] Skia renderer: shapes, gradients, strokes, masks, shadows, blur, images, text with bundled Inter
 - [x] Agent tools and MCP server, and the endpoint the Figma plugin sends to
 - [x] Figma plugin and re-import (tested against sample designs; not yet run inside Figma)
+- [x] The editor on real files: open, save, layers, canvas editing, Design inspector, undo
+- [x] Animate tab, editable timeline and playback
+- [x] Export: PNG, PNG sequence, GIF, MP4, WebM and ProRes (with ffmpeg), and Lottie
+- [x] Chat panel and AI settings in the editor
+- [x] Connect an agent to the open file, accept designs from Figma, and the `moshionly export` and `moshionly mcp` commands
 
 Next:
 
-- [ ] Wire the editor to the engine: real layers, inspector, timeline and playback
-- [ ] Export: PNG, GIF, MP4, Lottie
-- [ ] Chat panel in the editor
+- [ ] Run the Figma plugin inside Figma and polish the round trip
+- [ ] Packaged macOS app (signed download)
 - [ ] Components, video and audio layers, shader effects
 - [ ] Linux and Windows builds
 
