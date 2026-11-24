@@ -196,21 +196,28 @@ impl Transform {
 
     /// The transform as the last item of a shape group, which Lottie
     /// requires even when it changes nothing. Every value is written:
-    /// players read a group's transform without defaults.
+    /// players read a group's transform without defaults. Its kind `ty`
+    /// comes first, as in every shape item: rlottie reads an item's keys in
+    /// order and skips those before `ty`.
     pub fn to_group_item(&self) -> Value {
-        let mut item = self.write(|_, _| true);
-        if let Value::Object(map) = &mut item {
-            map.insert("ty".into(), Value::from("tr"));
-            if !map.contains_key("p") {
-                map.insert("p".into(), object([("k", array(&[0.0, 0.0], 0))]));
-            }
+        let mut map = Map::new();
+        map.insert("ty".into(), Value::from("tr"));
+        self.write_into(&mut map, |_, _| true);
+        if !map.contains_key("p") {
+            map.insert("p".into(), object([("k", array(&[0.0, 0.0], 0))]));
         }
-        item
+        Value::Object(map)
     }
 
     /// The values `keep` says yes to.
     fn write(&self, keep: impl Fn(&str, &Animated) -> bool) -> Value {
         let mut map = Map::new();
+        self.write_into(&mut map, keep);
+        Value::Object(map)
+    }
+
+    /// Adds the values `keep` says yes to to `map`.
+    fn write_into(&self, map: &mut Map<String, Value>, keep: impl Fn(&str, &Animated) -> bool) {
         if keep("a", &self.anchor) {
             map.insert("a".into(), property(&self.anchor, places::LENGTH));
         }
@@ -227,7 +234,6 @@ impl Transform {
         if keep("o", &self.opacity) {
             map.insert("o".into(), property(&self.opacity, places::PERCENT));
         }
-        Value::Object(map)
     }
 }
 
@@ -300,7 +306,7 @@ mod tests {
         assert_eq!(transform.to_json().to_string(), r#"{"s":{"k":[50,50]}}"#);
         assert_eq!(
             Transform::default().to_group_item().to_string(),
-            r#"{"a":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":0},"o":{"k":100},"ty":"tr","p":{"k":[0,0]}}"#
+            r#"{"ty":"tr","a":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":0},"o":{"k":100},"p":{"k":[0,0]}}"#
         );
     }
 }

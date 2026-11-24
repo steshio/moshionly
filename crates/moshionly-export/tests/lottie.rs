@@ -767,3 +767,31 @@ fn every_layer_is_flat_before_its_transform() {
         );
     }
 }
+
+/// Every shape item in a list, and in the groups inside it.
+fn shape_items<'a>(items: &'a Value, into: &mut Vec<&'a Value>) {
+    for item in items.as_array().into_iter().flatten() {
+        into.push(item);
+        shape_items(&item["it"], into);
+    }
+}
+
+#[test]
+fn every_shape_item_starts_with_its_kind() {
+    // rlottie skips the keys of a shape item that come before "ty", so a
+    // group transform written with "ty" last lost its animation there. The
+    // demo has text that comes in letter by letter, in moving groups.
+    let (lottie, _) = export(Settings::default());
+    let mut items = Vec::new();
+    for layer in all_layers(&lottie) {
+        shape_items(&layer["shapes"], &mut items);
+    }
+    assert!(
+        items
+            .iter()
+            .any(|item| item["ty"] == "tr" && item["p"]["a"] == 1)
+    );
+    for item in items {
+        assert_eq!(key_position(item, "ty"), Some(0), "{item}");
+    }
+}
