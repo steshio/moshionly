@@ -315,3 +315,39 @@ fn the_export_dialog_writes_its_file_off_the_ui_thread_and_remembers_the_choices
     assert_eq!(shell.settings().export.scale, 0.5);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn quitting_during_an_export_stops_it_and_leaves_nothing_behind() {
+    let mut shell = demo_shell();
+    shell.open_export_dialog();
+    let setup = shell.export_setup_mut().unwrap();
+    setup.choices.set_format(Format::Mp4);
+    setup.choices.scale = 2.0;
+
+    let dir = std::env::temp_dir().join(format!(
+        "moshionly-app-export-quit-{}-{}",
+        std::process::id(),
+        NodeId::generate()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let written = || -> Vec<_> {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect()
+    };
+    shell.start_export(dir.join("demo.mp4"), None);
+    // The unfinished file appears beside the destination once it starts.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while written().is_empty() {
+        assert!(Instant::now() < deadline, "the export never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(shell.poll_export(), None, "still running");
+
+    shell.prepare_to_quit();
+    assert!(!shell.is_export_dialog_open());
+    assert!(written().is_empty(), "left behind: {:?}", written());
+    let _ = std::fs::remove_dir_all(&dir);
+}

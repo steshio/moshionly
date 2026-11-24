@@ -2,6 +2,7 @@
 //! responsive: its progress, a way to cancel it, and how it ended.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 
 use moshionly_export::{CancelToken, ExportError, ExportJob, Exported, Progress};
 
@@ -22,10 +23,13 @@ struct Shared {
     outcome: Option<RunOutcome>,
 }
 
-/// An export running in the background.
+/// An export running in the background. Dropping it cancels the export
+/// and waits for it to stop, so nothing half-written is left behind.
 pub struct ExportRun {
     cancel: CancelToken,
     shared: Arc<Mutex<Shared>>,
+    /// The export's thread, until it is joined.
+    thread: Option<JoinHandle<()>>,
 }
 
 impl ExportRun {
@@ -34,9 +38,10 @@ impl ExportRun {
     pub fn start(job: ExportJob, window: Option<egui::Context>) -> Self {
         let cancel = CancelToken::new();
         let shared = Arc::new(Mutex::new(Shared::default()));
-        let run = Self {
+        let mut run = Self {
             cancel: cancel.clone(),
             shared: Arc::clone(&shared),
+            thread: None,
         };
         let repaint = move || {
             if let Some(window) = &window {
@@ -63,10 +68,13 @@ impl ExportRun {
                     repaint();
                 }
             });
-        if let Err(error) = spawned {
-            lock(&shared).outcome = Some(RunOutcome::Failed(format!(
-                "the export could not start: {error}"
-            )));
+        match spawned {
+            Ok(thread) => run.thread = Some(thread),
+            Err(error) => {
+                lock(&shared).outcome = Some(RunOutcome::Failed(format!(
+                    "the export could not start: {error}"
+                )));
+            }
         }
         run
     }
@@ -103,6 +111,17 @@ impl ExportRun {
                 return None;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for ExportRun {
+    /// Cancels the export if it still runs, and waits the frame or so it
+    /// takes to stop and delete its unfinished file.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -189,6 +208,26 @@ mod tests {
         let outcome = run.wait(Duration::from_secs(60)).expect("it stops");
         assert_eq!(outcome, RunOutcome::Cancelled);
         assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_a_running_export_stops_it_and_leaves_nothing_behind() {
+        let dir = folder("drop");
+        let run = ExportRun::start(job(Format::Mp4, 2.0, dir.join("demo.mp4")), None);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while run.progress().is_none_or(|p| p.frames_done == 0) {
+            assert!(std::time::Instant::now() < deadline, "it never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(run.outcome(), None, "still running when dropped");
+        drop(run);
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(left.is_empty(), "nothing is left behind: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

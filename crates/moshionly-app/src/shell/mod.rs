@@ -258,10 +258,13 @@ impl Shell {
         }
     }
 
-    /// Stops what runs in the background before the app quits: the work
-    /// agents asked for is cancelled and gets a moment to clean up, so no
-    /// half-written file is left behind. The app calls this as it exits.
+    /// Stops what runs in the background before the app quits: a running
+    /// export, and the work agents asked for, are cancelled and get a
+    /// moment to clean up, so no half-written file is left behind. The app
+    /// calls this as it exits.
     pub fn prepare_to_quit(&mut self) {
+        // Closing the dialog cancels its export and waits for it to stop.
+        self.export = None;
         self.shut_down_agent_server();
     }
 
