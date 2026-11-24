@@ -8,6 +8,8 @@
 //! for the `moshionly` command.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use moshionly_agent::{
     ExportFormat, ExportOptions, ExportProgress, ExportRequest, Exported, Exporter, FontFamily,
@@ -39,18 +41,88 @@ pub fn app_host(renderer: &Renderer) -> Host {
 /// or export starts. The MCP server's tools use it, so stopping the server
 /// stops what agents asked for.
 pub fn cancellable_app_host(renderer: &Renderer, cancel: &CancelToken) -> Host {
+    host_with(
+        renderer,
+        AppExporter::new().with_cancel(cancel.clone()),
+        cancel,
+    )
+}
+
+/// Like [`app_host`], with work that `work` stops and waits for: the
+/// window's own tools, which the chat uses, so quitting leaves no
+/// half-written export behind.
+pub fn stoppable_app_host(renderer: &Renderer, work: &HostWork) -> Host {
+    let exporter = AppExporter::new()
+        .with_cancel(work.cancel.clone())
+        .counting(Arc::clone(&work.exporting));
+    host_with(renderer, exporter, &work.cancel)
+}
+
+fn host_with(renderer: &Renderer, exporter: AppExporter, cancel: &CancelToken) -> Host {
     let fonts = renderer.fonts().clone();
     Host::new()
         .with_frames(Arc::new(
             RendererFrames::new(renderer.clone()).with_cancel(cancel.clone()),
         ))
         .with_fonts(Arc::new(LibraryFonts::new(fonts.clone())))
-        .with_exporter(Arc::new(
-            AppExporter::new()
-                .with_renderer(renderer.clone())
-                .with_cancel(cancel.clone()),
-        ))
+        .with_exporter(Arc::new(exporter.with_renderer(renderer.clone())))
         .with_measurer(Arc::new(fonts))
+}
+
+/// Exports and screenshots done for tools, which can be stopped and
+/// waited for: once cancelled, a running export stops and deletes its
+/// unfinished file, and no new one starts.
+#[derive(Clone, Default)]
+pub struct HostWork {
+    cancel: CancelToken,
+    /// How many exports are running.
+    exporting: Arc<AtomicUsize>,
+}
+
+impl HostWork {
+    /// Work that runs until it is cancelled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stops the work, without waiting for it.
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Whether an export is running.
+    pub fn is_exporting(&self) -> bool {
+        self.exporting.load(Ordering::Acquire) > 0
+    }
+
+    /// Waits up to `limit` for running exports to end, and says whether
+    /// they did.
+    pub fn wait(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while self.is_exporting() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+}
+
+/// Counts one running export while it lives.
+struct Counted(Arc<AtomicUsize>);
+
+impl Counted {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Screenshots for agents, drawn with the editor's renderer.
@@ -189,6 +261,8 @@ pub struct AppExporter {
     renderer: Option<Renderer>,
     ffmpeg: Option<Ffmpeg>,
     cancel: CancelToken,
+    /// Counts the exports running, when someone waits for them.
+    exporting: Option<Arc<AtomicUsize>>,
 }
 
 impl AppExporter {
@@ -217,6 +291,12 @@ impl AppExporter {
         self.cancel = cancel;
         self
     }
+
+    /// The same exporter, counting its running exports in `exporting`.
+    fn counting(mut self, exporting: Arc<AtomicUsize>) -> Self {
+        self.exporting = Some(exporting);
+        self
+    }
 }
 
 impl Exporter for AppExporter {
@@ -234,6 +314,9 @@ impl Exporter for AppExporter {
         request: &ExportRequest<'_>,
         progress: &mut dyn FnMut(ExportProgress),
     ) -> Result<Exported, HostError> {
+        // Counted until the unfinished file is gone, as the job deletes it
+        // before it returns.
+        let _running = self.exporting.as_ref().map(Counted::new);
         let format = export_format(request.format).ok_or_else(|| {
             HostError::Unsupported(format!("{} cannot be exported here", request.format))
         })?;

@@ -364,6 +364,51 @@ fn quitting_during_an_export_stops_it_and_leaves_nothing_behind() {
 }
 
 #[test]
+fn quitting_while_the_chat_exports_stops_it_and_leaves_nothing_behind() {
+    // A copy of the demo in a folder of its own: the chat's exports go to
+    // an `exports` folder beside the project.
+    let project = std::env::temp_dir().join(format!(
+        "moshionly-app-chat-export-{}-{}",
+        std::process::id(),
+        NodeId::generate()
+    ));
+    std::fs::create_dir_all(&project).unwrap();
+    let file = project.join("demo.moshi");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../moshionly-core/examples/demo.moshi"
+        ),
+        &file,
+    )
+    .unwrap();
+    let session = SessionHandle::open(&file).expect("the copy opens");
+    let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+    let mut shell = Shell::headless(Settings::default(), session, renderer);
+
+    // The chat calls the export tool on a thread of its own.
+    let tools = shell.tools().clone();
+    let chat =
+        std::thread::spawn(move || tools.call("export", json!({ "format": "mp4", "scale": 2 })));
+    let exports = project.join("exports");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !exports.is_dir() || files_in(&exports).is_empty() {
+        assert!(Instant::now() < deadline, "the export never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    shell.prepare_to_quit();
+    assert!(
+        files_in(&exports).is_empty(),
+        "left behind: {:?}",
+        files_in(&exports)
+    );
+    let answer = chat.join().unwrap();
+    assert!(answer.is_error, "the export was stopped, not finished");
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[test]
 fn asking_for_export_again_while_one_runs_keeps_it() {
     let mut shell = demo_shell();
     let dir = start_long_export(&mut shell, "again");

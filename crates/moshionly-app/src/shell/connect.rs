@@ -86,7 +86,8 @@ impl Shell {
     }
 
     /// The agent tools over the open document, with the app's renderer,
-    /// fonts and exporter: what the MCP server and the chat use.
+    /// fonts and exporter: what the chat uses. Their exports stop when the
+    /// app quits.
     pub fn tools(&self) -> &Tools {
         &self.tools
     }

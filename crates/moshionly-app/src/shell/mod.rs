@@ -39,6 +39,7 @@ pub use self::{
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
     tool_bar::Tool,
 };
+use crate::host::HostWork;
 use crate::{
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
@@ -130,9 +131,11 @@ pub struct Shell {
     closing: bool,
     /// The AI chat in the chat panel, once the app set one.
     chat: Option<Box<crate::chat::Chat>>,
-    /// The agent tools over the open document, for the MCP server and the
-    /// chat.
+    /// The agent tools over the open document, for the chat. The MCP
+    /// server has tools of its own, whose work stops with the server.
     tools: Tools,
+    /// The exports and screenshots `tools` do, stopped when the app quits.
+    own_work: HostWork,
     /// The MCP server agents connect to.
     server: AgentServer,
     /// The port to serve agents on, once the app asked for a server.
@@ -209,7 +212,11 @@ impl Shell {
         renderer: Renderer,
         pictures: CanvasRenderer,
     ) -> Self {
-        let tools = Tools::new(session.clone(), crate::host::app_host(&renderer));
+        let own_work = HostWork::new();
+        let tools = Tools::new(
+            session.clone(),
+            crate::host::stoppable_app_host(&renderer, &own_work),
+        );
         Self {
             settings,
             commands: CommandRegistry::new(),
@@ -249,6 +256,7 @@ impl Shell {
             closing: false,
             chat: None,
             tools,
+            own_work,
             server: AgentServer::off(),
             agent_port: None,
             connect_open: false,
@@ -263,9 +271,12 @@ impl Shell {
     /// moment to clean up, so no half-written file is left behind. The app
     /// calls this as it exits.
     pub fn prepare_to_quit(&mut self) {
+        // The chat's exports stop while the rest shuts down.
+        self.own_work.cancel();
         // Closing the dialog cancels its export and waits for it to stop.
         self.export = None;
         self.shut_down_agent_server();
+        self.own_work.wait(QUIT_PATIENCE);
     }
 
     /// Tells the shell that its top bar doubles as the window's title bar,
