@@ -19,6 +19,8 @@
 //!   Its rules (what a click selects, how a drag becomes edits) are plain
 //!   functions that are tested without a window.
 //! - [`canvas`]: pictures of the artboards, rendered on worker threads.
+//! - [`connect`]: the MCP server agents and the Figma plugin reach the open
+//!   document through, and the choices for designs sent from Figma.
 //! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
 //!   and the agent tools.
 //! - [`host`]: what the app does for the agent tools: screenshots, fonts
@@ -32,6 +34,7 @@ pub mod app;
 pub mod canvas;
 pub mod chat;
 pub mod commands;
+pub mod connect;
 pub mod dialogs;
 pub mod editor;
 pub mod host;
