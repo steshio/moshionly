@@ -17,7 +17,7 @@ This document is the contract between the parts of Moshionly. If code and this d
 |---|---|---|
 | `moshionly-core` | nothing heavy | Document model, edits, undo, file format, schema, easing, and evaluation of a document at a time into a `Scene` |
 | `moshionly-render` | core, Skia | Turns a `Scene` into pixels. Fonts, text layout, images, effects |
-| `moshionly-export` | core, render | PNG, GIF, MP4 and other video, Lottie |
+| `moshionly-export` | core, render | PNG, PNG sequence, GIF, MP4, WebM, ProRes and Lottie, as one export job with progress and cancellation |
 | `moshionly-agent` | core | The tool surface for AI agents and the MCP server that exposes it. Rendering and export are supplied by the host through traits |
 | `moshionly-ai` | none of the above | Chat providers: subscriptions through installed agent CLIs, and API keys |
 | `moshionly-app` | all | The desktop editor (egui) and the `moshionly` command |
@@ -122,7 +122,11 @@ Effect order for a layer, innermost first: content, shadow, blur, mask and clip,
 
 ## Export
 
-Export steps through an artboard at `1000 / fps` millisecond intervals, renders each frame and feeds an encoder. PNG and GIF are encoded in-process. MP4 is encoded in-process when possible. Formats that need a system encoder (ProRes with alpha, WebM) use `ffmpeg` when it is installed. Lottie export converts the scene model, not pixels.
+Export steps through an artboard at `1000 / fps` millisecond intervals, renders each frame and feeds an encoder. PNG, PNG sequences and GIF are encoded in-process, and MP4 (H.264) with OpenH264 built from source. Formats that need a system encoder (WebM with VP9, ProRes 4444 with alpha) use `ffmpeg` when it is installed; `available_formats()` says which formats can be written right now and why one cannot.
+
+Every format runs as the same `ExportJob`: `plan()` checks the settings without writing anything, `run()` reports progress and stops when its `CancelToken` is cancelled, and the file is written under a temporary name and renamed into place only when it is complete. The editor's Export dialog, the agents' `export` tool and `moshionly export` all use it.
+
+Lottie export converts the scene model, not pixels. Layers become Lottie layers, text becomes outlines made with the renderer's own fonts, and animations become keyframes: linear and Bézier-shaped easings exactly, others fitted with a few curve pieces and checked against core's values. Anything Lottie cannot show exactly is reported as a warning that names the layer. `crates/moshionly-export/README.md` has the details.
 
 ## Agents
 
@@ -144,7 +148,9 @@ Export steps through an artboard at `1000 / fps` millisecond intervals, renders 
 
 Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
 
-The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use. The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then waits for the person to accept it, and is never applied directly.
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then waits for the person to accept it, and is never applied directly. The server listens on `127.0.0.1` only, and can be turned off in the app.
+
+Screenshots, fonts and exports are supplied by the host through the agent crate's `FrameSource`, `FontSource` and `Exporter` traits. In the app they are the renderer, the renderer's font library and `moshionly-export`; agents' exports go to the project's `exports` folder.
 
 ## AI providers
 
@@ -155,6 +161,12 @@ The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP
 
 ## The app
 
-`moshionly-app` is an egui application. Layout: a canvas in the centre, layers on the left, a Design and Animate inspector on the right, a timeline along the bottom, a floating tool bar over the canvas, and an optional chat panel. The app holds a `Document`, a `History` and view state (selection, current time, zoom); it draws artboards by evaluating and rendering on a worker thread and showing the result as a texture.
+`moshionly-app` is an egui application. Layout: a canvas in the centre, layers on the left, a Design and Animate inspector on the right, a timeline along the bottom, a floating tool bar over the canvas, and an optional chat panel.
+
+The open document lives in one `SessionHandle` from `moshionly-agent`, which holds the `Document` and its `History`. The editor, the built-in chat and the MCP server all work through that one handle, so an agent's edit appears on the canvas at once and the person can undo it. Around it the editor keeps view state: selection, current artboard, playhead, tool, zoom. The editor's rules (what a click selects, how a drag becomes edits, how an action is added) are plain functions tested without a window.
+
+Artboards are drawn by evaluating and rendering on worker threads and showing the result as a texture; while playing, the canvas may draw less sharp to keep up and returns to full sharpness when stopped. Exports run on their own thread with a progress bar and Cancel. A design sent from Figma, or pasted from the plugin's Copy button, opens a dialog where the person chooses where it goes and accepts or rejects it; accepting is one undo step.
+
+The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 
 All colours, spacing and type sizes come from one theme module so the look can be changed in one place.
