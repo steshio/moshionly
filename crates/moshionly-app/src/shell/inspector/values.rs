@@ -451,6 +451,11 @@ impl Field<'_> {
     /// Draws `field` and, for a written part that may be left out, a ×
     /// that leaves it out. Returns the field's outcome, and the change the
     /// × makes when it was clicked.
+    ///
+    /// A part that may be left out is drawn the same way whether it is
+    /// written or not, with room kept for the ×, so the field keeps its
+    /// identity when its first edit writes it: a scrub, a step with the
+    /// arrow keys or an open colour picker carries on instead of stopping.
     fn with_leave_out<R>(
         &self,
         ui: &mut Ui,
@@ -458,7 +463,7 @@ impl Field<'_> {
         label: &str,
         field: impl FnOnce(&mut Ui) -> R,
     ) -> (R, Option<Change>) {
-        let Some(key) = key.filter(|key| self.optional && self.written(Some(key)).is_some()) else {
+        let Some(key) = key.filter(|_| self.optional) else {
             return (field(ui), None);
         };
         let theme = Theme::of(ui);
@@ -467,6 +472,10 @@ impl Field<'_> {
         let out = ui
             .allocate_ui(egui::vec2(room, theme.size.control), field)
             .inner;
+        if self.written(Some(key)).is_none() {
+            ui.allocate_space(egui::vec2(side, side));
+            return (out, None);
+        }
         let tooltip = match self.slot {
             Slot::From => format!("{label}: start from the current value"),
             Slot::To => format!("{label}: end on the design value"),

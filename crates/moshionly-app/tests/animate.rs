@@ -450,9 +450,14 @@ fn a_resize_shows_the_size_it_keeps_until_one_is_typed() {
     assert_eq!(shown(&harness, "W"), Some(200.0));
     assert_eq!(shown(&harness, "H"), Some(12.0));
 
-    // Typing a height writes it; its × leaves it out again.
+    // Typing a height writes it; its × leaves it out again. The field
+    // stays the same field once written, so a scrub or a colour picker
+    // that writes a part carries on instead of stopping.
+    let field_id = |harness: &Harness<'_, Shell>| harness.get_by_label("H").accesskit_node().id();
+    let unwritten = field_id(&harness);
     type_into(&mut harness, "H", "40");
     assert_eq!(to(&harness), (Some(200.0), Some(40.0), true));
+    assert_eq!(field_id(&harness), unwritten);
     harness
         .get_by_label("H: end on the design value")
         .click_accesskit();
