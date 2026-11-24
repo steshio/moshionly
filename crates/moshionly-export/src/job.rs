@@ -1,0 +1,317 @@
+//! An export job: what to export, where, and the call that does it.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use moshionly_core::{Document, NodeId};
+use moshionly_render::{AssetLoader, FontLibrary, RenderWarning, Renderer};
+
+use crate::error::ExportError;
+use crate::ffmpeg::{self, Ffmpeg, INSTALL_HINT};
+use crate::format::Format;
+use crate::frames::FrameSource;
+use crate::gif;
+use crate::lottie;
+use crate::mp4;
+use crate::output::Output;
+use crate::png;
+use crate::progress::{CancelToken, Phase, Progress};
+use crate::settings::{Plan, Settings};
+
+/// One export: an artboard of a document, written to a file in a format.
+///
+/// The document is shared and never changed, so the editor can keep
+/// working on its own copy while an export runs on another thread.
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use moshionly_core::io;
+/// use moshionly_export::{CancelToken, ExportJob, Format, Settings};
+///
+/// let document = Arc::new(io::load("launch.moshi")?);
+/// let artboard = document.artboards()[0].clone();
+/// let job = ExportJob::new(document, artboard, Format::Mp4, "launch.mp4")
+///     .with_project_file("launch.moshi")
+///     .with_settings(Settings::default().with_scale(2.0));
+/// let exported = job.run(
+///     |progress| println!("{:.0}%", progress.fraction() * 100.0),
+///     &CancelToken::new(),
+/// )?;
+/// println!("{} bytes", exported.bytes);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct ExportJob {
+    /// The document to export from.
+    pub document: Arc<Document>,
+    /// The artboard to export.
+    pub artboard: NodeId,
+    /// The project file, for finding images stored next to it.
+    pub project_file: Option<PathBuf>,
+    /// The kind of file to write.
+    pub format: Format,
+    /// What the person chose.
+    pub settings: Settings,
+    /// Where to write: a file, or for a PNG sequence a folder that does not
+    /// exist yet or is empty.
+    pub destination: PathBuf,
+    /// What draws the frames. `None` draws with the bundled and installed
+    /// fonts, and finds images next to the project file.
+    pub renderer: Option<Renderer>,
+    /// The `ffmpeg` that writes WebM and ProRes. `None` looks for one on
+    /// `PATH` and in the usual install places.
+    pub ffmpeg: Option<Ffmpeg>,
+}
+
+/// A finished export.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exported {
+    /// The file or folder that was written.
+    pub path: PathBuf,
+    /// The kind of file.
+    pub format: Format,
+    /// Size of what was written, in bytes.
+    pub bytes: u64,
+    /// Number of frames in it.
+    pub frames: u64,
+    /// Width of the frames in pixels.
+    pub width: u32,
+    /// Height of the frames in pixels.
+    pub height: u32,
+    /// How long it plays for, in milliseconds. `None` for a still.
+    pub duration_ms: Option<f64>,
+    /// What was drawn differently from the document, such as a missing
+    /// image or font, each said once.
+    pub warnings: Vec<String>,
+}
+
+impl ExportJob {
+    /// Exports `artboard` of `document` as `format` to `destination`, with
+    /// default settings.
+    pub fn new(
+        document: Arc<Document>,
+        artboard: NodeId,
+        format: Format,
+        destination: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            document,
+            artboard,
+            project_file: None,
+            format,
+            settings: Settings::default(),
+            destination: destination.into(),
+            renderer: None,
+            ffmpeg: None,
+        }
+    }
+
+    /// The same job with other settings.
+    pub fn with_settings(mut self, settings: Settings) -> Self {
+        self.settings = settings;
+        self
+    }
+
+    /// The same job, finding images next to `project_file`.
+    pub fn with_project_file(mut self, project_file: impl Into<PathBuf>) -> Self {
+        self.project_file = Some(project_file.into());
+        self
+    }
+
+    /// The same job, drawn by `renderer`. Pass the editor's renderer to
+    /// export with the fonts it has registered and the images it has
+    /// already decoded.
+    pub fn with_renderer(mut self, renderer: Renderer) -> Self {
+        self.renderer = Some(renderer);
+        self
+    }
+
+    /// The same job, writing WebM and ProRes with `ffmpeg`.
+    pub fn with_ffmpeg(mut self, ffmpeg: Ffmpeg) -> Self {
+        self.ffmpeg = Some(ffmpeg);
+        self
+    }
+
+    /// Checks the settings and works out exactly what will be written,
+    /// without writing anything. Call it to show a person what is wrong
+    /// before they start.
+    pub fn plan(&self) -> Result<Plan, ExportError> {
+        Ok(self
+            .settings
+            .plan(self.format, &self.document, &self.artboard)?)
+    }
+
+    /// Runs the export, calling `progress` as frames are written, and
+    /// stopping early when `cancel` is cancelled.
+    ///
+    /// Frames are rendered on several threads and handed to the encoder in
+    /// order. The file is written beside the destination and moved into
+    /// place only when it is complete; a failed or cancelled export leaves
+    /// nothing behind.
+    pub fn run(
+        &self,
+        mut progress: impl FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<Exported, ExportError> {
+        let plan = self.plan()?;
+        let renderer = self.renderer.clone().unwrap_or_else(|| {
+            Renderer::new(
+                FontLibrary::with_system_fonts(),
+                AssetLoader::new(self.project_file.clone()),
+            )
+        });
+        let ffmpeg = self.ffmpeg_for(plan.format)?;
+        let output = Output::create(&self.destination, plan.format.writes_folder())?;
+        let mut cx = Context {
+            plan: &plan,
+            source: FrameSource {
+                document: &self.document,
+                artboard: &self.artboard,
+                renderer: &renderer,
+            },
+            reporter: Reporter::new(&mut progress, cancel, plan.frame_count()),
+            project_file: self.project_file.as_deref(),
+            destination: output.destination(),
+        };
+        cx.reporter.report(Phase::Preparing, 0);
+        let images = write(&mut cx, output.path(), ffmpeg.as_ref())?;
+        cx.reporter.check()?;
+        cx.reporter.report(Phase::Finishing, plan.frame_count());
+        let warnings = std::mem::take(&mut cx.reporter.warnings);
+        let path = output.destination().to_owned();
+        let bytes = output.commit()?;
+        if let Some(images) = images {
+            images.commit()?;
+        }
+        Ok(Exported {
+            path,
+            format: plan.format,
+            bytes,
+            frames: plan.frame_count(),
+            width: plan.width,
+            height: plan.height,
+            duration_ms: plan.duration_ms(),
+            warnings,
+        })
+    }
+}
+
+impl ExportJob {
+    /// The `ffmpeg` to write `format` with, checked to be able to, or
+    /// `None` for formats that do not need it.
+    fn ffmpeg_for(&self, format: Format) -> Result<Option<Ffmpeg>, ExportError> {
+        if !format.needs_ffmpeg() {
+            return Ok(None);
+        }
+        let ffmpeg = self.ffmpeg.clone().or_else(Ffmpeg::locate).ok_or_else(|| {
+            ExportError::FfmpegMissing {
+                format,
+                reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
+            }
+        })?;
+        ffmpeg
+            .check(format)
+            .map_err(|reason| ExportError::FfmpegMissing { format, reason })?;
+        Ok(Some(ffmpeg))
+    }
+}
+
+/// Writes the export to `path`, the temporary file or folder.
+///
+/// Every format plugs in here. A raster format renders frames from
+/// `cx.source` and encodes them; Lottie, which converts the scene model
+/// instead of pixels, evaluates the artboard and writes its file,
+/// reporting progress the same way. A Lottie file that keeps its images
+/// beside it also returns those files, to be moved into place after it.
+fn write(
+    cx: &mut Context<'_>,
+    path: &Path,
+    ffmpeg: Option<&Ffmpeg>,
+) -> Result<Option<lottie::ImageFiles>, ExportError> {
+    match cx.plan.format {
+        Format::Png => png::write_still(cx, path).map(|()| None),
+        Format::PngSequence => png::write_sequence(cx, path).map(|()| None),
+        Format::Gif => gif::write(cx, path).map(|()| None),
+        Format::Mp4 => mp4::write(cx, path).map(|()| None),
+        Format::WebM | Format::ProRes => match ffmpeg {
+            Some(ffmpeg) => ffmpeg::write(cx, path, ffmpeg).map(|()| None),
+            None => Err(ExportError::FfmpegMissing {
+                format: cx.plan.format,
+                reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
+            }),
+        },
+        Format::Lottie => lottie::write(cx, path),
+    }
+}
+
+/// What a format's writer works with.
+pub(crate) struct Context<'a> {
+    /// What to write.
+    pub plan: &'a Plan,
+    /// Where frames come from.
+    pub source: FrameSource<'a>,
+    /// Where progress, warnings and cancellation go.
+    pub reporter: Reporter<'a>,
+    /// The project file, which images are found next to.
+    pub project_file: Option<&'a Path>,
+    /// Where the export ends up, for files that go beside it.
+    pub destination: &'a Path,
+}
+
+/// Reports progress, gathers warnings and watches for cancellation.
+pub(crate) struct Reporter<'a> {
+    progress: &'a mut dyn FnMut(Progress),
+    cancel: &'a CancelToken,
+    total: u64,
+    warnings: Vec<String>,
+}
+
+impl<'a> Reporter<'a> {
+    pub fn new(progress: &'a mut dyn FnMut(Progress), cancel: &'a CancelToken, total: u64) -> Self {
+        Self {
+            progress,
+            cancel,
+            total,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Says what the export is doing and how many frames are done.
+    pub fn report(&mut self, phase: Phase, frames_done: u64) {
+        (self.progress)(Progress {
+            phase,
+            frames_done,
+            frames_total: self.total,
+        });
+    }
+
+    /// The cancellation token, for work that runs on other threads.
+    pub fn cancel_token(&self) -> &CancelToken {
+        self.cancel
+    }
+
+    /// Fails with [`ExportError::Cancelled`] once the export is cancelled.
+    pub fn check(&self) -> Result<(), ExportError> {
+        if self.cancel.is_cancelled() {
+            Err(ExportError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Notes what a frame drew differently from the document. Each warning
+    /// is kept once, however many frames have it.
+    pub fn warn(&mut self, warnings: &[RenderWarning]) {
+        for warning in warnings {
+            self.note(warning.to_string());
+        }
+    }
+
+    /// Notes something that was written differently from the document, in
+    /// words for a person. Each is kept once.
+    pub fn note(&mut self, warning: String) {
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
+    }
+}

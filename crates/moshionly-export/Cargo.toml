@@ -1,0 +1,29 @@
+[package]
+name = "moshionly-export"
+description = "Moshionly export: PNG, PNG sequences, GIF, MP4 and Lottie, and WebM and ProRes through ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The quantizer that comes with `gif` is left out; `src/gif/palette.rs` chooses colours.
+gif = { version = "0.14", default-features = false, features = ["raii_no_panic", "std"] }
+# Reads pictures for Lottie files; the same formats the renderer reads.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+moshionly-core = { version = "0.1.0", path = "../moshionly-core" }
+moshionly-render = { version = "0.1.0", path = "../moshionly-render" }
+# Builds OpenH264 from source (BSD-2-Clause). See the README about patents.
+openh264 = "0.9"
+# Only for two constants: turning OpenH264's own log off.
+openh264-sys2 = { version = "0.9", default-features = false }
+serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3"
+thiserror = "2"
+
+[dev-dependencies]
+gif = "0.14"
+# Reads written MP4 files back in tests.
+mp4 = "0.14"
