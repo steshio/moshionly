@@ -14,6 +14,7 @@ use crate::{
         create::{CreateDrag, CreateError, click_origin, tool_type},
         drag::Drag,
         inspect::{artboard_of, text_of},
+        motion::MoveDrag,
         pen::{Pen, PenPress},
     },
     theme::Theme,
@@ -26,6 +27,9 @@ use crate::{
 pub(super) enum CanvasDrag {
     /// Moving, resizing or turning the selection.
     Selection(Drag),
+    /// Moving the selection in the Animate tab, which makes or changes
+    /// move actions.
+    Animate(MoveDrag),
     /// A rubber band selecting what it touches.
     Marquee {
         /// Where the drag started, in world coordinates.
@@ -134,10 +138,17 @@ impl Shell {
                 continue;
             }
             let previous = self.pictures.requested(id).map(|key| key.plan);
+            // While playing, pictures may be drawn less sharp to keep up;
+            // they are sharp again when playback stops.
+            let sharpness = if self.playback.is_playing() {
+                self.quality.factor()
+            } else {
+                1.0
+            };
             let plan = plan(
                 rect.size(),
                 visible.translate(-rect.min.to_vec2()),
-                self.camera.zoom,
+                self.camera.zoom * sharpness,
                 pixels_per_point,
                 previous.as_ref(),
             );
@@ -174,7 +185,20 @@ impl Shell {
         if ids.len() > 1 {
             overlays.outlines = ids.iter().filter_map(|id| self.editor.box_of(id)).collect();
         }
-        overlays.selection = self.editor.selection_box();
+        if self.editor.is_animating() {
+            // Animating, a drag makes a move; size and turn are animated
+            // from the Animate tab, so the box has no handles.
+            overlays.outlines.extend(self.editor.selection_box());
+            overlays.show_size = false;
+            overlays.paths = self
+                .editor
+                .motion_paths()
+                .into_iter()
+                .map(|path| (path.points, path.stops))
+                .collect();
+        } else {
+            overlays.selection = self.editor.selection_box();
+        }
         if let Some(hover) = self.editor.hover.clone()
             && !self.editor.selection.contains(&hover)
         {
@@ -479,7 +503,12 @@ impl Shell {
                 .selection_box()
                 .is_some_and(|b| b.contains(world)),
         };
-        if moves && !self.editor.selection.is_empty() {
+        if moves && !self.editor.selection.is_empty() && self.editor.is_animating() {
+            match self.editor.begin_animate_move(world) {
+                Ok(drag) => self.drag = drag.map(CanvasDrag::Animate),
+                Err(error) => self.toasts.push(Toast::error(error.to_string())),
+            }
+        } else if moves && !self.editor.selection.is_empty() {
             self.drag = self
                 .editor
                 .begin_move(world, modifiers.alt)
@@ -502,6 +531,14 @@ impl Shell {
                         self.drag = None;
                         self.guides.clear();
                     }
+                }
+            }
+            Some(CanvasDrag::Animate(drag)) => {
+                let drag = drag.clone();
+                if let Err(error) = self.editor.drag_animate_move(&drag, world, modifiers) {
+                    self.toasts.push(Toast::error(error.problem.message));
+                    let _ = self.editor.cancel_gesture();
+                    self.drag = None;
                 }
             }
             Some(CanvasDrag::Marquee {
@@ -527,6 +564,7 @@ impl Shell {
     pub(super) fn end_canvas_drag(&mut self) {
         match self.drag.take() {
             Some(CanvasDrag::Selection(_)) => self.editor.end_drag(),
+            Some(CanvasDrag::Animate(drag)) => self.editor.end_animate_move(&drag),
             Some(CanvasDrag::Create(drag)) => {
                 if drag.text {
                     if let Err(error) = self.editor.cancel_gesture() {
@@ -545,10 +583,11 @@ impl Shell {
 
     /// Ends a drag of the select tool.
     fn stop_drag(&mut self) {
-        if let Some(CanvasDrag::Selection(_)) = self.drag {
-            self.editor.end_drag();
+        match self.drag.take() {
+            Some(CanvasDrag::Selection(_)) => self.editor.end_drag(),
+            Some(CanvasDrag::Animate(drag)) => self.editor.end_animate_move(&drag),
+            _ => {}
         }
-        self.drag = None;
         self.guides.clear();
     }
 

@@ -6,9 +6,12 @@
 //! differ across the selection show as mixed, and setting one sets it on
 //! every selected layer that has it.
 
+mod action;
 mod animate;
 mod design;
+mod easing;
 mod text;
+mod values;
 
 use egui::{RichText, ScrollArea, Ui};
 use moshionly_core::Edit;
@@ -38,7 +41,7 @@ pub enum InspectorTab {
 
 /// What the inspector remembers: the tab, which sections are open and the
 /// field being edited.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct InspectorState {
     /// The tab showing.
     pub tab: InspectorTab,
@@ -50,6 +53,29 @@ pub struct InspectorState {
     editing: Option<Vec<moshionly_core::NodeId>>,
     /// The font families the renderer can draw, looked up once.
     families: Vec<moshionly_render::FontFamily>,
+    /// Milliseconds between actions added to several layers at once, and
+    /// between actions spaced out one after another.
+    stagger: f64,
+}
+
+impl InspectorState {
+    /// Milliseconds between actions spaced out one after another.
+    pub fn stagger(&self) -> f64 {
+        self.stagger
+    }
+}
+
+impl Default for InspectorState {
+    fn default() -> Self {
+        Self {
+            tab: InspectorTab::default(),
+            keep_proportions: false,
+            open: Sections::default(),
+            editing: None,
+            families: Vec::new(),
+            stagger: 100.0,
+        }
+    }
 }
 
 /// Which sections of the inspector are open.
@@ -65,6 +91,9 @@ struct Sections {
     image: bool,
     shape: bool,
     actions: bool,
+    easing: bool,
+    values: bool,
+    settings: bool,
 }
 
 impl Default for Sections {
@@ -80,6 +109,9 @@ impl Default for Sections {
             image: true,
             shape: true,
             actions: true,
+            easing: true,
+            values: true,
+            settings: true,
         }
     }
 }

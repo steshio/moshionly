@@ -9,7 +9,7 @@ use super::{
     edit::{self, Original},
     header,
     layout::{self, LABELS_MIN, TRACK_PAD, TRACKS_MIN, TimelineLayout},
-    model::{self, Edge, Group, Row, TimelineEvent},
+    model::{self, BarCommand, Edge, Group, Row, TimelineEvent},
     scale::{self, clamp_zoom, scroll_after_zoom},
     snap::Snapper,
     state::{Drag, TimelineState},
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     key::Key,
     theme::{Theme, icons},
-    widgets::{Grow, ListRow, row_toggle, splitter},
+    widgets::{Grow, ListRow, MenuItem, context_menu, menu_separator, row_toggle, splitter},
 };
 
 /// How near a snapping target must be to attract, in points.
@@ -45,8 +45,9 @@ const REVEAL_MARGIN: f32 = 12.0;
 ///   selection. Click empty space to clear it, or drag over empty space to
 ///   select with a rubber band.
 /// - **Drag a bar** to move it, together with the rest of the selection.
-///   **Drag either end** to resize it. A layer's summary bar moves all of
-///   the layer's actions.
+///   **Drag either end** to resize it; the marker of an action that
+///   happens at one moment has no ends and only moves. A layer's summary
+///   bar moves all of the layer's actions.
 /// - **Drag the tab at the end of the scene** to change its length.
 ///
 /// Dragged things snap to the edges of other bars, the playhead and the ends
@@ -64,6 +65,7 @@ pub struct Timeline<'a> {
     playing: bool,
     looping: bool,
     snapping: bool,
+    follow: bool,
 }
 
 /// What [`Timeline::show`] reports back.
@@ -87,7 +89,15 @@ impl<'a> Timeline<'a> {
             playing: false,
             looping: false,
             snapping: true,
+            follow: false,
         }
+    }
+
+    /// Scrolls along with the playhead so it stays in view, a page at a
+    /// time: for playback.
+    pub fn follow_playhead(mut self, follow: bool) -> Self {
+        self.follow = follow;
+        self
     }
 
     /// The keys of the selected bars.
@@ -146,6 +156,7 @@ impl<'a> Timeline<'a> {
             playing,
             looping,
             snapping,
+            follow,
         } = self;
         let id = ui.make_persistent_id("timeline");
         let mut events = Vec::new();
@@ -183,6 +194,17 @@ impl<'a> Timeline<'a> {
             end,
         );
         clamp_scroll(state, &TimelineLayout::compute(rect, state, theme), content);
+        if follow && state.drag.is_none() {
+            let layout = TimelineLayout::compute(rect, state, theme);
+            let x = layout.scale.x(playhead);
+            state.scroll_x = scroll_to_follow(
+                state.scroll_x,
+                x,
+                layout.tracks.left(),
+                layout.tracks.right(),
+            );
+            clamp_scroll(state, &layout, content);
+        }
         let layout = TimelineLayout::compute(rect, state, theme);
         let s = layout.scale;
 
@@ -323,9 +345,10 @@ impl<'a> Timeline<'a> {
                     };
                     bars::paint_bar(ui, &tracks_painter, bar_rect, &bar.label, bar.tone, look);
 
-                    // The ends: grabbing one resizes the bar.
+                    // The ends: grabbing one resizes the bar. A marker of
+                    // an instant has no length to change: all of it moves.
                     for edge in [Edge::Start, Edge::End] {
-                        if group.locked {
+                        if group.locked || bar.instant {
                             break;
                         }
                         let zone = edge_zone(bar_rect, edge, theme.size.bar_edge_grab);
@@ -374,6 +397,16 @@ impl<'a> Timeline<'a> {
                         events.push(TimelineEvent::BarActivated {
                             key: bar.key.clone(),
                         });
+                    }
+                    // A right click works on the selection, which takes in
+                    // the bar first.
+                    if let Some(response) = response.as_ref().filter(|_| !group.locked) {
+                        if response.secondary_clicked() && !selected {
+                            events.push(TimelineEvent::SelectionChanged {
+                                bars: vec![bar.key.clone()],
+                            });
+                        }
+                        bar_menu(response, &mut events);
                     }
                     if response.is_some_and(|r| r.drag_started()) && state.drag.is_none() {
                         // Dragging a bar that is not selected selects it first.
@@ -615,6 +648,35 @@ fn originals_of(groups: &[Group], keys: &[Key]) -> Vec<Original> {
         .collect()
 }
 
+/// The context menu of a bar: what can be done with the selected bars.
+fn bar_menu(response: &egui::Response, events: &mut Vec<TimelineEvent>) {
+    context_menu(response, |ui| {
+        for command in BarCommand::ALL {
+            let mut item = MenuItem::new(command.label()).danger(command == BarCommand::Delete);
+            if let Some(icon) = command_icon(command) {
+                item = item.icon(icon);
+            }
+            if command == BarCommand::Delete || command == BarCommand::Stagger {
+                menu_separator(ui);
+            }
+            if ui.add(item).clicked() {
+                events.push(TimelineEvent::Command { command });
+            }
+        }
+    });
+}
+
+/// The icon of a context menu command.
+fn command_icon(command: BarCommand) -> Option<&'static str> {
+    match command {
+        BarCommand::Duplicate => Some(icons::COPY),
+        BarCommand::Delete => Some(icons::TRASH),
+        BarCommand::Group => Some(icons::FOLDER_SIMPLE),
+        BarCommand::Ungroup => None,
+        BarCommand::Stagger => Some(icons::ROWS),
+    }
+}
+
 /// The strip at one end of a bar that resizes it when dragged. Part of it
 /// hangs outside the bar, and inside it takes at most a third, so even a
 /// short bar keeps a middle to move it by.
@@ -699,6 +761,10 @@ fn group_label(
     let (mut hidden, mut locked) = (group.hidden, group.locked);
     let (mut hide_clicked, mut lock_clicked) = (false, false);
     let shown = row.show(&mut child, |ui, hovered| {
+        // A folder is not a layer: there is nothing to hide or lock.
+        if group.folder {
+            return;
+        }
         hide_clicked = row_toggle(ui, &mut hidden, icons::EYE_SLASH, icons::EYE, hovered);
         lock_clicked = row_toggle(
             ui,
@@ -787,6 +853,20 @@ pub fn scroll_to_reveal(scroll: f32, view: f32, top: f32, bottom: f32) -> f32 {
         bottom - view
     } else {
         scroll
+    }
+}
+
+/// The horizontal scroll that keeps a playhead at `x` in view in tracks
+/// from `left` to `right`. Nothing moves while it is in view; when it runs
+/// off either side the view turns a page, so it lands near the left again.
+pub fn scroll_to_follow(scroll_x: f32, x: f32, left: f32, right: f32) -> f32 {
+    let width = (right - left).max(0.0);
+    let margin = (width * 0.05).min(24.0);
+    let landing = left + width * 0.1;
+    if x > right - margin || x < left {
+        (scroll_x + x - landing).max(0.0)
+    } else {
+        scroll_x
     }
 }
 
@@ -981,6 +1061,17 @@ mod tests {
         );
         assert_eq!(times_of(&groups, &Key::new("b1")), Some((200.0, 300.0)));
         assert_eq!(times_of(&groups, &Key::new("zz")), None);
+    }
+
+    #[test]
+    fn the_view_follows_the_playhead_a_page_at_a_time() {
+        // Tracks from 100 to 1100, scrolled to 0.
+        assert_eq!(scroll_to_follow(0.0, 600.0, 100.0, 1100.0), 0.0);
+        // Near the right edge: the playhead goes back to 10% in.
+        assert_eq!(scroll_to_follow(0.0, 1090.0, 100.0, 1100.0), 890.0);
+        // Gone off the left (a loop started over): back to the start.
+        assert_eq!(scroll_to_follow(890.0, 20.0, 100.0, 1100.0), 710.0);
+        assert_eq!(scroll_to_follow(50.0, -900.0, 100.0, 1100.0), 0.0);
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct Bar {
     pub start: f64,
     /// End, in milliseconds. Never before `start`.
     pub end: f64,
+    /// Whether the action happens at one moment (show, hide): a marker at
+    /// `start` with no length. It moves but has no ends to resize.
+    pub instant: bool,
 }
 
 /// A layer and the actions that target it: a header row with a summary bar,
@@ -39,6 +42,9 @@ pub struct Group {
     pub hidden: bool,
     /// Whether the layer is locked. Its bars cannot be edited.
     pub locked: bool,
+    /// A timeline folder rather than a layer: it has no hide and lock
+    /// toggles.
+    pub folder: bool,
     /// The layer's actions, top to bottom.
     pub bars: Vec<Bar>,
 }
@@ -50,6 +56,43 @@ impl Group {
         let start = self.bars.iter().map(|bar| bar.start).reduce(f64::min)?;
         let end = self.bars.iter().map(|bar| bar.end).reduce(f64::max)?;
         Some((start, end))
+    }
+}
+
+/// Something asked for from the context menu of the selected bars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BarCommand {
+    /// Copy the selected actions onto new rows.
+    Duplicate,
+    /// Remove the selected actions.
+    Delete,
+    /// Put the selected actions in a folder.
+    Group,
+    /// Take the selected actions out of their folders.
+    Ungroup,
+    /// Space the selected actions out to play one after another.
+    Stagger,
+}
+
+impl BarCommand {
+    /// Every command, in menu order.
+    pub const ALL: [Self; 5] = [
+        Self::Duplicate,
+        Self::Delete,
+        Self::Group,
+        Self::Ungroup,
+        Self::Stagger,
+    ];
+
+    /// The name shown in the menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Duplicate => "Duplicate",
+            Self::Delete => "Delete",
+            Self::Group => "Group",
+            Self::Ungroup => "Ungroup",
+            Self::Stagger => "Play one after another",
+        }
     }
 }
 
@@ -150,6 +193,13 @@ pub enum TimelineEvent {
     },
     /// The jump-to-start button was clicked.
     JumpedToStart,
+    /// The jump-to-end button was clicked.
+    JumpedToEnd,
+    /// A command was chosen from the context menu of the selected bars.
+    Command {
+        /// The command.
+        command: BarCommand,
+    },
     /// The snapping button was clicked.
     SnappingToggled {
         /// The state asked for.
@@ -216,6 +266,7 @@ pub(super) mod tests {
             tone: Tone::Accent,
             start,
             end,
+            instant: false,
         }
     }
 
@@ -227,6 +278,7 @@ pub(super) mod tests {
             collapsed: false,
             hidden: false,
             locked: false,
+            folder: false,
             bars,
         }
     }

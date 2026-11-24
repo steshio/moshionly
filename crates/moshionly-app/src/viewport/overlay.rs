@@ -62,6 +62,9 @@ pub struct Overlays {
     pub pen: Option<PenOverlay>,
     /// A box drawn around text being edited on the canvas.
     pub editing: Option<OrientedBox>,
+    /// Paths layers travel while animating: the points of each, with dots
+    /// where a move starts or ends.
+    pub paths: Vec<(Vec<Pos2>, Vec<Pos2>)>,
 }
 
 impl Overlays {
@@ -97,6 +100,23 @@ pub(super) fn paint(ui: &Ui, viewport: Rect, camera: &Camera, overlays: &Overlay
         handles(&painter, &on_screen, theme);
         if overlays.show_size {
             size_label(ui, &painter, &on_screen, selection.size);
+        }
+    }
+
+    for (points, stops) in &overlays.paths {
+        let line: Vec<Pos2> = points
+            .iter()
+            .map(|point| camera.world_to_screen(viewport, *point))
+            .collect();
+        painter.add(Shape::dashed_line(
+            &line,
+            Stroke::new(1.5, c.accent),
+            6.0,
+            4.0,
+        ));
+        for stop in stops {
+            let at = camera.world_to_screen(viewport, *stop);
+            painter.circle(at, 3.5, c.surface, Stroke::new(1.5, c.accent));
         }
     }
 

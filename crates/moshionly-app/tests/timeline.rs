@@ -50,6 +50,15 @@ fn bar(key: &str, start: f64, end: f64) -> Bar {
         tone: Tone::Accent,
         start,
         end,
+        instant: false,
+    }
+}
+
+/// The marker of an action that happens at one moment, `at`.
+fn marker(key: &str, at: f64) -> Bar {
+    Bar {
+        instant: true,
+        ..bar(key, at, at)
     }
 }
 
@@ -61,6 +70,7 @@ fn group(key: &str, bars: Vec<Bar>) -> Group {
         collapsed: false,
         hidden: false,
         locked: false,
+        folder: false,
         bars,
     }
 }
@@ -436,4 +446,39 @@ fn bars_of_a_locked_layer_cannot_be_dragged() {
     let from = harness.state().bar_center(4, 900.0, 1500.0);
     drag(&mut harness, from, from + vec2(80.0, 0.0));
     assert_eq!(harness.state().times("grow"), (900.0, 1500.0));
+}
+
+#[test]
+fn a_marker_moves_from_anywhere_on_it_and_never_resizes() {
+    let mut harness = harness();
+    // Row 5: a show at 2 s under Badge, clear of the other bars.
+    harness.state_mut().groups[1]
+        .bars
+        .push(marker("show", 2000.0));
+    harness.run();
+    let center = harness.state().bar_center(5, 2000.0, 2000.0);
+    // Near its left side, where a bar's start grip would be: 60 points at
+    // 200 points per second is 300 ms later.
+    let left = center - vec2(1.5, 0.0);
+    drag(&mut harness, left, left + vec2(60.0, 0.0));
+    assert_eq!(harness.state().times("show"), (2300.0, 2300.0));
+    // Near its right side, where the end grip would be.
+    let center = harness.state().bar_center(5, 2300.0, 2300.0);
+    let right = center + vec2(1.5, 0.0);
+    drag(&mut harness, right, right + vec2(60.0, 0.0));
+    assert_eq!(harness.state().times("show"), (2600.0, 2600.0));
+    // And back to the left.
+    let center = harness.state().bar_center(5, 2600.0, 2600.0);
+    let left = center - vec2(1.5, 0.0);
+    drag(&mut harness, left, left - vec2(100.0, 0.0));
+    assert_eq!(harness.state().times("show"), (2100.0, 2100.0));
+    let state = harness.state();
+    assert!(
+        !state
+            .events
+            .iter()
+            .any(|event| matches!(event, TimelineEvent::BarResized { .. })),
+        "a marker has no ends to resize"
+    );
+    assert_eq!(state.selection, keys(&["show"]));
 }

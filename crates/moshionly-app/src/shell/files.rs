@@ -263,10 +263,10 @@ impl Shell {
         self.pictures.clear();
         self.tree = Default::default();
         self.collapsed_groups.clear();
-        self.selected_actions.clear();
+        self.editor.set_actions([]);
         self.inspector.tab = InspectorTab::Design;
         self.fitted = false;
-        self.playing = false;
+        self.playback.pause();
     }
 
     /// The question about unsaved changes, while it is open.

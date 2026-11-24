@@ -59,6 +59,12 @@ pub(super) fn transport(
         events.push(TimelineEvent::PlayToggled { playing: !playing });
     }
     if bar
+        .add(IconButton::new(icons::SKIP_FORWARD).tooltip("Jump to end"))
+        .clicked()
+    {
+        events.push(TimelineEvent::JumpedToEnd);
+    }
+    if bar
         .add(
             IconButton::new(icons::REPEAT)
                 .selected(looping)

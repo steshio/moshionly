@@ -11,6 +11,8 @@
 //! The rules are kept apart from the window, in modules that can be tested
 //! on their own:
 //!
+//! - [`actions`]: the actions of layers: adding, retiming, staggering and
+//!   grouping them.
 //! - [`assets`]: the image files a project uses, kept with its file.
 //! - [`settle`]: the box auto-sized text is drawn in, which moving,
 //!   resizing and grouping work on.
@@ -18,6 +20,9 @@
 //! - [`view`]: where things are on the canvas, hit testing and marquees.
 //! - [`transform`]: moving, resizing and rotating, from a pointer to edits.
 //! - [`drag`]: a drag of the selection as one undo step.
+//! - [`motion`]: dragging in the Animate tab makes move actions, and the
+//!   paths layers travel.
+//! - [`playback`]: the playhead tied to a clock while playing.
 //! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
 //!   typing text on the canvas.
 //! - [`clipboard`]: copying and pasting layers as Moshionly's JSON.
@@ -27,13 +32,16 @@
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
+pub mod actions;
 pub mod assets;
 pub mod clipboard;
 pub mod create;
 pub mod describe;
 pub mod drag;
 pub mod inspect;
+pub mod motion;
 pub mod pen;
+pub mod playback;
 pub mod selection;
 pub mod settle;
 pub mod snap;
@@ -93,6 +101,8 @@ pub struct Editor {
     revision: u64,
     /// What is selected.
     pub selection: Selection,
+    /// The selected actions, in the order they were selected.
+    actions: Vec<NodeId>,
     /// The layer the pointer is over, as a click would pick it.
     pub hover: Option<NodeId>,
     /// The artboard being worked on: the timeline shows it and new layers
@@ -139,6 +149,7 @@ impl Editor {
             document,
             revision,
             selection: Selection::new(),
+            actions: Vec::new(),
             hover: None,
             artboard: None,
             playhead: 0.0,
@@ -231,6 +242,9 @@ impl Editor {
         }
         self.versions = versions;
         self.selection.retain_existing(&self.document);
+        let document = Arc::clone(&self.document);
+        self.actions
+            .retain(|id| document.get(id).is_some_and(|node| node.is_animation()));
         if self
             .hover
             .as_ref()
