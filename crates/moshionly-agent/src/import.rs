@@ -1,5 +1,4 @@
-//! Designs sent from the Figma plugin, waiting for the person to accept
-//! them.
+//! Designs sent from the Figma plugin.
 //!
 //! The plugin posts a `moshionly-import` envelope to the local HTTP server:
 //!
@@ -14,8 +13,8 @@
 //! is trusted. [`read_envelope`] checks the envelope and every node through
 //! core, and accepts images only as embedded `data:` URIs, so a design
 //! cannot point at other files on the disk. What passes becomes a
-//! [`PendingImport`] that the app shows to the person; it changes the
-//! document only when they accept it, through [`PendingImport::apply`].
+//! [`PendingImport`], which changes the document through
+//! [`PendingImport::apply`] as one undo step the person can take back.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -136,7 +135,7 @@ pub enum EnvelopeError {
     Design(#[from] ImportError),
 }
 
-/// A design that arrived and is waiting for the person to accept it.
+/// A design that arrived, checked and ready to apply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingImport {
     /// Where it came from.

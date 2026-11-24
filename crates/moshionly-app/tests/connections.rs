@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use moshionly_agent::{Origin, SessionHandle};
 use moshionly_app::connect::ServerStatus;
-use moshionly_app::connect::import::ImportChoice;
 use moshionly_app::export::RunOutcome;
 use moshionly_app::settings::Settings;
 use moshionly_app::shell::{FileAction, Shell};
@@ -163,7 +162,7 @@ fn an_agent_edits_the_open_document_over_http_and_the_person_can_undo_it() {
 }
 
 #[test]
-fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
+fn a_design_posted_from_figma_is_added_at_once_as_one_step() {
     let (mut shell, address) = serving_shell();
     let before = shell.editor().document().artboards().len();
 
@@ -171,18 +170,13 @@ fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
     assert_eq!(reply.status, 202, "{}", reply.body);
     assert_eq!(reply.json()["status"], "pending");
 
-    // Nothing changes until the person answers.
+    // Nothing asks first: the design is added as soon as it arrives.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while shell.pending_import().is_none() {
+    while shell.editor().document().artboards().len() == before {
         shell.receive_imports(None);
         assert!(Instant::now() < deadline, "the design never arrived");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(shell.editor().document().artboards().len(), before);
-    assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
-
-    assert!(shell.accept_import());
-    assert!(shell.pending_import().is_none());
     let document = shell.editor().document();
     // The frame and each loose layer beside it become artboards.
     assert_eq!(document.artboards().len(), before + 3);
@@ -224,8 +218,7 @@ fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
 fn a_design_sent_again_replaces_the_first_and_keeps_its_animations() {
     let mut shell = demo_shell();
     let pending = moshionly_agent::import::read_envelope(ENVELOPE.as_bytes()).unwrap();
-    shell.offer_import(pending.clone());
-    assert!(shell.accept_import());
+    assert!(shell.import_design(&pending));
     let title = shell
         .editor()
         .document()
@@ -252,11 +245,10 @@ fn a_design_sent_again_replaces_the_first_and_keeps_its_animations() {
         .map(|node| node.id.clone())
         .expect("the fade was added");
 
-    shell.offer_import(pending);
-    assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
-    shell.set_import_choice(ImportChoice::ReplaceMatching);
-    assert!(shell.accept_import());
+    let artboards = shell.editor().document().artboards().len();
+    assert!(shell.import_design(&pending));
     let document = shell.editor().document();
+    assert_eq!(document.artboards().len(), artboards, "no copy was added");
     let fade = document.get(&fade).expect("the animation stays");
     let target = fade.target().expect("it moves a layer");
     assert!(document.contains(target), "on the new version of the layer");

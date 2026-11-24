@@ -148,7 +148,7 @@ Lottie export converts the scene model, not pixels. Layers become Lottie layers,
 
 Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
 
-The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then waits for the person to accept it, and is never applied directly. The server listens on `127.0.0.1` only, and can be turned off in the app.
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then added to the open document as one undo step: layers that came from the same Figma layers before are replaced and keep their animations, and the rest are added. The server listens on `127.0.0.1` only, and can be turned off in the app.
 
 Screenshots, fonts and exports are supplied by the host through the agent crate's `FrameSource`, `FontSource` and `Exporter` traits. In the app they are the renderer, the renderer's font library and `moshionly-export`; agents' exports go to the project's `exports` folder.
 

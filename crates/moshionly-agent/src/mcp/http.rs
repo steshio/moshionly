@@ -514,7 +514,7 @@ fn receive(state: &Shared, body: &Bytes) -> Response {
             "status": "pending",
             "layers": layers,
             "notes": notes,
-            "message": "Moshionly received the design and is asking where to put it.",
+            "message": "Moshionly received the design and is adding it.",
         }),
     )
 }

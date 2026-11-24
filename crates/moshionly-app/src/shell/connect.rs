@@ -1,10 +1,9 @@
 //! The shell's connections: the MCP server agents reach the open document
-//! through, the "Connect an agent" dialog, and designs sent from Figma
-//! waiting for the person to accept them.
+//! through, the "Connect an agent" dialog, and designs sent from Figma.
 
 use egui::{Context, Frame, Margin, RichText, ScrollArea, Ui, UserAttentionType, ViewportCommand};
 use moshionly_agent::Tools;
-use moshionly_agent::import::{EnvelopeError, FORMAT, PendingImport, read_envelope};
+use moshionly_agent::import::{EnvelopeError, FORMAT, ImportTarget, PendingImport, read_envelope};
 use moshionly_export::CancelToken;
 
 use super::{QUIT_PATIENCE, Shell};
@@ -12,7 +11,7 @@ use crate::{
     connect::{
         AgentServer, ServerStatus,
         clients::{client_setups, stdio_command},
-        import::{ImportChoice, contents, import_target, is_possible, origin, suggested_choice},
+        import::{contents, origin},
     },
     host::cancellable_app_host,
     theme::{Theme, corner, icons},
@@ -102,18 +101,16 @@ impl Shell {
         self.connect_open
     }
 
-    /// Takes the next design sent from Figma, when none is being shown.
-    /// With a window, it is brought forward. [`show`](Shell::show) calls
-    /// this every frame.
+    /// Adds every design sent from Figma since the last frame and, with a
+    /// window, brings it forward. [`show`](Shell::show) calls this every
+    /// frame, and the app also while the window is covered or minimized.
     pub fn receive_imports(&mut self, ctx: Option<&Context>) {
-        if !self.imports.is_empty() {
-            return;
+        let mut arrived = false;
+        while let Some(pending) = self.server.take_import() {
+            self.import_design(&pending);
+            arrived = true;
         }
-        let Some(pending) = self.server.take_import() else {
-            return;
-        };
-        self.offer_import(pending);
-        if let Some(ctx) = ctx {
+        if let (true, Some(ctx)) = (arrived, ctx) {
             ctx.send_viewport_cmd(ViewportCommand::Focus);
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(
                 UserAttentionType::Informational,
@@ -121,104 +118,61 @@ impl Shell {
         }
     }
 
-    /// Asks the person where a design goes, after any already waiting.
-    pub fn offer_import(&mut self, pending: PendingImport) {
-        if self.imports.is_empty() {
-            self.import_choice = suggested_choice(&pending, self.editor.document());
-        }
-        self.imports.push_back(pending);
-    }
-
-    /// The design the import dialog is asking about.
-    pub fn pending_import(&self) -> Option<&PendingImport> {
-        self.imports.front()
-    }
-
-    /// Where the design asked about would go.
-    pub fn import_choice(&self) -> ImportChoice {
-        self.import_choice
-    }
-
-    /// Chooses where the design asked about goes.
-    pub fn set_import_choice(&mut self, choice: ImportChoice) {
-        self.import_choice = choice;
-    }
-
-    /// Adds the design asked about where chosen, as one undo step, and
-    /// selects what arrived. Returns whether it was added.
-    pub fn accept_import(&mut self) -> bool {
-        let Some(pending) = self.imports.pop_front() else {
-            return false;
-        };
+    /// Adds a design sent from Figma as one undo step, without asking, and
+    /// selects what arrived. Layers that came over before are put in place
+    /// of their earlier versions and keep their animations; the rest become
+    /// new artboards. Returns whether it was added.
+    pub fn import_design(&mut self, pending: &PendingImport) -> bool {
         self.finish_work_in_progress();
-        let artboard = self.editor.artboard().cloned();
-        let added = match import_target(self.import_choice, artboard.as_ref()) {
-            None => {
-                self.toasts
-                    .push(Toast::error("There is no artboard to put the design into"));
+        match pending.apply(self.editor.session(), &ImportTarget::ReplaceMatching) {
+            Ok(outcome) => {
+                if self.editor.sync() {
+                    self.after_document_change();
+                }
+                let added = outcome.roots.len().saturating_sub(outcome.replaced);
+                let mut message = if outcome.replaced == 0 {
+                    format!("Added {} from {}", contents(pending), origin(pending))
+                } else {
+                    let mut text = format!(
+                        "Updated {} from {} and kept their animations",
+                        plural(outcome.replaced, "layer"),
+                        origin(pending)
+                    );
+                    if added > 0 {
+                        text.push_str(&format!(", and added {} new", plural(added, "layer")));
+                    }
+                    text
+                };
+                if outcome.dropped_animations > 0 {
+                    message.push_str(&format!(
+                        "; {} no longer had a layer to move",
+                        plural(outcome.dropped_animations, "animation")
+                    ));
+                }
+                message.push_str(". Undo takes it back.");
+                self.editor.selection.set(outcome.roots);
+                self.toasts.push(Toast::success(message));
+                true
+            }
+            Err(error) => {
+                self.toasts.push(Toast::error(format!(
+                    "The design from {} could not be added: {error}",
+                    origin(pending)
+                )));
                 false
             }
-            Some(target) => match pending.apply(self.editor.session(), &target) {
-                Ok(outcome) => {
-                    if self.editor.sync() {
-                        self.after_document_change();
-                    }
-                    let mut message =
-                        format!("Added {} from {}", contents(&pending), origin(&pending));
-                    if outcome.replaced > 0 {
-                        message = format!(
-                            "Replaced {} from {} and kept their animations",
-                            plural(outcome.replaced, "layer"),
-                            origin(&pending)
-                        );
-                    }
-                    if outcome.dropped_animations > 0 {
-                        message.push_str(&format!(
-                            "; {} no longer had a layer to move",
-                            plural(outcome.dropped_animations, "animation")
-                        ));
-                    }
-                    self.editor.selection.set(outcome.roots);
-                    self.toasts.push(Toast::success(message));
-                    true
-                }
-                Err(error) => {
-                    self.toasts.push(Toast::error(format!(
-                        "The design could not be added: {error}"
-                    )));
-                    false
-                }
-            },
-        };
-        self.next_import();
-        added
-    }
-
-    /// Throws the design asked about away.
-    pub fn reject_import(&mut self) {
-        if self.imports.pop_front().is_some() {
-            self.toasts
-                .push(Toast::info("The design from Figma was not added"));
-        }
-        self.next_import();
-    }
-
-    /// Prepares the dialog for the next design waiting, if any.
-    fn next_import(&mut self) {
-        if let Some(next) = self.imports.front() {
-            self.import_choice = suggested_choice(next, self.editor.document());
         }
     }
 
-    /// Opens the import dialog for a design pasted from the plugin's Copy
-    /// button. Returns false when `text` is not an import envelope at all.
+    /// Adds a design pasted from the plugin's Copy button, as a sent one is.
+    /// Returns false when `text` is not an import envelope at all.
     pub(super) fn paste_envelope(&mut self, text: &str) -> bool {
         if !text.contains(FORMAT) {
             return false;
         }
         match read_envelope(text.as_bytes()) {
             Ok(pending) => {
-                self.offer_import(pending);
+                self.import_design(&pending);
                 true
             }
             // Layers that merely mention the word are pasted as layers.
@@ -326,109 +280,6 @@ impl Shell {
             self.connect_open = false;
         }
     }
-
-    /// The dialog asking where a design sent from Figma goes, while one is
-    /// waiting.
-    pub(super) fn import_dialog(&mut self, ctx: &Context) {
-        let Some(pending) = self.imports.front() else {
-            return;
-        };
-        let theme = Theme::of_ctx(ctx);
-        let c = &theme.color;
-        let document = std::sync::Arc::clone(self.editor.document());
-        let artboard = self.editor.artboard().cloned();
-        let waiting = self.imports.len() - 1;
-        let mut choice = self.import_choice;
-        let mut answer = None;
-        let shown = ModalFrame::new("Design from Figma")
-            .width(460.0)
-            .show(ctx, |ui| {
-                ui.label(
-                    RichText::new(format!("{} from {}", contents(pending), origin(pending)))
-                        .font(theme.body_strong())
-                        .color(c.text),
-                );
-                ui.label(
-                    RichText::new("Nothing changes in your project until you accept it.")
-                        .font(theme.body())
-                        .color(c.text_secondary),
-                );
-                if !pending.notes.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "What is shown differently ({})",
-                            pending.notes.len()
-                        ))
-                        .font(theme.body_medium())
-                        .color(c.text),
-                    );
-                    ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = theme.space.xs;
-                        for note in &pending.notes {
-                            let text = match &note.layer_name {
-                                Some(name) => format!("{name}: {}", note.message),
-                                None => note.message.clone(),
-                            };
-                            ui.label(
-                                RichText::new(text)
-                                    .font(theme.small())
-                                    .color(c.text_secondary),
-                            );
-                        }
-                    });
-                }
-                ui.label(
-                    RichText::new("Where should it go?")
-                        .font(theme.body_medium())
-                        .color(c.text),
-                );
-                for option in ImportChoice::ALL {
-                    let possible = is_possible(option, pending, &document, artboard.as_ref());
-                    ui.add_enabled_ui(possible, |ui| {
-                        if ui
-                            .radio(
-                                choice == option,
-                                RichText::new(option.label()).font(theme.body()),
-                            )
-                            .clicked()
-                        {
-                            choice = option;
-                        }
-                    });
-                }
-                if waiting > 0 {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} more waiting after this one",
-                            plural(waiting, "design")
-                        ))
-                        .font(theme.small())
-                        .color(c.text_tertiary),
-                    );
-                }
-                modal_footer(ui, |ui| {
-                    let ready = is_possible(choice, pending, &document, artboard.as_ref());
-                    if ui
-                        .add_enabled(ready, TextButton::primary("Accept"))
-                        .clicked()
-                    {
-                        answer = Some(true);
-                    }
-                    if ui.add(TextButton::new("Reject")).clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        self.import_choice = choice;
-        match answer {
-            Some(true) => {
-                self.accept_import();
-            }
-            Some(false) => self.reject_import(),
-            None if shown.close_requested => self.reject_import(),
-            None => {}
-        }
-    }
 }
 
 /// The server's status as a coloured dot and a few words.
@@ -513,31 +364,32 @@ mod tests {
     }
 
     #[test]
-    fn a_pasted_envelope_asks_where_it_goes() {
+    fn a_pasted_envelope_is_added_without_asking() {
         let mut shell = shell();
+        let before = shell.editor().document().artboards().len();
         assert!(shell.paste_envelope(ENVELOPE));
-        assert!(shell.pending_import().is_some());
+        let after = shell.editor().document().artboards().len();
+        assert!(after > before, "the design came in as artboards");
         // Layers that only mention the format are pasted as layers.
         assert!(!shell.paste_envelope(r#"[{"name":"moshionly-import"}]"#));
         assert!(!shell.paste_envelope("plain text"));
-        // An envelope this app cannot read says so, and is not pasted.
+        // An envelope this app cannot read says so, and adds nothing.
         assert!(shell.paste_envelope(r#"{"format":"moshionly-import","version":99}"#));
-        assert_eq!(shell.imports.len(), 1);
-        shell.reject_import();
-        assert!(shell.pending_import().is_none());
+        assert_eq!(shell.editor().document().artboards().len(), after);
     }
 
     #[test]
-    fn designs_wait_their_turn() {
+    fn the_same_design_again_updates_what_came_before() {
         let mut shell = shell();
         let pending = read_envelope(ENVELOPE.as_bytes()).unwrap();
-        shell.offer_import(pending.clone());
-        shell.offer_import(pending);
-        shell.set_import_choice(ImportChoice::IntoArtboard);
-        assert!(shell.accept_import());
-        assert_eq!(shell.imports.len(), 1);
-        // The next one starts on its own suggestion.
-        assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
+        assert!(shell.import_design(&pending));
+        let once = shell.editor().document().artboards().len();
+        assert!(shell.import_design(&pending));
+        assert_eq!(
+            shell.editor().document().artboards().len(),
+            once,
+            "the second send replaced the first instead of adding a copy"
+        );
         assert_eq!(AgentLight::of(&ServerStatus::Off), AgentLight::Off);
     }
 }
