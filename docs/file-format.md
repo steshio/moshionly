@@ -55,10 +55,12 @@ The nodes form trees through `parent`:
 | A node of type | Sits inside |
 |---|---|
 | `artboard` | nothing: `parent` is `null` |
-| any other layer | an `artboard`, a `group` or a `mask_group` |
+| any other layer | an `artboard`, a `group`, a `mask_group` or a `component` |
 | any animation | the `artboard` whose timeline it is on, or an `animation_group` in that artboard |
 
 An animation does not sit inside the layer it changes. It is listed in the timeline of the artboard and names its layer in `target`. The target must be a layer in the same artboard (for a `fill` animation it may be the artboard itself). Removing a layer removes the layers inside it and every animation that targets any of them.
+
+An `instance` names the `component` it shows in its `component` field, which may be in any artboard. `parent`, `target` and `component` are the only ways a node refers to another. See [Components](#components).
 
 ### Order
 
@@ -1087,6 +1089,31 @@ Recognised are thousands separators (`,`, a space, `'`, or `.` with a decimal co
 
 An artboard's `duration` is the length of its timeline. Animations may end after it; export stops at the duration. A frame can be asked for at any time, also past the end.
 
+## Components
+
+A `component` is a main component: a box of layers that can be shown again elsewhere, like a group that is reused. It sits in an artboard or a group like any other layer and is drawn there exactly like a `group` with the same fields. An `instance` shows a copy of it:
+
+```json
+{ "id": "btn", "parent": "ab12", "index": "a0", "type": "component", "name": "Button",
+  "x": 40, "y": 40, "width": 240, "height": 64, "fill": "#0D99FF", "corner_radius": 32 },
+{ "id": "lbl", "parent": "btn", "index": "a0", "type": "text", "content": "Buy", "x": 90, "y": 12 },
+{ "id": "in1", "parent": "ab12", "index": "a1", "type": "fade_in", "target": "lbl", "start": 0, "end": 400 },
+{ "id": "cp1", "parent": "ab12", "index": "a1", "type": "instance", "component": "btn",
+  "x": 40, "y": 140, "width": 240, "height": 64, "time_offset": 150 }
+```
+
+What an instance shows at a moment is what the component's own type draws (its fill, stroke, corner radius and clip) and the layers inside it, with every animation that targets a layer inside it, as the component looks `time_offset` milliseconds earlier. So editing the component, its layers or their animations changes every instance, and instances with growing offsets play the same motion one after another. Before its offset has passed, an instance shows the component as it is before its animations start; a negative offset plays them earlier.
+
+- The animations of the layers inside a component live in the component's own artboard, like any animation; instances in other artboards play them too.
+- The component's own placement and effects (position, size, rotation, scale, opacity, blend mode, blur, shadow) and the animations that target the component itself belong to where the component is placed. They are not part of what instances show.
+- An instance is a layer of its own: its position, size, rotation, scale, opacity, blend mode, blur, shadow and the animations that target it are its own, and it is selected and moved as one layer.
+- When an instance's box is not the size of the component's, what it shows is scaled to fill its box: `width` divided by the component's width across, `height` divided by its height down.
+- Instances hold no layers, and there are no per-instance changes (overrides) yet.
+
+The rules: an instance's `component` must name a `component` layer; a component cannot be inside another component; and no component may show itself, by holding an instance of itself or of a component that shows it. Instances of other components inside a component are fine. Removing a component that instances still show is refused; the editor and the agents' `remove` first *detach* those instances, replacing each with a `group` that looks the same, with copies of the component's layers and of their animations. A `group` and a `component` have the same fields, so an update can turn one into the other by setting `type`.
+
+Version 2 of the format added `component` and `instance`. A version 1 file is read as it is and saved as version 2.
+
 ## Images
 
 The `source` of an `image` layer is one of:
@@ -1108,6 +1135,8 @@ A plugin that sends a design to Moshionly sends a list of layer nodes in the for
 - A top-level `artboard` becomes an artboard, or, when the design is placed inside an existing artboard, a group that clips and keeps the artboard's size and fill.
 
 Set `source_id` on every layer to something that identifies it in the tool it comes from, for example `figma:<file key>:<node id>`. When the same design is sent again, Moshionly pairs the old layers with the new ones by `source_id` and moves each layer's animations over to its new version. Layers that share a `source_id` (copies of one component, say) are paired in order: the first old one with the first new one, and so on. Animations of layers that no longer exist are removed, and so are animations of a type that does not work on what a layer has become.
+
+A design may hold `component` and `instance` nodes; an instance's `component` then names a component of the design, which gets its new id. A component that was made in Moshionly from an imported group stays a component when the design is sent again and that group is still there, and its instances elsewhere follow it; if the group is gone, those instances are detached first.
 
 ## A worked example
 
