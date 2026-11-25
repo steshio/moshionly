@@ -56,17 +56,7 @@ impl Ffmpeg {
     /// Finds `ffmpeg` in the folders on `PATH`, then in the usual install
     /// places. `None` when it is not installed.
     pub fn locate() -> Option<Ffmpeg> {
-        let name = if cfg!(windows) {
-            "ffmpeg.exe"
-        } else {
-            "ffmpeg"
-        };
-        let path_dirs = env::var_os("PATH").unwrap_or_default();
-        env::split_paths(&path_dirs)
-            .chain(USUAL_PLACES.iter().map(PathBuf::from))
-            .map(|dir| dir.join(name))
-            .find(|path| is_program(path))
-            .map(|path| Ffmpeg { path })
+        find_program("ffmpeg").map(|path| Ffmpeg { path })
     }
 
     /// The `ffmpeg` at `path`, for example one the person chose in the
@@ -161,8 +151,23 @@ fn encoder_for(format: Format) -> Option<&'static str> {
     }
 }
 
+/// Finds the program `name` (`ffmpeg`, `ffprobe`) in the folders on
+/// `PATH`, then in the usual install places.
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    let path_dirs = env::var_os("PATH").unwrap_or_default();
+    env::split_paths(&path_dirs)
+        .chain(USUAL_PLACES.iter().map(PathBuf::from))
+        .map(|dir| dir.join(&file))
+        .find(|path| is_program(path))
+}
+
 /// Whether `path` is a file this process may run.
-fn is_program(path: &Path) -> bool {
+pub(crate) fn is_program(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };
@@ -471,7 +476,7 @@ fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
 
 /// The end of what a program printed, at most `limit` bytes, without
 /// surrounding blank space.
-fn last_words(said: &str, limit: usize) -> &str {
+pub(crate) fn last_words(said: &str, limit: usize) -> &str {
     let said = said.trim();
     let start = said.len().saturating_sub(limit);
     let start = (start..said.len())

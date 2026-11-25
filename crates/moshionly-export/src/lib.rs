@@ -52,6 +52,7 @@
 //! | [`progress`] | [`Progress`] reports and the [`CancelToken`] |
 //! | [`error`] | [`ExportError`]: why an export stopped |
 //! | [`ffmpeg`] | [`Ffmpeg`]: finding the program that writes WebM and ProRes |
+//! | [`media`] | Video and sound files read with `ffmpeg`: probing, frames for the renderer, mixed sound |
 //! | [`available`] | [`available_formats`]: what can be written right now, and why not |
 
 #![warn(missing_docs)]
@@ -64,6 +65,7 @@ mod frames;
 mod gif;
 pub mod job;
 mod lottie;
+pub mod media;
 mod mp4;
 mod output;
 mod png;
@@ -77,6 +79,7 @@ pub use ffmpeg::Ffmpeg;
 pub use format::{Format, SizeLimits};
 pub use job::{ExportJob, Exported};
 pub use lottie::LottieImages;
+pub use media::{MediaError, MediaInfo, MediaTools};
 pub use progress::{CancelToken, Phase, Progress};
 pub use settings::{
     Loop, MAX_FRAMES, Moment, Moments, Plan, Quality, Settings, SettingsError, Size,
