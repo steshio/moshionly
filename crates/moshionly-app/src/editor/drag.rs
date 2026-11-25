@@ -531,6 +531,45 @@ mod tests {
     }
 
     #[test]
+    fn instances_go_back_with_a_main_dragged_out_and_back() {
+        // Pulled 60 down and back to where it was: with Ctrl, or without
+        // and let go 2 off, where it snaps to the bottom of the instance.
+        for (modifiers, end) in [(Modifiers::CTRL, 400.0), (Modifiers::NONE, 402.0)] {
+            let mut editor = editor();
+            let (_, edits) = build::make_component(editor.document(), &[id("card")]).unwrap();
+            editor.apply("Create component", &edits).unwrap();
+            let (copy, edits) =
+                crate::editor::components::instance_beside(editor.document(), &id("card")).unwrap();
+            editor.apply("Insert instance", &edits).unwrap();
+            assert_eq!(frame(&editor, copy.as_str()).3, 300.0);
+            editor.selection.select(id("card"));
+            let drag = editor
+                .begin_handle(Handle::Resize(Anchor::Bottom), pos2(300.0, 400.0))
+                .unwrap();
+            for y in [430.0, 460.0, end] {
+                editor
+                    .drag_to(&drag, pos2(300.0, y), modifiers, 1.0)
+                    .unwrap();
+                // The instance is the main's height all along.
+                assert_eq!(
+                    frame(&editor, copy.as_str()).3,
+                    frame(&editor, "card").3,
+                    "{modifiers:?} at {y}"
+                );
+            }
+            editor.end_drag();
+            assert_eq!(frame(&editor, "card").3, 300.0, "{modifiers:?}");
+            assert_eq!(frame(&editor, copy.as_str()).3, 300.0, "{modifiers:?}");
+            // Nothing changed, so the drag left no step.
+            assert_eq!(
+                editor.undo_label().as_deref(),
+                Some("Undo Insert instance"),
+                "{modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
     fn arrow_keys_nudge_the_selection() {
         let mut editor = editor();
         editor.selection.set([id("loose"), id("card")]);
