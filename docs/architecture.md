@@ -31,7 +31,7 @@ A document is a flat list of nodes. The tree is assembled from `parent`.
 ```json
 {
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",

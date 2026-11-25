@@ -9,7 +9,7 @@ The reference tables in the middle of this document are generated from the code 
 ```json
 {
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null, "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -25,7 +25,7 @@ The reference tables in the middle of this document are generated from the code 
 | Field | Value | Meaning |
 |---|---|---|
 | `format` | `"moshionly"` | Says what the file is. Anything else is refused as "not a Moshionly project". |
-| `version` | whole number | The version of the format. This document describes version 1. |
+| `version` | whole number | The version of the format. This document describes version 2, which added components (`component` and `instance`). Version 1 files are read as they are. |
 | `name` | string | The name of the project. May be left out. |
 | `nodes` | list of nodes | Everything in the project, as a flat list. |
 
@@ -1118,7 +1118,7 @@ This is `crates/moshionly-core/examples/demo.moshi`: a card that fades and slide
 ```json
 {
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch day",
   "nodes": [
     {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},

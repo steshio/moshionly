@@ -298,7 +298,7 @@ mod tests {
             }));
         }
         let text = serde_json::json!({
-            "format": "moshionly", "version": 1, "name": "Test", "nodes": nodes
+            "format": "moshionly", "version": 2, "name": "Test", "nodes": nodes
         });
         io::parse(&text.to_string()).unwrap()
     }
