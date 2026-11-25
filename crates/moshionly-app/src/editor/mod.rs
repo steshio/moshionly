@@ -31,12 +31,15 @@
 //! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
+//! - [`clips`]: video and sound clips on the timeline: moving and
+//!   trimming them.
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
 pub mod actions;
 pub mod assets;
 pub mod clipboard;
+pub mod clips;
 pub mod components;
 pub mod create;
 pub mod describe;

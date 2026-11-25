@@ -51,10 +51,11 @@ use crate::{
     editor::{
         Editor,
         actions::{ActionError, targets_of, with_emptied_folders},
+        clips::{ClipDrag, clip_key, clip_of},
         pen::Pen,
         playback::{Playback, step_frames},
         text::TextEditing,
-        timeline::{is_folder, timeline_groups},
+        timeline::{SOUND_GROUP, is_folder, timeline_groups},
         tree::TreeState,
     },
     key::Key,
@@ -760,7 +761,8 @@ impl Shell {
         let document = std::sync::Arc::clone(self.editor.document());
         self.pictures.retain(&document);
         self.tree.retain(&document);
-        self.collapsed_groups.retain(|id| document.contains(id));
+        self.collapsed_groups
+            .retain(|id| document.contains(id) || id.as_str() == SOUND_GROUP);
     }
 
     /// When the selection changes, its rows come into view in the layer
@@ -783,15 +785,19 @@ impl Shell {
             self.tree.reveal(&document, id);
         }
         // Actions stay selected only while the layers they animate are; a
-        // folder while a layer its actions animate is.
+        // folder while a layer its actions animate is. Sound, which
+        // animates no layer, while no layer is selected.
         let kept: Vec<NodeId> = self
             .editor
             .actions()
             .iter()
             .filter(|action| {
-                targets_of(&document, std::slice::from_ref(action))
-                    .iter()
-                    .any(|target| selection.contains(target))
+                let targets = targets_of(&document, std::slice::from_ref(action));
+                if targets.is_empty() {
+                    selection.is_empty()
+                } else {
+                    targets.iter().any(|target| selection.contains(target))
+                }
             })
             .cloned()
             .collect();
@@ -819,24 +825,39 @@ impl Shell {
             .as_ref()
             .and_then(|id| moshionly_core::eval::duration_of(&document, id))
             .unwrap_or(0.0);
-        // A selected folder's row is tinted, or else the selected layer's.
+        // A selected folder's row is tinted, or the sound's when only sound
+        // is selected, or else the selected layer's.
+        let only_sound = !self.editor.actions().is_empty()
+            && self.editor.actions().iter().all(|id| {
+                document.get(id).is_some_and(|node| {
+                    node.node_type() == moshionly_core::NodeType::Audio
+                        && node.parent.as_ref() == artboard.as_ref()
+                })
+            });
         let selected_folder = self
             .editor
             .actions()
             .first()
             .map(|id| Key::new(id.as_str()))
-            .filter(|key| is_folder(&document, key));
+            .filter(|key| is_folder(&document, key))
+            .or_else(|| only_sound.then(|| Key::new(SOUND_GROUP)));
         let selected_layer = selected_folder.or_else(|| {
             self.editor
                 .selection
                 .single()
                 .map(|id| Key::new(id.as_str()))
         });
+        // The clips of selected videos show as selected too.
         let selected_bars: Vec<Key> = self
             .editor
             .actions()
             .iter()
             .map(|id| Key::new(id.as_str()))
+            .chain(self.editor.selection.ids().iter().filter_map(|id| {
+                let node = document.get(id)?;
+                (node.node_type() == moshionly_core::NodeType::Video)
+                    .then(|| clip_key(id, node.node_type()))
+            }))
             .collect();
         let timeline = parts::panel(ui, "timeline", layout.timeline, c.surface, |ui| {
             Timeline::new(&mut self.timeline, &groups)
@@ -872,18 +893,31 @@ impl Shell {
             TimelineEvent::JumpedToStart => self.editor.set_playhead(0.0),
             TimelineEvent::JumpedToEnd => self.jump_to_end(),
             TimelineEvent::BarActivated { .. } => self.inspector.tab = InspectorTab::Animate,
-            TimelineEvent::SelectionChanged { bars } => {
-                // Selecting actions selects the layers they animate, and
-                // shows their settings.
-                self.editor.set_actions(bars.iter().map(node));
-                self.editor.select_targets();
-                if !bars.is_empty() {
-                    self.inspector.tab = InspectorTab::Animate;
-                }
-            }
+            TimelineEvent::SelectionChanged { bars } => self.select_bars(&bars),
             TimelineEvent::GroupClicked { key } => {
                 let document = std::sync::Arc::clone(self.editor.document());
-                if is_folder(&document, &key) {
+                if key.as_str() == SOUND_GROUP {
+                    // All the scene's sound, which belongs to no layer.
+                    let sound: Vec<NodeId> = self
+                        .editor
+                        .artboard()
+                        .map(|artboard| {
+                            document
+                                .children(artboard, moshionly_core::Family::Animation)
+                                .iter()
+                                .filter(|id| {
+                                    document.get(id).is_some_and(|node| {
+                                        node.node_type() == moshionly_core::NodeType::Audio
+                                    })
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.editor.selection.clear();
+                    self.editor.set_actions(sound);
+                    self.inspector.tab = InspectorTab::Animate;
+                } else if is_folder(&document, &key) {
                     // The folder itself, so that Delete, Duplicate and
                     // Ungroup work on it whole, with the actions in it.
                     self.editor.select_folder(&node(&key));
@@ -915,17 +949,28 @@ impl Shell {
                 );
             }
             TimelineEvent::BarMoved { key, start, end } => {
-                self.timeline_drag("Move action", |editor| {
-                    editor.retime_actions("Move action", &[(node(&key), start, end)])
-                });
+                match clip_of(self.editor.document(), &key) {
+                    Some(clip) => self.timeline_drag("Move clip", |editor| {
+                        Ok(editor.drag_clip("Move clip", &clip, ClipDrag::Move, start, end)?)
+                    }),
+                    None => self.timeline_drag("Move action", |editor| {
+                        editor.retime_actions("Move action", &[(node(&key), start, end)])
+                    }),
+                }
             }
             TimelineEvent::BarResized {
-                key, start, end, ..
-            } => {
-                self.timeline_drag("Change action length", |editor| {
+                key,
+                edge,
+                start,
+                end,
+            } => match clip_of(self.editor.document(), &key) {
+                Some(clip) => self.timeline_drag("Trim clip", |editor| {
+                    Ok(editor.drag_clip("Trim clip", &clip, ClipDrag::Trim(edge), start, end)?)
+                }),
+                None => self.timeline_drag("Change action length", |editor| {
                     editor.retime_actions("Change action length", &[(node(&key), start, end)])
-                });
-            }
+                }),
+            },
             TimelineEvent::DurationChanged { duration } => {
                 let Some(artboard) = self.editor.artboard().cloned() else {
                     return;
@@ -936,6 +981,36 @@ impl Shell {
             }
             TimelineEvent::EditFinished => self.end_timeline_drag(),
             TimelineEvent::Command { command } => self.action_command(command),
+        }
+    }
+
+    /// Selects what the bars `bars` stand for: actions and sound, and the
+    /// layers they animate; a video's clip selects the video. Sound alone
+    /// selects no layer. Bars show their settings in the Animate tab.
+    fn select_bars(&mut self, bars: &[Key]) {
+        let document = std::sync::Arc::clone(self.editor.document());
+        let mut videos = Vec::new();
+        let mut actions = Vec::new();
+        for key in bars {
+            match clip_of(&document, key) {
+                Some(id) if id.as_str() != key.as_str() => videos.push(id),
+                _ => actions.push(NodeId::from(key.as_str())),
+            }
+        }
+        self.editor.set_actions(actions);
+        let mut layers = targets_of(&document, self.editor.actions());
+        for video in videos {
+            if !layers.contains(&video) {
+                layers.push(video);
+            }
+        }
+        if !layers.is_empty() {
+            self.editor.selection.set(layers);
+        } else if !self.editor.actions().is_empty() {
+            self.editor.selection.clear();
+        }
+        if !bars.is_empty() {
+            self.inspector.tab = InspectorTab::Animate;
         }
     }
 
@@ -1638,6 +1713,126 @@ mod tests {
             calls[4..],
             [AudioCall::Stop, AudioCall::Play(1000.0), AudioCall::Stop]
         );
+    }
+
+    /// A shell on a scene with a video and a song.
+    fn media_shell() -> Shell {
+        let document = moshionly_core::io::parse(
+            r##"{"format":"moshionly","version":3,"name":"Media","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000},
+            {"id":"film","parent":"ab","index":"a0","type":"video","source":"/no/film.mp4",
+             "start":1000,"end":3000,"trim_start":500},
+            {"id":"song","parent":"ab","index":"a0","type":"audio","source":"/no/song.mp3",
+             "start":0,"end":2000}
+            ]}"##,
+        )
+        .unwrap();
+        let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+        Shell::headless(
+            Settings::default(),
+            SessionHandle::from_document(document),
+            renderer,
+        )
+    }
+
+    fn clip(shell: &Shell, id: &str) -> moshionly_core::model::ClipTiming {
+        *shell
+            .editor()
+            .document()
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .clip()
+            .unwrap()
+    }
+
+    #[test]
+    fn dragging_a_clip_moves_or_trims_it_in_one_step() {
+        use crate::timeline::Edge;
+        let mut shell = media_shell();
+        for start in [1100.0, 1200.0] {
+            shell.timeline_event(TimelineEvent::BarMoved {
+                key: Key::new("film/clip"),
+                start,
+                end: start + 2000.0,
+            });
+        }
+        shell.timeline_event(TimelineEvent::EditFinished);
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1200.0, 3200.0, 500.0)
+        );
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Move clip")
+        );
+        // The left edge trims: the file's moments stay where they were.
+        shell.timeline_event(TimelineEvent::BarResized {
+            key: Key::new("film/clip"),
+            edge: Edge::Start,
+            start: 1500.0,
+            end: 3200.0,
+        });
+        shell.timeline_event(TimelineEvent::EditFinished);
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1500.0, 3200.0, 800.0)
+        );
+        // A sound's right edge changes its end.
+        shell.timeline_event(TimelineEvent::BarResized {
+            key: Key::new("song"),
+            edge: Edge::End,
+            start: 0.0,
+            end: 2600.0,
+        });
+        shell.timeline_event(TimelineEvent::EditFinished);
+        assert_eq!(clip(&shell, "song").end, 2600.0);
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Trim clip")
+        );
+        for _ in 0..3 {
+            shell.editor_mut().undo().unwrap();
+        }
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1000.0, 3000.0, 500.0)
+        );
+        assert_eq!(clip(&shell, "song").end, 2000.0);
+    }
+
+    #[test]
+    fn sound_is_selected_on_its_own_and_a_clip_selects_its_video() {
+        let mut shell = media_shell();
+        shell.editor_mut().selection.select(NodeId::from("film"));
+        shell.follow_selection();
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("song")],
+        });
+        assert!(shell.editor().selection.is_empty());
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        assert_eq!(shell.inspector_tab(), InspectorTab::Animate);
+        // Sound stays selected while no layer is.
+        shell.follow_selection();
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        // A video's clip selects the video.
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("film/clip")],
+        });
+        assert_eq!(shell.editor().selection.ids(), [NodeId::from("film")]);
+        assert!(shell.editor().actions().is_empty());
+        // The Sound row selects all the sound.
+        shell.timeline_event(TimelineEvent::GroupClicked {
+            key: Key::new(SOUND_GROUP),
+        });
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        assert!(shell.editor().selection.is_empty());
+        // Delete then takes the sound away.
+        assert!(shell.run(&Context::default(), CommandId::Delete));
+        assert!(!shell.editor().document().contains(&NodeId::from("song")));
     }
 
     #[test]

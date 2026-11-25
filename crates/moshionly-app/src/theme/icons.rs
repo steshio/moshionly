@@ -211,6 +211,10 @@ pub const SQUARE: &str = "\u{e45e}";
 pub const SQUARES_FOUR: &str = "\u{e464}";
 /// The `film-strip` icon.
 pub const FILM_STRIP: &str = "\u{e792}";
+/// The `video-camera` icon.
+pub const VIDEO_CAMERA: &str = "\u{e4da}";
+/// The `speaker-high` icon.
+pub const SPEAKER_HIGH: &str = "\u{e44a}";
 /// The `paperclip` icon.
 pub const PAPERCLIP: &str = "\u{e39a}";
 /// The `arrows-horizontal` icon.
