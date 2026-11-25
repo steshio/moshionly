@@ -16,8 +16,8 @@ This document is the contract between the parts of Moshionly. If code and this d
 | Crate | Depends on | Responsibility |
 |---|---|---|
 | `moshionly-core` | nothing heavy | Document model, edits, undo, file format, schema, easing, and evaluation of a document at a time into a `Scene` |
-| `moshionly-render` | core, Skia | Turns a `Scene` into pixels. Fonts, text layout, images, effects |
-| `moshionly-export` | core, render | PNG, PNG sequence, GIF, MP4, WebM, ProRes and Lottie, as one export job with progress and cancellation |
+| `moshionly-render` | core, Skia | Turns a `Scene` into pixels. Fonts, text layout, images, effects; video frames come from a provider it is given |
+| `moshionly-export` | core, render | PNG, PNG sequence, GIF, MP4, WebM, ProRes and Lottie, as one export job with progress and cancellation; reading video and sound files with `ffmpeg` |
 | `moshionly-agent` | core | The tool surface for AI agents and the MCP server that exposes it. Rendering and export are supplied by the host through traits |
 | `moshionly-ai` | none of the above | Chat providers: subscriptions through installed agent CLIs, and API keys |
 | `moshionly-app` | all | The desktop editor (egui) and the `moshionly` command |
@@ -47,8 +47,8 @@ A document is a flat list of nodes. The tree is assembled from `parent`.
 Rules:
 
 - `id` is a 12 character URL-safe random string, unique in the document.
-- Every node belongs to one of two families: **layers** and **animations**. The `type` decides the family.
-- Artboards are the roots (`parent: null`). A layer's parent is an artboard, a `group`, a `mask_group` or a `component`. An animation's parent is an artboard or an `animation_group` in the same artboard, and its `target` is a layer (or the artboard) in that artboard.
+- Every node belongs to one of two families: **layers** and **animations**. The `type` decides the family. Timeline rows that change no layer (`animation_group` and `audio`) are in the animation family.
+- Artboards are the roots (`parent: null`). A layer's parent is an artboard, a `group`, a `mask_group` or a `component`. An animation's parent is an artboard or an `animation_group` in the same artboard, and its `target` is a layer (or the artboard) in that artboard; `animation_group` and `audio` have no target.
 - Nodes refer to each other in exactly three ways: `parent`, an animation's `target`, and an instance's `component`, which names a `component` layer in any artboard. A component is never inside another component, and never shows itself (it holds no instance of itself, directly or through other components). Code that copies nodes remaps all three.
 - `index` is a fractional index string. Siblings of the same family sort by `index` using plain string comparison. For layers, a larger index is drawn later, so it is in front. For animations the order is only the row order in the timeline.
 - Lengths are in pixels. Angles are in degrees, clockwise positive. Times are in milliseconds from the start of the artboard. Opacity is 0 to 100. Colours are `#RRGGBB` or `#RRGGBBAA`.
@@ -57,11 +57,13 @@ Rules:
 
 ### Layers
 
-`artboard`, `group`, `mask_group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component`, `instance`.
+`artboard`, `group`, `mask_group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component`, `instance`, `video`.
 
 A `mask_group` uses its first child (lowest index) as an alpha mask for the rest. `group` can clip its children to its box.
 
 A `component` is a main component: it has the fields of a `group` and is drawn like one where it is. An `instance` shows it again: what the component draws itself (fill, stroke, corner radius, clip) and its layers, with the animations that target those layers, as the component looks `time_offset` milliseconds earlier, scaled to the instance's box. The component's own placement, effects and animations belong to where it is placed; the instance has its own. Instances hold no layers and have no per-instance changes yet. A `group` and a `component` can turn into each other by an update of `type`, which is how a group becomes a component in place.
+
+A `video` is drawn like an `image` while its clip plays (see [Video and sound](#video-and-sound)).
 
 Shared layer properties: `name`, `x`, `y`, `width`, `height`, `rotation`, `scale`, `opacity`, `hidden`, `locked`, `blend_mode`, `blur`, `shadow`, `source_id`. Shapes add `fill`, `stroke` and, where it applies, `corner_radius`. A paint is a colour string or a linear or radial gradient object. `source_id` records where an imported layer came from (for example `figma:<file key>:<node id>`) so a design can be re-imported without losing its animations.
 
@@ -75,6 +77,7 @@ Every animation has `target`, `start`, `end` and, unless it is instantaneous, `e
 | Instant | `show`, `hide` |
 | Presets | `fade_in`/`fade_out`, `slide_in`/`slide_out`, `grow_in`/`grow_out`, `shrink_in`/`shrink_out`, `spin_in`/`spin_out`, `blur_in`/`blur_out`, `reveal_in`/`reveal_out` |
 | Text | `text_in`, `text_out`, `counter` |
+| Sound | `audio` (no target) |
 | Structure | `animation_group` |
 
 Presets are stored as one node with a few settings and are expanded into property animations during evaluation, so they stay easy to edit.
@@ -87,6 +90,12 @@ For one property of one layer, animations are sorted by `start` and combined by 
 - **Replacing** (everything else): the value is the resting value until the first animation, and from then on the most recently started animation decides. A missing `from` is the value at the moment the animation starts. A missing `to` is the resting value. If the first animation has a `from`, that value also applies before it starts, which is how "fade in" keeps a layer invisible until its cue.
 
 `scale` values are multipliers of the layer's resting scale. `opacity`, sizes, colours, radii and blur are absolute.
+
+### Video and sound
+
+A `video` layer and an `audio` item are *clips*: between `start` and `end` on the artboard's timeline they play their file from `trim_start` on, so at time `t` a clip is at `trim_start + (t - start)` in its file, and their sound plays at `volume` (0 to 1). A video is drawn like an image while its clip plays and not at all outside it; at rest it shows the frame at `trim_start`. An `audio` item draws nothing and has no target. `source` is a file path, never a `data:` URI. Core does not read files, so it never checks a clip against its file's length.
+
+Media is read with the `ffmpeg` program (and the `ffprobe` beside it), run as a separate process, exactly as the WebM and ProRes exports use it. No decoding library is linked: one that reads every format people drop in (H.264 and HEVC from phones, ProRes, WebM, MP3, AAC, WAV...) would be large, platform-specific or GPL, and would break the rule that the app links only system libraries. Like those exports, media is an optional feature: without `ffmpeg` the app hides importing media and says how to install it, video layers in a file draw a placeholder with a warning, and exports are written without sound, saying so.
 
 ### Easing
 
@@ -115,6 +124,8 @@ enum Edit {
 
 The `Scene` is a plain data tree with every value resolved for that instant: transforms, opacity, clip and mask, paints, shape geometry, text broken into drawable units, images and effects. It has no dependency on a graphics library and can be serialised. The renderer, the Lottie exporter and hit testing all read it.
 
+A video layer becomes `Content::Video` with the moment of its file to show (`media_time_ms`), resolved in core so the renderer stays clock-free. Sound is not part of a scene, which is one frame: `eval::sounds(document, artboard, from, to)` lists every audio item and every audible video (including those inside the components instances show, later by their offsets) that plays in a stretch of the timeline, with where it starts on the timeline and in its file, how long it plays and how loud. The editor's playback and the exporters both mix from it.
+
 An instance is evaluated in place: its component's subtree is evaluated with the animations of the component's artboard at the instance's time minus its `time_offset` (not limited to 0, so an instance whose offset has not passed shows the component before its animations start), scaled to the instance's resting box (a `resize` animation on the instance changes its box like a group's, not the content's scale), and every scene node of it carries the instance's id, so hit testing, bounds and selection treat it as one layer. Nested instances are evaluated the same way, with a depth limit as a guard.
 
 Text needs fonts to be measured, and fonts belong to the renderer. Core therefore asks a `TextMeasurer` for line and glyph-cluster boxes when it needs to split text for per-letter, per-word or per-line animation.
@@ -123,11 +134,15 @@ Text needs fonts to be measured, and fonts belong to the renderer. Core therefor
 
 `moshionly-render` draws a `Scene` with Skia on a CPU raster surface into premultiplied RGBA. The same call serves the editor preview (at screen resolution), export (at output resolution) and agent screenshots. A GPU surface is a later optimisation and must not change results.
 
+The renderer decodes no video. A `VideoFrames` provider, carried by the `AssetLoader` (`AssetLoader::with_video`), gives the frame of a file at a moment of it, and the frame is drawn like an image, without mipmaps. The request names the file resolved next to the project and the size the box is drawn at, so a provider can read smaller frames for small boxes. The provider in `moshionly-export::media`, `VideoDecoder`, reads frames through long-lived `ffmpeg` processes, one or two per file and size, streaming forward and starting again a little before a moment they have passed or that is far ahead, and keeps recent frames within a memory budget. The frame shown at a moment is the last one whose timestamp (as written in the file) is at or before it, so the same request gives the same frame in any order and from any thread, as export's parallel rendering needs. Without a provider, or a frame, a placeholder is drawn with a `MissingVideo` warning.
+
 Effect order for a layer, innermost first: content, shadow, blur, mask and clip, blend mode, opacity.
 
 ## Export
 
 Export steps through an artboard at `1000 / fps` millisecond intervals, renders each frame and feeds an encoder. PNG, PNG sequences and GIF are encoded in-process, and MP4 (H.264) with OpenH264 built from source. Formats that need a system encoder (WebM with VP9, ProRes 4444 with alpha) use `ffmpeg` when it is installed; `available_formats()` says which formats can be written right now and why one cannot.
+
+Video exports carry sound. When the artboard has sound in the stretch exported and the settings ask for it (`Settings::sound`, on by default), the job mixes it with `media::SoundDecoder` (48 kHz stereo float samples, each clip read once and kept) and hands the mix to `ffmpeg` as a second input: Opus in WebM, 24-bit PCM in ProRes, and AAC added to the in-process MP4 by copying its video once more. Without `ffmpeg` the file is written without sound and the job says so; GIF, PNG and PNG sequences hold no sound and say so, and Lottie leaves video and sound out, naming each. Video frames in every raster export come from the renderer's frame provider, or a `VideoDecoder` of the job's own.
 
 Every format runs as the same `ExportJob`: `plan()` checks the settings without writing anything, `run()` reports progress and stops when its `CancelToken` is cancelled, and the file is written under a temporary name and renamed into place only when it is complete. The editor's Export dialog, the agents' `export` tool and `moshionly export` all use it.
 
@@ -148,6 +163,7 @@ Lottie export converts the scene model, not pixels. It works on a copy of the do
 | `evaluate` | The values of chosen properties of chosen layers at chosen times, as numbers |
 | `list_fonts` | The font families the renderer can use |
 | `import_image` | Copy an image into the project's `assets/` folder and return the source to use |
+| `import_media` | Copy a video or sound file into the project's `assets/` folder and return the source, its duration, size and whether it has sound |
 | `export` | Render a file to disk |
 | `undo_last_agent_change` | Undo the most recent change an agent made, never the person's own |
 
@@ -155,7 +171,7 @@ Agent edits go through the same validator and the same undo history as manual ed
 
 The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then added to the open document as one undo step: layers that came from the same Figma layers before are replaced and keep their animations, and the rest are added. The server listens on `127.0.0.1` only, and can be turned off in the app.
 
-Screenshots, fonts and exports are supplied by the host through the agent crate's `FrameSource`, `FontSource` and `Exporter` traits. In the app they are the renderer, the renderer's font library and `moshionly-export`; agents' exports go to the project's `exports` folder.
+Screenshots, fonts, exports and reading media files are supplied by the host through the agent crate's `FrameSource`, `FontSource`, `Exporter` and `MediaProbe` traits. In the app they are the renderer, the renderer's font library and `moshionly-export` (its `media::probe` for media); agents' exports go to the project's `exports` folder. Designs sent to `/import` may not hold video or sound, which always refer to files on the computer.
 
 ## AI providers
 
