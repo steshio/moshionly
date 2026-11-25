@@ -266,7 +266,7 @@ impl Shell {
         self.editor.set_actions([]);
         self.inspector.tab = InspectorTab::Design;
         self.fitted = false;
-        self.playback.pause();
+        self.pause();
         // The Export dialog was set up for the old document. Closing it
         // cancels an export still running and waits for it to clean up.
         if let Some(dialog) = self.export.take()
@@ -336,7 +336,7 @@ impl Shell {
 const GATHERED: &str = "Copy images into the project";
 
 /// A message as a sentence: a capital at the start.
-fn sentence(message: &str) -> String {
+pub(super) fn sentence(message: &str) -> String {
     let mut chars = message.trim().chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),

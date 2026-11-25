@@ -29,6 +29,7 @@
 //!   UI thread.
 //! - [`host`]: what the app does for the agent tools: screenshots, fonts
 //!   and exports.
+//! - [`media`]: reading video and sound with an installed `ffmpeg`.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
 //! - [`cli`]: the `moshionly` command's arguments, and its headless `mcp`
@@ -48,6 +49,7 @@ pub mod editor;
 pub mod export;
 pub mod host;
 pub mod key;
+pub mod media;
 pub mod raster;
 pub mod settings;
 pub mod shell;

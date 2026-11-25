@@ -19,7 +19,7 @@ use moshionly_agent::mcp::{McpServer, stdio};
 use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId};
 use moshionly_export::{CancelToken, ExportJob, Format, FrameRate, Phase, Settings};
-use moshionly_render::{AssetLoader, FontLibrary, Renderer};
+use moshionly_render::{FontLibrary, Renderer};
 
 use crate::export::file_size;
 
@@ -261,10 +261,15 @@ fn parse_export(args: &[String]) -> Result<Command, UsageError> {
     Ok(Command::Export(parsed))
 }
 
-/// The renderer for headless commands: bundled and installed fonts, and
-/// images found next to `project`.
+/// The renderer for headless commands: bundled and installed fonts,
+/// images found next to `project`, and video read with the installed
+/// `ffmpeg`, when there is one.
 fn renderer(project: Option<PathBuf>) -> Renderer {
-    Renderer::new(FontLibrary::with_system_fonts(), AssetLoader::new(project))
+    let tools = moshionly_export::media::MediaTools::locate();
+    Renderer::new(
+        FontLibrary::with_system_fonts(),
+        crate::media::asset_loader(project, tools.as_ref()),
+    )
 }
 
 /// Serves MCP on standard input and output until the input ends. Returns

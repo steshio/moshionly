@@ -25,7 +25,8 @@ use std::time::{Duration, Instant};
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
 use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId, build};
-use moshionly_render::{AssetLoader, FontLibrary, Renderer};
+use moshionly_export::media::{MediaTools, SoundDecoder};
+use moshionly_render::{FontLibrary, Renderer};
 
 use self::{
     canvas_panel::CanvasDrag,
@@ -42,6 +43,7 @@ pub use self::{
 };
 use crate::host::HostWork;
 use crate::{
+    audio::{AudioOut, Soundtrack},
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
     connect::AgentServer,
@@ -72,6 +74,14 @@ pub struct Shell {
     palette: Palette,
     /// The playhead tied to the clock while playing.
     playback: Playback,
+    /// The scene's sound, played in step with the playhead.
+    soundtrack: Soundtrack,
+    /// Where playback put the playhead in the last frame, to notice it
+    /// being moved by something else while playing.
+    shown_playhead: f64,
+    /// The installed `ffmpeg` video and sound are read with; `None`
+    /// without it, and then media cannot be imported.
+    media: Option<MediaTools>,
     /// The window's clock, in seconds, as of this frame.
     now: f64,
     /// How sharp the canvas is drawn while playing.
@@ -189,16 +199,26 @@ pub fn untitled_session() -> SessionHandle {
 impl Shell {
     /// A shell on `session`, drawing with the bundled and installed fonts
     /// on worker threads.
+    ///
+    /// Video and sound are read with the installed `ffmpeg`, when there is
+    /// one; sound plays through [`set_audio`](Self::set_audio)'s output.
     pub fn new(settings: Settings, session: SessionHandle) -> Self {
-        let renderer = Renderer::new(FontLibrary::with_system_fonts(), AssetLoader::default());
+        let media = MediaTools::locate();
+        let renderer = Renderer::new(
+            FontLibrary::with_system_fonts(),
+            crate::media::asset_loader(None, media.as_ref()),
+        );
         let pictures = CanvasRenderer::new(renderer.clone());
-        Self::build(settings, session, renderer, pictures)
+        let mut shell = Self::build(settings, session, renderer, pictures);
+        shell.set_media(media);
+        shell
     }
 
     /// A shell on `session` that draws with `renderer` and renders the
     /// canvas on the calling thread, so that every frame shows finished
     /// pictures. For tests and screenshots: the bundled fonts look the same
-    /// on every machine.
+    /// on every machine. It reads no video or sound files until
+    /// [`set_media`](Self::set_media) says how, and plays no sound.
     pub fn headless(settings: Settings, session: SessionHandle, renderer: Renderer) -> Self {
         let pictures = CanvasRenderer::inline(renderer.clone());
         Self::build(settings, session, renderer, pictures)
@@ -227,6 +247,9 @@ impl Shell {
             toasts: Toasts::default(),
             palette: Palette::default(),
             playback: Playback::new(),
+            soundtrack: Soundtrack::default(),
+            shown_playhead: 0.0,
+            media: None,
             now: 0.0,
             quality: Quality::new(),
             looping: true,
@@ -275,6 +298,7 @@ impl Shell {
     /// moment to clean up, so no half-written file is left behind. The app
     /// calls this as it exits.
     pub fn prepare_to_quit(&mut self) {
+        self.pause();
         // The chat's exports stop while the rest shuts down.
         self.own_work.cancel();
         // Closing the dialog cancels its export and waits for it to stop.
@@ -295,6 +319,31 @@ impl Shell {
     /// dialogs; until then every dialog is cancelled.
     pub fn set_dialogs(&mut self, dialogs: Box<dyn Dialogs>) {
         self.dialogs = dialogs;
+    }
+
+    /// Reads video and sound with `tools` from now on, or with nothing:
+    /// without them media cannot be imported and the scene plays without
+    /// sound. [`new`](Self::new) finds the installed `ffmpeg` itself;
+    /// [`headless`](Self::headless) starts without. Video frames come from
+    /// the renderer's own provider, which this does not change.
+    pub fn set_media(&mut self, tools: Option<MediaTools>) {
+        let decoder = tools
+            .as_ref()
+            .map(|tools| std::sync::Arc::new(SoundDecoder::new(tools.clone())));
+        self.soundtrack.set_decoder(decoder);
+        self.media = tools;
+    }
+
+    /// The installed `ffmpeg` video and sound are read with, if any.
+    pub fn media_tools(&self) -> Option<&MediaTools> {
+        self.media.as_ref()
+    }
+
+    /// Says where sound goes: the app gives the computer's speakers;
+    /// until then nothing is heard.
+    pub fn set_audio(&mut self, out: Box<dyn AudioOut>) {
+        let playhead = self.editor.playhead();
+        self.soundtrack.set_output(out, playhead);
     }
 
     /// Whether text is being edited on the canvas.
@@ -939,7 +988,7 @@ impl Shell {
             .artboard()
             .and_then(|id| moshionly_core::eval::duration_of(self.editor.document(), id))
             .unwrap_or(0.0);
-        self.playback.pause();
+        self.pause();
         self.editor.set_playhead(end);
     }
 
@@ -1227,10 +1276,18 @@ impl Shell {
                 .playback
                 .play(self.now, self.editor.playhead(), self.scene_length());
             self.editor.set_playhead(from);
+            self.shown_playhead = self.editor.playhead();
             self.inspector.tab = InspectorTab::Animate;
+            self.soundtrack.play(from);
         } else {
-            self.playback.pause();
+            self.pause();
         }
+    }
+
+    /// Stops playback, and its sound, where it is.
+    pub(super) fn pause(&mut self) {
+        self.playback.pause();
+        self.soundtrack.stop();
     }
 
     /// The length of the current scene, in milliseconds.
@@ -1244,7 +1301,7 @@ impl Shell {
     /// Pauses and moves the playhead `frames` frames on, or back for a
     /// negative count.
     fn step(&mut self, frames: i32) {
-        self.playback.pause();
+        self.pause();
         let time = step_frames(self.editor.playhead(), frames, self.scene_length());
         self.editor.set_playhead(time);
         self.inspector.tab = InspectorTab::Animate;
@@ -1253,27 +1310,67 @@ impl Shell {
     /// Moves the playhead on with the clock while playing. At the end of
     /// the scene it starts over when looping and stops otherwise.
     ///
+    /// While sound is heard, the playhead follows the sound rather than
+    /// the window's clock, so the two stay in step; the sound jumps with
+    /// the playhead when something else moves it (a click on the ruler) or
+    /// the loop starts over.
+    ///
     /// Only the Animate tab shows the animation on the canvas; the Design
     /// tab shows the design at rest. Leaving the Animate tab (with M or the
     /// tab itself) therefore pauses playback where it is, rather than run
     /// the clock over a canvas that does not move.
     fn advance_playback(&mut self, ctx: &Context) {
+        self.follow_sound();
         if !self.playback.is_playing() {
             return;
         }
         if self.inspector.tab != InspectorTab::Animate {
-            self.playback.pause();
+            self.pause();
             return;
         }
-        let tick = self.playback.tick(
-            self.now,
-            self.editor.playhead(),
-            self.scene_length(),
-            self.looping,
-        );
+        let playhead = self.editor.playhead();
+        let moved = playhead != self.shown_playhead;
+        if moved {
+            self.soundtrack.seek(playhead);
+        }
+        // What is heard is where the scene is, unless the playhead was just
+        // moved and the sound has yet to follow.
+        let from = match self.soundtrack.position() {
+            Some(heard) if !moved => heard,
+            _ => playhead,
+        };
+        let tick = self
+            .playback
+            .tick(self.now, from, self.scene_length(), self.looping);
+        if !tick.playing {
+            self.soundtrack.stop();
+        } else if tick.time < from {
+            // Started over.
+            self.soundtrack.seek(tick.time);
+        }
         self.editor.set_playhead(tick.time);
+        self.shown_playhead = self.editor.playhead();
         if tick.playing {
             ctx.request_repaint();
+        }
+    }
+
+    /// Keeps the sound of the current scene mixed while the Animate tab
+    /// shows it, so that play starts with sound, and says which sound
+    /// files could not be read.
+    fn follow_sound(&mut self) {
+        let animate = self.inspector.tab == InspectorTab::Animate;
+        if (animate || self.playback.is_playing())
+            && let Some(artboard) = self.editor.artboard().cloned()
+        {
+            let document = std::sync::Arc::clone(self.editor.document());
+            let project = self.editor.project_file().map(ToOwned::to_owned);
+            self.soundtrack
+                .follow(&document, &artboard, project.as_deref());
+        }
+        for warning in self.soundtrack.poll(self.editor.playhead()) {
+            self.toasts
+                .push(Toast::warning(format!("{}.", files::sentence(&warning))));
         }
     }
 
@@ -1340,6 +1437,8 @@ fn tool_cursor(tool: Tool) -> CursorIcon {
 
 #[cfg(test)]
 mod tests {
+    use moshionly_render::AssetLoader;
+
     use super::*;
 
     fn demo_shell() -> Shell {
@@ -1488,6 +1587,57 @@ mod tests {
         assert!(!document.contains(&folder));
         shell.editor_mut().undo().unwrap();
         assert!(shell.editor().document().contains(&folder));
+    }
+
+    #[test]
+    fn the_sound_plays_jumps_and_stops_with_playback() {
+        use crate::audio::{AudioCall, SilentAudio};
+        let mut shell = demo_shell();
+        let out = SilentAudio::recording();
+        shell.set_audio(Box::new(out.clone()));
+        let ctx = Context::default();
+        shell.now = 10.0;
+        shell.set_playing(true);
+        shell.now = 10.1;
+        shell.advance_playback(&ctx);
+        assert!((shell.editor().playhead() - 100.0).abs() < 1e-6);
+        // A click on the ruler while playing: the sound jumps there.
+        shell.timeline_event(TimelineEvent::PlayheadMoved { time: 2000.0 });
+        shell.now = 10.2;
+        shell.advance_playback(&ctx);
+        // Past the end of the 4 second scene, the loop starts over.
+        shell.now = 12.5;
+        shell.advance_playback(&ctx);
+        assert!((shell.editor().playhead() - 300.0).abs() < 1e-6);
+        shell.set_playing(false);
+        // Paused, the playhead moves without sound.
+        shell.timeline_event(TimelineEvent::PlayheadMoved { time: 1000.0 });
+        shell.advance_playback(&ctx);
+        // Leaving the Animate tab stops playback and its sound.
+        shell.set_playing(true);
+        shell.inspector.tab = InspectorTab::Design;
+        shell.advance_playback(&ctx);
+        assert!(!shell.is_playing());
+        shell.prepare_to_quit();
+        let calls = out.calls();
+        assert_eq!(calls.len(), 7, "{calls:?}");
+        assert_eq!(
+            calls[..3],
+            [
+                AudioCall::Play(0.0),
+                // The demo has no sound: its track is silence.
+                AudioCall::Track(None),
+                AudioCall::Seek(2000.0),
+            ]
+        );
+        assert!(
+            matches!(calls[3], AudioCall::Seek(at) if (at - 300.0).abs() < 1e-6),
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls[4..],
+            [AudioCall::Stop, AudioCall::Play(1000.0), AudioCall::Stop]
+        );
     }
 
     #[test]

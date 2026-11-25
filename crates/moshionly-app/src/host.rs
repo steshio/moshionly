@@ -1,6 +1,6 @@
 //! What the app does for the agent tools: screenshots with the renderer,
-//! the list of fonts from the font library, and exports with
-//! `moshionly-export`.
+//! the list of fonts from the font library, exports with
+//! `moshionly-export`, and reading media files with `ffmpeg`.
 //!
 //! The agent crate knows documents, not pixels; it asks its host through
 //! the traits [`FrameSource`], [`FontSource`] and [`Exporter`]. This module
@@ -67,6 +67,7 @@ fn host_with(renderer: &Renderer, exporter: AppExporter, cancel: &CancelToken) -
         .with_fonts(Arc::new(LibraryFonts::new(fonts.clone())))
         .with_exporter(Arc::new(exporter.with_renderer(renderer.clone())))
         .with_measurer(Arc::new(fonts))
+        .with_media(Arc::new(crate::media::FfmpegProbe))
 }
 
 /// Exports and screenshots done for tools, which can be stopped and

@@ -96,6 +96,8 @@ impl MoshionlyApp {
         theme::set_mode(&cc.egui_ctx, settings.theme);
         let mut shell = Shell::untitled(settings);
         shell.set_dialogs(Box::new(dialogs::NativeDialogs));
+        // Sound plays through the computer's speakers.
+        shell.set_audio(Box::new(crate::audio::DeviceAudio::new()));
         if cfg!(target_os = "macos") {
             shell.use_top_bar_as_title_bar(MAC_WINDOW_BUTTONS);
         }
