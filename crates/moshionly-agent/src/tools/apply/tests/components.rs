@@ -331,6 +331,49 @@ fn removing_a_component_says_which_groups_do_not_look_the_same() {
 }
 
 #[test]
+fn removing_two_components_counts_the_copies_detached_from_an_instance() {
+    // "Kit" holds an instance of the animated card; "Outer", an instance
+    // of the kit, starts 700 ms in. Removing both components detaches
+    // Outer, then the copy of the card's instance in it, which starts 700
+    // ms in too, so the card's title squeezes what it does by then.
+    let tools = demo_tools();
+    let made = apply(
+        &tools,
+        json!([
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "kit", "parent": "second",
+              "node": { "type": "group", "name": "Kit" } },
+            { "op": "add", "parent": "kit", "node": { "type": "instance", "component": "card" } },
+        ]),
+    );
+    let kit = created_id(&made, "kit");
+    apply(
+        &tools,
+        json!([
+            { "op": "make_component", "id": kit },
+            { "op": "add", "parent": "scene",
+              "node": { "type": "instance", "component": kit, "name": "Outer",
+                        "time_offset": -700 } },
+        ]),
+    );
+    let result = apply(&tools, json!([{ "op": "remove", "ids": [kit, "card"] }]));
+    let said = warnings(&result).join("\n");
+    assert!(said.contains("except"), "{said}");
+    assert!(
+        said.contains("(Outer): its time offset is negative"),
+        "{said}"
+    );
+    // Only Outer was an instance before; the copy is part of its group.
+    assert!(
+        result["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("detach 1 instance"),
+        "{result}"
+    );
+}
+
+#[test]
 fn mistakes_with_components_are_explained() {
     let tools = demo_tools();
     let error = refused(&tools, json!([{ "op": "make_component", "id": "scene" }]));

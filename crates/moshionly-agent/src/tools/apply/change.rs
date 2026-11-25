@@ -2,7 +2,7 @@
 //! and `set_duration`.
 
 use moshionly_core::build::{self, DetachLoss};
-use moshionly_core::{Document, Edit, Family, Node, NodeType};
+use moshionly_core::{Document, Edit, Family, Node};
 use serde_json::{Value, json};
 
 use super::batch::{Batch, Owner};
@@ -102,26 +102,19 @@ fn resizes(document: &Document, edit: &Edit) -> bool {
 pub(super) fn remove(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     let ids = batch.targets(args, "the id of the node to remove, or \"ids\" for several")?;
     let before = batch.scratch.len();
-    let edits = build::remove(&batch.scratch, &ids);
     // The instances of a component that goes are detached first, which
     // adds the groups that take their place.
+    let (edits, losses) = build::remove_with_losses(&batch.scratch, &ids);
     let added = edits
         .iter()
         .filter(|edit| matches!(edit, Edit::Add { .. }))
         .count();
     // With what each group cannot keep of its instance's look. An instance
-    // copied out of another one while detaching is not listed.
-    let detached: Vec<(String, Vec<DetachLoss>)> = edits
-        .iter()
-        .filter_map(|edit| match edit {
-            Edit::Remove { id } => batch.scratch.get(id),
-            _ => None,
-        })
-        .filter(|node| node.node_type() == NodeType::Instance && !ids.contains(&node.id))
-        .map(|node| {
-            let losses = build::detach_losses(&batch.scratch, &node.id);
-            (node.label(), losses)
-        })
+    // copied out of another one while detaching is part of that one's
+    // group, and what it loses counts toward it.
+    let detached: Vec<(String, Vec<DetachLoss>)> = losses
+        .into_iter()
+        .filter_map(|(id, lost)| Some((batch.scratch.get(&id)?.label(), lost)))
         .collect();
     batch.commit(edits, Owner::Operation)?;
     // A detached instance is counted as detached, not as removed.
