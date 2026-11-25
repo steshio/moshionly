@@ -710,41 +710,22 @@ fn command_palette() {
     }
 }
 
-/// The dialogs of round 3 over the window: Export, Connect an agent (with
-/// the server on a free port), and a design sent from Figma waiting to be
-/// accepted.
+/// The dialogs of round 3 over the window: Export and Connect an agent (with
+/// the server on a free port).
 #[test]
 fn connection_dialogs() {
     if !can_render() {
         return;
     }
     let size = vec2(1280.0, 820.0);
-    let envelope = include_str!("fixtures/figma-hero.json");
-    for (name, open) in [
-        ("dialog-export", 0),
-        ("dialog-connect", 1),
-        ("dialog-import", 2),
-    ] {
+    for (name, export) in [("dialog-export", true), ("dialog-connect", false)] {
         for variant in Variant::ALL {
             let mut shell = demo_shell();
-            match open {
-                0 => shell.open_export_dialog(),
-                1 => {
-                    shell.serve_agents(0);
-                    shell.open_connect_dialog();
-                }
-                _ => {
-                    let mut pending =
-                        moshionly_agent::import::read_envelope(envelope.as_bytes()).unwrap();
-                    pending.notes.push(moshionly_agent::import::ImportNote {
-                        source_id: None,
-                        layer_name: Some("Headline".into()),
-                        message: "Mixed text styles: the whole text takes the style of most of \
-                                  its characters."
-                            .into(),
-                    });
-                    shell.offer_import(pending);
-                }
+            if export {
+                shell.open_export_dialog();
+            } else {
+                shell.serve_agents(0);
+                shell.open_connect_dialog();
             }
             let (path, image) = snapshot(name, size, variant, move |ui| {
                 shell.show(ui);

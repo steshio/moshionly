@@ -1,5 +1,4 @@
-//! Designs sent from the Figma plugin, waiting for the person to accept
-//! them.
+//! Designs sent from the Figma plugin.
 //!
 //! The plugin posts a `moshionly-import` envelope to the local HTTP server:
 //!
@@ -14,15 +13,15 @@
 //! is trusted. [`read_envelope`] checks the envelope and every node through
 //! core, and accepts images only as embedded `data:` URIs, so a design
 //! cannot point at other files on the disk. What passes becomes a
-//! [`PendingImport`] that the app shows to the person; it changes the
-//! document only when they accept it, through [`PendingImport::apply`].
+//! [`PendingImport`], which changes the document through
+//! [`PendingImport::apply`] as one undo step the person can take back.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, mpsc};
 
 use moshionly_core::import::{self, Destination, ImportError};
-use moshionly_core::{Document, Node, NodeData, NodeId};
+use moshionly_core::{Document, Node, NodeData, NodeId, NodeType};
 use serde_json::Value;
 
 use crate::session::{Origin, SessionHandle};
@@ -40,7 +39,7 @@ const MAX_NOTE_CHARS: usize = 2000;
 const MAX_NAME_CHARS: usize = 300;
 /// The most designs that wait for the app to take them. More are refused
 /// until the app takes one, so a page that sends designs in a loop cannot
-/// fill memory or bury the person in questions.
+/// fill memory while the app is busy or slowing it down.
 pub const MAX_WAITING: usize = 4;
 
 /// Where a design came from.
@@ -66,7 +65,8 @@ pub struct ImportNote {
     pub message: String,
 }
 
-/// What the sender asked for. The person decides in the end.
+/// What the sender asked for. The Moshionly app does not act on it: it
+/// always applies a design with [`ImportTarget::ReplaceMatching`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestedMode {
     /// Add the design as new artboards.
@@ -76,7 +76,7 @@ pub enum RequestedMode {
     Replace,
 }
 
-/// Where an accepted design goes.
+/// Where a design goes when it is applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportTarget {
     /// New artboards to the right of the others.
@@ -89,7 +89,7 @@ pub enum ImportTarget {
     ReplaceMatching,
 }
 
-/// What accepting a design did.
+/// What applying a design did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportOutcome {
     /// The top-level layers that were added or put in place of old ones.
@@ -136,7 +136,7 @@ pub enum EnvelopeError {
     Design(#[from] ImportError),
 }
 
-/// A design that arrived and is waiting for the person to accept it.
+/// A design that arrived, checked and ready to apply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingImport {
     /// Where it came from.
@@ -148,6 +148,8 @@ pub struct PendingImport {
     pub notes: Vec<ImportNote>,
     /// What the sender asked for, when it said.
     pub mode: Option<RequestedMode>,
+    /// How large the envelope was, in bytes.
+    pub bytes: usize,
 }
 
 impl fmt::Display for PendingImport {
@@ -232,6 +234,7 @@ pub fn read_envelope(body: &[u8]) -> Result<PendingImport, EnvelopeError> {
         nodes,
         notes,
         mode,
+        bytes: body.len(),
     })
 }
 
@@ -291,7 +294,7 @@ fn read_notes(value: Option<&Value>) -> Result<Vec<ImportNote>, EnvelopeError> {
 
 impl PendingImport {
     /// Adds the design to the session's document as one undo step made by
-    /// an import. The person should have agreed to it.
+    /// an import, which the person can take back.
     pub fn apply(
         &self,
         session: &SessionHandle,
@@ -319,13 +322,12 @@ impl PendingImport {
                     outcome.roots = imported.roots;
                 }
                 ImportTarget::ReplaceMatching => {
-                    for part in self.parts() {
-                        let root = &part[0];
-                        let earlier = root
-                            .layer()
-                            .and_then(|layer| layer.source_id.as_deref())
-                            .filter(|source| !source.is_empty())
-                            .and_then(|source| layer_from(&scratch, source));
+                    let parts = self.parts();
+                    let earlier = earlier_versions(&scratch, &parts);
+                    // Parts that never came over are added together at the
+                    // end, so several new frames keep their arrangement.
+                    let mut fresh: Vec<Node> = Vec::new();
+                    for (part, earlier) in parts.into_iter().zip(earlier) {
                         match earlier {
                             Some(existing) => {
                                 let replaced =
@@ -335,13 +337,14 @@ impl PendingImport {
                                 outcome.replaced += 1;
                                 outcome.dropped_animations += replaced.dropped.len();
                             }
-                            None => {
-                                let imported =
-                                    import::insert(&scratch, &part, &Destination::NewArtboards)?;
-                                add(&mut scratch, imported.edits)?;
-                                outcome.roots.extend(imported.roots);
-                            }
+                            None => fresh.extend(part),
                         }
+                    }
+                    if !fresh.is_empty() {
+                        let imported =
+                            import::insert(&scratch, &fresh, &Destination::NewArtboards)?;
+                        add(&mut scratch, imported.edits)?;
+                        outcome.roots.extend(imported.roots);
                     }
                 }
             }
@@ -392,17 +395,96 @@ impl PendingImport {
     }
 }
 
-/// The first layer of the document, in tree order, that was imported from
-/// `source`.
-fn layer_from(document: &Document, source: &str) -> Option<NodeId> {
+/// The layer each part of a design takes the place of, if any, all found
+/// before anything changes, so the order of the parts does not matter.
+///
+/// - An artboard only takes an artboard's place, and any other layer only a
+///   layer's: a frame moved into another frame in Figma since it came over,
+///   or out onto the canvas, comes over as new the first time, and later
+///   sends update that copy.
+/// - A layer whose earlier version sits inside another part's earlier
+///   version has left it in Figma since. It updates a copy that came over
+///   on its own when it left before, if there is one, and otherwise comes
+///   over as new, instead of being put in a place that is about to be
+///   replaced. A copy inside another frame, such as one duplicated in
+///   Moshionly, is left alone.
+/// - No earlier layer is taken twice.
+fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<NodeId>> {
+    // Every earlier layer of the right kind for each part, in tree order.
+    let candidates: Vec<Vec<NodeId>> = parts
+        .iter()
+        .map(|part| {
+            let root = &part[0];
+            root.layer()
+                .and_then(|layer| layer.source_id.as_deref())
+                .filter(|source| !source.is_empty())
+                .map(|source| layers_from(document, source, root.node_type() == NodeType::Artboard))
+                .unwrap_or_default()
+        })
+        .collect();
+    let inside = |taken: &HashSet<NodeId>, id: &NodeId| {
+        document
+            .ancestors(id)
+            .any(|above| taken.contains(&above.id))
+    };
+    let mut taken = HashSet::new();
+    let first: Vec<Option<NodeId>> = candidates
+        .iter()
+        .map(|list| {
+            list.first()
+                .cloned()
+                .filter(|existing| taken.insert(existing.clone()))
+        })
+        .collect();
+    let mut found: Vec<Option<NodeId>> = first
+        .into_iter()
+        .map(|earlier| earlier.filter(|existing| !inside(&taken, existing)))
+        .collect();
+    // A part whose first earlier version goes with another part's may have
+    // a copy that came over on its own when it left before: update that one.
+    // Its artboard was made around it, so that artboard has no source.
+    let on_its_own = |id: &NodeId| {
+        document
+            .artboard_of(id)
+            .and_then(|artboard| artboard.layer())
+            .is_some_and(|artboard| artboard.source_id.is_none())
+    };
+    for (earlier, list) in found.iter_mut().zip(&candidates) {
+        if earlier.is_some() {
+            continue;
+        }
+        *earlier = list
+            .iter()
+            .find(|candidate| {
+                !taken.contains(*candidate)
+                    && on_its_own(candidate)
+                    && !inside(&taken, candidate)
+                    && !taken
+                        .iter()
+                        .any(|other| document.is_ancestor(candidate, other))
+            })
+            .cloned();
+        if let Some(chosen) = earlier {
+            taken.insert(chosen.clone());
+        }
+    }
+    found
+}
+
+/// The layers of the document, in tree order, that were imported from
+/// `source` and are artboards exactly when `artboard` is true.
+fn layers_from(document: &Document, source: &str, artboard: bool) -> Vec<NodeId> {
     document
         .nodes()
-        .find(|node| {
-            node.layer()
-                .and_then(|layer| layer.source_id.as_deref())
-                .is_some_and(|id| id == source)
+        .filter(|node| {
+            (node.node_type() == NodeType::Artboard) == artboard
+                && node
+                    .layer()
+                    .and_then(|layer| layer.source_id.as_deref())
+                    .is_some_and(|id| id == source)
         })
         .map(|node| node.id.clone())
+        .collect()
 }
 
 /// What became of a design handed to the app.
@@ -435,8 +517,8 @@ impl ImportSink {
     /// A sink, and the receiver the app takes pending imports from.
     ///
     /// At most [`MAX_WAITING`] designs wait in the receiver; later ones are
-    /// refused until the app takes one. Take a design when it can be shown
-    /// to the person, so the limit also bounds the questions they face.
+    /// refused until the app takes one. An app that takes designs only at a
+    /// pace it chooses makes the limit slow down a sender too.
     pub fn new() -> (ImportSink, mpsc::Receiver<PendingImport>) {
         let (sender, receiver) = mpsc::sync_channel(MAX_WAITING);
         (ImportSink { sender, wake: None }, receiver)

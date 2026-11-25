@@ -4,10 +4,9 @@
 //! - [`server`]: the MCP server on `127.0.0.1:47821` over the open
 //!   document, and its status.
 //! - [`clients`]: how to add Moshionly to Claude Code, Cursor and others.
-//! - [`import`]: the choices of the dialog that asks where a design sent
-//!   from Figma goes.
+//! - [`import`]: what a design sent from Figma holds, in words.
 //!
-//! The dialogs themselves are drawn by the shell.
+//! The "Connect an agent" dialog itself is drawn by the shell.
 
 pub mod clients;
 pub mod import;

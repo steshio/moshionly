@@ -79,7 +79,7 @@ In the editor:
 - **Export** with the Export button or ⌘E: PNG, PNG sequence, GIF, MP4, WebM, ProRes or Lottie.
 - **Chat** with the chat button in the top bar. Its settings let you pick a subscription you already have (Claude Code and other command-line agents) or an API key.
 - **Connect an agent** with the agents button in the top bar. It shows the exact setup for Claude Code, Cursor, VS Code and other MCP clients, which then work in the open file while you watch, and every change they make can be undone.
-- **Bring a design in from Figma** with the plugin, loaded in Figma's desktop app as [plugins/figma/README.md](plugins/figma/README.md) explains. A design sent from Figma, or pasted after the plugin's Copy button, waits for you to accept it.
+- **Bring a design in from Figma** with the plugin, loaded in Figma's desktop app as [plugins/figma/README.md](plugins/figma/README.md) explains. A design sent from Figma, or pasted after the plugin's Copy button, is added at once as one step you can undo; sending it again later updates it and keeps its animations.
 
 The same `moshionly` command also works without a window:
 
@@ -195,7 +195,7 @@ Done:
 - [x] Animate tab, editable timeline and playback
 - [x] Export: PNG, PNG sequence, GIF, MP4, WebM and ProRes (with ffmpeg), and Lottie
 - [x] Chat panel and AI settings in the editor
-- [x] Connect an agent to the open file, accept designs from Figma, and the `moshionly export` and `moshionly mcp` commands
+- [x] Connect an agent to the open file, take in designs from Figma, and the `moshionly export` and `moshionly mcp` commands
 - [x] The Mac app: `Moshionly.app` and a `.dmg` from one command, which can also sign, notarize and staple them
 
 Next:

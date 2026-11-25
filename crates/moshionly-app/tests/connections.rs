@@ -1,6 +1,6 @@
 //! The app's connections end to end, without a window: an agent editing
 //! the open document over MCP on HTTP, a design posted by the Figma plugin
-//! and accepted, and an export started from the Export dialog.
+//! and added at once, and an export started from the Export dialog.
 //!
 //! The server listens on a free port chosen by the system, never on 47821,
 //! which may be taken where the tests run.
@@ -9,12 +9,12 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use moshionly_agent::import::MAX_WAITING;
 use moshionly_agent::{Origin, SessionHandle};
 use moshionly_app::connect::ServerStatus;
-use moshionly_app::connect::import::ImportChoice;
 use moshionly_app::export::RunOutcome;
 use moshionly_app::settings::Settings;
-use moshionly_app::shell::{FileAction, Shell};
+use moshionly_app::shell::{FileAction, MAX_IMPORTS_PER_WINDOW, Shell};
 use moshionly_core::{NodeId, NodeType};
 use moshionly_export::Format;
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
@@ -163,7 +163,7 @@ fn an_agent_edits_the_open_document_over_http_and_the_person_can_undo_it() {
 }
 
 #[test]
-fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
+fn a_design_posted_from_figma_is_added_at_once_as_one_step() {
     let (mut shell, address) = serving_shell();
     let before = shell.editor().document().artboards().len();
 
@@ -171,18 +171,13 @@ fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
     assert_eq!(reply.status, 202, "{}", reply.body);
     assert_eq!(reply.json()["status"], "pending");
 
-    // Nothing changes until the person answers.
+    // Nothing asks first: the design is added as soon as it arrives.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while shell.pending_import().is_none() {
+    while shell.editor().document().artboards().len() == before {
         shell.receive_imports(None);
         assert!(Instant::now() < deadline, "the design never arrived");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(shell.editor().document().artboards().len(), before);
-    assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
-
-    assert!(shell.accept_import());
-    assert!(shell.pending_import().is_none());
     let document = shell.editor().document();
     // The frame and each loose layer beside it become artboards.
     assert_eq!(document.artboards().len(), before + 3);
@@ -220,12 +215,35 @@ fn a_design_posted_from_figma_waits_for_the_person_and_is_added_as_one_step() {
     assert!(!shell.editor().document().contains(&hero));
 }
 
+/// Nothing asks before a design is added, so a page posting designs in a
+/// loop is slowed down: a few are added a minute, the next wait, and the
+/// server refuses more once a few are waiting.
+#[test]
+fn designs_posted_in_a_loop_are_added_a_few_a_minute() {
+    assert!(MAX_IMPORTS_PER_WINDOW >= MAX_WAITING && MAX_IMPORTS_PER_WINDOW < 2 * MAX_WAITING);
+    let (mut shell, address) = serving_shell();
+    let post = || send(address, "/import", &[JSON, ("Origin", "null")], ENVELOPE);
+    for _ in 0..2 {
+        for _ in 0..MAX_WAITING {
+            assert_eq!(post().status, 202);
+        }
+        shell.receive_imports(None);
+    }
+    // The minute's allowance is used up, so these stay waiting.
+    let waiting = 2 * MAX_WAITING - MAX_IMPORTS_PER_WINDOW;
+    for _ in waiting..MAX_WAITING {
+        assert_eq!(post().status, 202);
+    }
+    let refused = post();
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert!(refused.body.contains("still adding"), "{}", refused.body);
+}
+
 #[test]
 fn a_design_sent_again_replaces_the_first_and_keeps_its_animations() {
     let mut shell = demo_shell();
     let pending = moshionly_agent::import::read_envelope(ENVELOPE.as_bytes()).unwrap();
-    shell.offer_import(pending.clone());
-    assert!(shell.accept_import());
+    assert!(shell.import_design(&pending));
     let title = shell
         .editor()
         .document()
@@ -252,11 +270,10 @@ fn a_design_sent_again_replaces_the_first_and_keeps_its_animations() {
         .map(|node| node.id.clone())
         .expect("the fade was added");
 
-    shell.offer_import(pending);
-    assert_eq!(shell.import_choice(), ImportChoice::NewArtboards);
-    shell.set_import_choice(ImportChoice::ReplaceMatching);
-    assert!(shell.accept_import());
+    let artboards = shell.editor().document().artboards().len();
+    assert!(shell.import_design(&pending));
     let document = shell.editor().document();
+    assert_eq!(document.artboards().len(), artboards, "no copy was added");
     let fade = document.get(&fade).expect("the animation stays");
     let target = fade.target().expect("it moves a layer");
     assert!(document.contains(target), "on the new version of the layer");

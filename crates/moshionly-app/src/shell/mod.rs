@@ -19,10 +19,9 @@ mod tool_bar;
 mod top_bar;
 
 use std::collections::{HashSet, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
-use moshionly_agent::import::PendingImport;
 use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId, build};
 use moshionly_render::{AssetLoader, FontLibrary, Renderer};
@@ -33,7 +32,7 @@ use self::{
     top_bar::TopBar,
 };
 pub use self::{
-    connect::AgentLight,
+    connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORT_BYTES_PER_WINDOW, MAX_IMPORTS_PER_WINDOW},
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
@@ -43,7 +42,7 @@ use crate::host::HostWork;
 use crate::{
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
-    connect::{AgentServer, import::ImportChoice},
+    connect::AgentServer,
     dialogs::{Dialogs, NoDialogs, is_image, is_project},
     editor::{
         Editor,
@@ -142,11 +141,9 @@ pub struct Shell {
     agent_port: Option<u16>,
     /// The "Connect an agent" dialog is open.
     connect_open: bool,
-    /// Designs sent from Figma, waiting for the person: the first is being
-    /// asked about.
-    imports: VecDeque<PendingImport>,
-    /// Where the design asked about would go.
-    import_choice: ImportChoice,
+    /// When the designs sent from Figma in the last minute were added, and
+    /// how many bytes each was.
+    recent_imports: VecDeque<(Instant, usize)>,
     /// The Export dialog, while it is open.
     export: Option<export_dialog::ExportDialog>,
 }
@@ -260,8 +257,7 @@ impl Shell {
             server: AgentServer::off(),
             agent_port: None,
             connect_open: false,
-            imports: VecDeque::new(),
-            import_choice: ImportChoice::NewArtboards,
+            recent_imports: VecDeque::new(),
             export: None,
         }
     }
@@ -410,7 +406,6 @@ impl Shell {
             || self.renaming.is_some()
             || self.list_drag.is_some()
             || self.connect_open
-            || !self.imports.is_empty()
             || self.export.is_some();
 
         self.now = ctx.input(|i| i.time);
@@ -528,7 +523,6 @@ impl Shell {
         requested.extend(self.palette.show(&ctx, &self.commands));
         self.connect_dialog(&ctx);
         self.export_dialog(&ctx);
-        self.import_dialog(&ctx);
         self.unsaved_prompt(&ctx);
         if !self.palette.is_open() {
             self.nudge(&ctx);

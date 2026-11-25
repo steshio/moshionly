@@ -124,10 +124,10 @@ fn run() -> Result<(), String> {
         server.url()
     );
     println!("Press Ctrl+C to stop.");
-    // Designs from the Figma plugin are only listed: the app is where the
-    // person accepts them.
+    // Designs from the Figma plugin are only listed: the app is what adds
+    // them to the open project.
     for pending in inbox {
-        println!("Received a design: {pending}. The app would ask where to put it.");
+        println!("Received a design: {pending}. The app would add it.");
     }
     drop(subscription);
     Ok(())

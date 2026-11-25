@@ -148,7 +148,7 @@ Lottie export converts the scene model, not pixels. Layers become Lottie layers,
 
 Agent edits go through the same validator and the same undo history as manual edits. A batch either applies completely or not at all, and errors come back as messages that say what to fix.
 
-The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then waits for the person to accept it, and is never applied directly. The server listens on `127.0.0.1` only, and can be turned off in the app.
+The tools are exposed three ways: to the built-in chat, over MCP on a local HTTP port (`http://127.0.0.1:47821/mcp`) while the app is open, and over MCP on stdio through `moshionly mcp` for headless use (which writes changes back to its file only with `--save`). The same local port accepts designs sent by the Figma plugin (`POST /import`); a design is checked and then added to the open document as one undo step: layers that came from the same Figma layers before are replaced and keep their animations, and the rest are added. The server listens on `127.0.0.1` only, and can be turned off in the app.
 
 Screenshots, fonts and exports are supplied by the host through the agent crate's `FrameSource`, `FontSource` and `Exporter` traits. In the app they are the renderer, the renderer's font library and `moshionly-export`; agents' exports go to the project's `exports` folder.
 
@@ -165,7 +165,7 @@ Screenshots, fonts and exports are supplied by the host through the agent crate'
 
 The open document lives in one `SessionHandle` from `moshionly-agent`, which holds the `Document` and its `History`. The editor, the built-in chat and the MCP server all work through that one handle, so an agent's edit appears on the canvas at once and the person can undo it. Around it the editor keeps view state: selection, current artboard, playhead, tool, zoom. The editor's rules (what a click selects, how a drag becomes edits, how an action is added) are plain functions tested without a window.
 
-Artboards are drawn by evaluating and rendering on worker threads and showing the result as a texture; while playing, the canvas may draw less sharp to keep up and returns to full sharpness when stopped. Exports run on their own thread with a progress bar and Cancel. A design sent from Figma, or pasted from the plugin's Copy button, opens a dialog where the person chooses where it goes and accepts or rejects it; accepting is one undo step.
+Artboards are drawn by evaluating and rendering on worker threads and showing the result as a texture; while playing, the canvas may draw less sharp to keep up and returns to full sharpness when stopped. Exports run on their own thread with a progress bar and Cancel. A design sent from Figma, or pasted from the plugin's Copy button, is added at once as one undo step, with a toast saying what arrived: layers that came from the same Figma layers before are replaced and keep their animations, and the rest are added. Once six sent designs, or 32 MB of them, were added in the last minute, the rest wait (the one that crosses 32 MB is still added whole).
 
 The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 

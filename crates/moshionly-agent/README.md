@@ -42,7 +42,7 @@ let host = Host::new()
 let tools = Tools::new(session.clone(), host);
 
 // Agents outside the app: MCP at http://127.0.0.1:47821/mcp, and designs
-// from the Figma plugin at /import, which wait for the person to accept them.
+// from the Figma plugin at /import, which the app adds as one undo step.
 let (imports, inbox) = ImportSink::new();
 let server = HttpServer::start_with_imports(McpServer::new(tools.clone()), HttpConfig::default(), imports)?;
 
@@ -50,9 +50,10 @@ let server = HttpServer::start_with_imports(McpServer::new(tools.clone()), HttpC
 let bridge = ToolBridge::new(tools);
 let prompt = bridge.system_prompt(None);
 
-// Each frame: a design that arrived is shown to the person, who decides.
+// Each frame: add what arrived. Layers that came over before are replaced
+// and keep their animations; the rest are added.
 if let Ok(pending) = inbox.try_recv() {
-    // e.g. pending.apply(&session, &ImportTarget::ReplaceMatching)?
+    pending.apply(&session, &ImportTarget::ReplaceMatching)?;
 }
 ```
 
@@ -72,7 +73,7 @@ claude mcp add --transport http moshionly http://127.0.0.1:47821/mcp
 
 - The HTTP server listens on `127.0.0.1` only.
 - `/mcp` refuses any request with an `Origin` other than its own address, and any `Host` other than this machine, so a web page cannot drive it. Agent tools send no `Origin`.
-- `/import` and `/health` also answer the Figma plugin panel, whose origin is `null`, including the private-network preflight Chromium sends. Since any sandboxed page looks the same, an import is size-capped, checked through core, must carry images as `data:` URIs, and is handed to the app as a `PendingImport` that the person accepts or rejects; at most four wait for the app at once. Nothing is applied directly.
+- `/import` and `/health` also answer the Figma plugin panel, whose origin is `null`, including the private-network preflight Chromium sends. Since any sandboxed page looks the same, an import is size-capped, checked through core, must carry images as `data:` URIs, and is handed to the app as a `PendingImport`; at most four wait for the app at once. The Moshionly app adds it without asking, as one undo step the person can take back, and stops adding more once six designs, or 32 MB of them, came in within the last minute (the one that crosses 32 MB is still added whole): that slows down a page posting designs in a loop, and turning off "Let agents on this computer connect" in the app stops it.
 - Tools write files only into the project's `assets` and `exports` folders, never over an existing file (a host can allow other export paths with `ToolsConfig::export_anywhere`).
 
 ## The Figma import envelope
@@ -84,7 +85,7 @@ claude mcp add --transport http moshionly http://127.0.0.1:47821/mcp
   "notes": [ { "source_id": "figma:abc:1:2", "layer_name": "Blob", "message": "..." } ] }
 ```
 
-`POST http://localhost:47821/import` answers `202` with `{ "ok": true, "status": "pending", "layers": 2, "notes": 0 }`, or an error with `{ "ok": false, "error": "..." }`: `400` for a design that cannot be used, `413` for one that is too large, and `429` while four designs are already waiting for the person. An optional `"mode"` of `"new_artboards"` or `"replace"` is passed on to the app as a suggestion.
+`POST http://localhost:47821/import` answers `202` with `{ "ok": true, "status": "pending", "layers": 2, "notes": 0 }`, or an error with `{ "ok": false, "error": "..." }`: `400` for a design that cannot be used, `413` for one that is too large, and `429` while four designs are already waiting for the app to take them. An optional `"mode"` of `"new_artboards"` or `"replace_matching"` is still read into `PendingImport::mode`; the Moshionly app ignores it and always replaces what came over before.
 
 ## Trying it
 

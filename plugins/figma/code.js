@@ -2404,13 +2404,16 @@ async function convertSelection(selection, options) {
 const ENVELOPE_FORMAT = 'moshionly-import';
 const ENVELOPE_VERSION = 1;
 
-/** What the person chose in the panel for a design sent before. */
+/**
+ * The modes the envelope format accepts. The panel sends none: Moshionly
+ * replaces what came over before and adds the rest, and ignores a mode.
+ */
 const IMPORT_MODES = new Set(['new_artboards', 'replace_matching']);
 
 /**
  * The envelope Moshionly's `/import` endpoint and its paste take:
- * the layers, where they came from, the person's choice for designs sent
- * before, and the notes about what was approximated or flattened.
+ * the layers, where they came from, a mode if one is given, and the notes
+ * about what was approximated or flattened.
  *
  * @param {{nodes: object[], notes: object[]}} result  a conversion whose
  *   pictures have been fetched (see `resolveAssets`)
@@ -2456,8 +2459,6 @@ async function exportSelection(selection, options) {
 /** The panel's size in Figma, in pixels. */
 const PANEL_SIZE = { width: 340, height: 560 };
 
-/** Where the person's choice of mode is remembered between runs. */
-const MODE_STORAGE_KEY = 'moshionly.mode';
 
 /** Plugin data on the document that names it when Figma gives no file key. */
 const FILE_ID_KEY = 'moshionly-file-id';
@@ -2539,7 +2540,7 @@ const figmaLoader = {
 };
 
 /** Converts the selection for the panel, which sends or copies it. */
-async function convertForPanel(purpose, mode) {
+async function convertForPanel(purpose) {
   if (busy) return;
   busy = true;
   try {
@@ -2551,7 +2552,6 @@ async function convertForPanel(purpose, mode) {
     const { envelope, json } = await exportSelection(selection, {
       fileKey: fileKeyOf(),
       fileName: figma.root.name,
-      mode,
       loader: figmaLoader,
       onProgress: (progress) => figma.ui.postMessage(Object.assign({ type: 'progress' }, progress)),
       pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
@@ -2586,17 +2586,11 @@ function startPlugin() {
   figma.ui.onmessage = async (message) => {
     if (!message || typeof message.type !== 'string') return;
     switch (message.type) {
-      case 'ready': {
+      case 'ready':
         postSelection();
-        const mode = await figma.clientStorage.getAsync(MODE_STORAGE_KEY);
-        if (IMPORT_MODES.has(mode)) figma.ui.postMessage({ type: 'mode', mode });
-        break;
-      }
-      case 'set-mode':
-        if (IMPORT_MODES.has(message.mode)) await figma.clientStorage.setAsync(MODE_STORAGE_KEY, message.mode);
         break;
       case 'convert':
-        await convertForPanel(message.purpose === 'copy' ? 'copy' : 'send', message.mode);
+        await convertForPanel(message.purpose === 'copy' ? 'copy' : 'send');
         break;
       case 'shrunk': {
         const done = shrinkRequests.get(message.id);

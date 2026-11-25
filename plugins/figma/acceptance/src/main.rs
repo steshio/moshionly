@@ -9,8 +9,8 @@
 //! endpoint, then imports it into an empty project three ways, validating
 //! the project after each: as new artboards, into an existing artboard, and
 //! once more over itself after every imported layer got an animation, which
-//! must keep every animation (what "Replace the matching layers" does when a
-//! design is sent again).
+//! must keep every animation (what Moshionly does every time a design is
+//! sent again).
 //!
 //! `fields` writes the fields of every layer type as core defines them, or
 //! with `--check` says whether the file is up to date. The plugin's Node
