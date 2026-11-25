@@ -52,10 +52,13 @@ pub struct Item {
 /// Whether resizing `node` scales what is inside it. A group that does not
 /// clip behaves like a Figma group: its contents stretch with it. A group
 /// that clips behaves like a Figma frame: its box changes and its contents
-/// stay as they are. A mask group stretches like a group.
+/// stay as they are. A mask group stretches like a group, and a main
+/// component like the group it was made from. An instance holds no layers:
+/// its box changes, and the engine scales what it shows to fill it.
 pub fn scales_contents(node: &Node) -> bool {
     match &node.data {
         NodeData::Group(group) => !group.clip,
+        NodeData::Component(component) => !component.clip,
         NodeData::MaskGroup(_) => true,
         _ => false,
     }
@@ -825,6 +828,26 @@ mod tests {
         assert_eq!(props(&after, "a").2, 200.0);
         assert_eq!(props(&after, "frame").2, 400.0);
         assert_eq!(props(&after, "kept"), props(&doc, "kept"));
+    }
+
+    #[test]
+    fn a_main_stretches_like_a_group_and_an_instance_only_changes_its_box() {
+        let doc = io::parse(
+            r##"{"format":"moshionly","version":2,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","width":1000,"height":1000},
+            {"id":"main","parent":"ab","index":"a0","type":"component","x":100,"y":100,"width":200,"height":100},
+            {"id":"a","parent":"main","index":"a0","type":"rect","x":0,"y":0,"width":100,"height":50},
+            {"id":"copy","parent":"ab","index":"a1","type":"instance","component":"main","x":400,"y":100,"width":200,"height":100}
+            ]}"##,
+        )
+        .unwrap();
+        let after = resize_by(&doc, &["main"], Anchor::Right, vec2(200.0, 0.0));
+        assert_eq!(props(&after, "main").2, 400.0);
+        assert_eq!(props(&after, "a").2, 200.0);
+        // The instance's own box, which the engine fills with the main.
+        let after = resize_by(&doc, &["copy"], Anchor::BottomRight, vec2(200.0, 100.0));
+        assert_eq!(props(&after, "copy"), (400.0, 100.0, 400.0, 200.0, 0.0));
+        assert_eq!(props(&after, "a"), props(&doc, "a"), "the main stays");
     }
 
     #[test]
