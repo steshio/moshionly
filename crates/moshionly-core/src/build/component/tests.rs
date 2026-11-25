@@ -836,10 +836,15 @@ fn a_size_follows_within_a_hundredth_and_the_last_one_counts() {
         instances_follow_mains(&document, &[Edit::set("card", "height", Value::Null)]),
         ["copy", "wide", "inner"].map(|instance| Edit::set(instance, "height", 100.0))
     );
-    // Nothing follows what does not resize a component.
+    // A side set to the size it has still counts: a drag that makes its
+    // edits from where it began puts the instances back with the card.
+    assert_eq!(
+        instances_follow_mains(&document, &[Edit::set("card", "width", 100)]),
+        [Edit::set("copy", "width", 100.0)]
+    );
+    // Nothing follows what does not set a component's size.
     for edit in [
         Edit::set("card", "fill", "#00FF00"),
-        Edit::set("card", "width", 100.004),
         Edit::set("copy", "width", 300),
         Edit::set("dot", "width", 300),
     ] {

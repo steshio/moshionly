@@ -138,19 +138,22 @@ const SAME_SIZE: f64 = 0.01;
 
 /// Edits that keep instances the size of their component when `edits`
 /// resize it, so that what they show is not squeezed or stretched: an
-/// instance as wide as the component was takes its new width, and the same
-/// for the height, each side on its own. An instance resized by hand keeps
-/// its size, and so does a side of an instance that `edits` set
-/// themselves. Instances that `edits` remove, or point at another
+/// instance as wide as the component was takes the width `edits` give it,
+/// and the same for the height, each side on its own. An instance resized
+/// by hand keeps its size, and so does a side of an instance that `edits`
+/// set themselves. Instances that `edits` remove, or point at another
 /// component, are left alone.
 ///
 /// `document` is the document before `edits`. The edits returned go after
 /// them, in the same batch, so that one undo step resizes the component and
-/// its instances.
+/// its instances. A side is set even when `edits` leave the component that
+/// size: a drag that applies edits made from the document it began with
+/// at every step puts the instances back when it puts the component back.
 pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> {
     const SIDES: [&str; 2] = ["width", "height"];
     // Each component that `edits` update, as they leave it, in the order
-    // they first touch it; and what they do to the other nodes.
+    // they first touch it; the sides they set on each node; and the nodes
+    // they remove or point at another component.
     let mut mains: Vec<(&NodeId, Node)> = Vec::new();
     let mut set: HashMap<&NodeId, [bool; 2]> = HashMap::new();
     let mut left_alone: HashSet<&NodeId> = HashSet::new();
@@ -192,6 +195,7 @@ pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> 
             continue;
         };
         let (was, now) = ([was.width, was.height], [now.width, now.height]);
+        let resized = set.get(id).copied().unwrap_or_default();
         for instance in document.instances_of(id) {
             let gone = left_alone.contains(&instance.id)
                 || document
@@ -203,7 +207,7 @@ pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> 
             let own_set = set.get(&instance.id).copied().unwrap_or_default();
             let mut patch = Map::new();
             for (side, size) in [own.width, own.height].into_iter().enumerate() {
-                if !own_set[side] && same(size, was[side]) && !same(now[side], was[side]) {
+                if resized[side] && !own_set[side] && same(size, was[side]) {
                     patch.insert(SIDES[side].to_owned(), Value::from(now[side]));
                 }
             }
