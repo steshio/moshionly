@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use moshionly_core::eval::{duration_of, sounds};
 use moshionly_core::{Document, NodeId};
 use serde_json::json;
 
@@ -66,6 +67,10 @@ pub(crate) static EXPORT: ToolDef = ToolDef {
                 "transparent": {
                     "type": "boolean",
                     "description": "Leave the artboard's background out. Works for png, png_sequence, webm, prores and lottie. Default false."
+                },
+                "sound": {
+                    "type": "boolean",
+                    "description": "mp4, webm and prores: include the artboard's sound (its audio items and the sound of its videos). Other formats hold no sound. Default true."
                 }
             }),
             &["format"],
@@ -145,14 +150,23 @@ fn run(context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
         // The host shows progress itself; a tool call only has its result.
         &mut |_| {},
     )?;
-    Ok(ToolOutput::json(&json!({
+    let mut result = json!({
         "path": exported.path,
         "format": format.as_str(),
         "bytes": exported.bytes,
         "frames": exported.frames,
         "artboard": artboard,
         "scale": number(options.scale),
-    })))
+    });
+    let duration = duration_of(&document, &artboard).unwrap_or(0.0);
+    let has_sound = !sounds(&document, &artboard, 0.0, duration).is_empty();
+    if has_sound && options.sound && !holds_sound(format) {
+        result["note"] = json!(format!(
+            "The artboard has sound, and a {format} file holds none, so it was left out. Export \
+             mp4, webm or prores to keep it."
+        ));
+    }
+    Ok(ToolOutput::json(&result))
 }
 
 /// The artboard named, or the only one there is.
@@ -218,13 +232,22 @@ fn options(args: &Args, format: ExportFormat) -> Result<ExportOptions, ToolError
             ),
         ));
     }
+    let sound = args.boolean("sound")?.unwrap_or(defaults.sound);
     Ok(ExportOptions {
         scale,
         fps,
         time_ms,
         transparent,
-        ..ExportOptions::default()
+        sound,
     })
+}
+
+/// Whether files of `format` can carry sound.
+fn holds_sound(format: ExportFormat) -> bool {
+    matches!(
+        format,
+        ExportFormat::Mp4 | ExportFormat::Webm | ExportFormat::Prores
+    )
 }
 
 /// Where the export goes: a free name in the exports folder, or the path
@@ -477,6 +500,45 @@ mod tests {
         );
         let options = exporter.seen.lock().unwrap()[0].1;
         assert_eq!((options.time_ms, options.scale), (Some(250.0), 2.0));
+    }
+
+    #[test]
+    fn sound_goes_in_videos_and_is_said_to_be_left_out_of_the_rest() {
+        let dir = TempDir::new("export-sound");
+        let (tools, exporter) = tools(Some(&dir), ToolsConfig::default());
+        let quiet = call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "gif" }),
+        );
+        assert!(quiet.get("note").is_none(), "no sound, nothing to say");
+        call(
+            &tools,
+            "apply_edits",
+            json!({ "operations": [{ "op": "add", "parent": "scene", "node": {
+                "type": "audio", "source": "music.mp3", "start": 0, "end": 1000 } }] }),
+        );
+        let gif = call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "gif" }),
+        );
+        let note = gif["note"].as_str().unwrap();
+        assert!(note.contains("gif file holds none"), "{note}");
+        let mp4 = call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "mp4" }),
+        );
+        assert!(mp4.get("note").is_none());
+        call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "mp4", "sound": false }),
+        );
+        let seen = exporter.seen.lock().unwrap();
+        let sound: Vec<bool> = seen.iter().map(|(_, options)| options.sound).collect();
+        assert_eq!(sound, [true, true, true, false]);
     }
 
     #[test]
