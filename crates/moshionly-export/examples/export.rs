@@ -19,6 +19,7 @@
 //! --once               a GIF that plays once instead of looping
 //! --no-dither          a GIF without dithering
 //! --images-beside      a Lottie file's images as files in a folder beside it
+//! --no-sound           an MP4, WebM or ProRes file without the artboard's sound
 //! --formats            list the formats that can be written here, and stop
 //! ```
 //!
@@ -40,7 +41,7 @@ const USAGE: &str = "usage: export <file.moshi> <output> \
      [--format png|png_sequence|gif|mp4|webm|prores|lottie] \
      [--fps 30] [--scale 1 | --width 1080] [--artboard <name>] [--quality draft|standard|high] \
      [--transparent | --background #RRGGBB] [--at <ms>] [--start <ms>] [--end <ms>] [--once] \
-     [--no-dither] [--images-beside] | --formats";
+     [--no-dither] [--images-beside] [--no-sound] | --formats";
 
 fn number(flag: &str, value: Option<&String>) -> Result<f64, String> {
     let value = value.ok_or(format!("{flag} needs a value\n{USAGE}"))?;
@@ -96,6 +97,7 @@ fn run(arguments: &[String]) -> Result<(), String> {
             "--once" => settings.gif_loop = Loop::Once,
             "--no-dither" => settings.dither = false,
             "--images-beside" => settings.lottie_images = LottieImages::Files,
+            "--no-sound" => settings.sound = false,
             other => return Err(format!("unknown option \"{other}\"\n{USAGE}")),
         }
     }
