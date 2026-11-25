@@ -334,6 +334,93 @@ fn deleting_a_main_leaves_groups_and_says_so() {
     assert_eq!(type_of(&harness, &instance), Some(NodeType::Instance));
 }
 
+/// Selects `ids` and copies them with ⌘C. Returns the clipboard text.
+fn copy(harness: &mut Harness<'_, Shell>, ids: &[NodeId]) -> String {
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set(ids.iter().cloned());
+    harness.run();
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the layers went on the clipboard");
+    harness.run();
+    copied
+}
+
+/// Selects `id` and pastes `text` with ⌘V. Returns what was pasted.
+fn paste(harness: &mut Harness<'_, Shell>, text: &str, id: &str) -> Vec<NodeId> {
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from(id));
+    harness.run();
+    harness.event(egui::Event::Paste(text.to_owned()));
+    harness.run();
+    selection(harness)
+}
+
+fn parent_of(harness: &Harness<'_, Shell>, id: &NodeId) -> Option<NodeId> {
+    harness.state().editor().document().get(id)?.parent.clone()
+}
+
+#[test]
+fn a_main_or_its_instance_pasted_into_the_main_goes_beside_it() {
+    let mut harness = harness();
+    let card = card_component(&mut harness);
+    let instance = insert_instance(&mut harness);
+    let scene = NodeId::from("scene");
+
+    // ⌘C, ⌘V on the main: a second main just in front of it, as a copy
+    // cannot go inside the main it was copied from.
+    let main = copy(&mut harness, std::slice::from_ref(&card));
+    let pasted = paste(&mut harness, &main, "card");
+    assert_eq!(of_type(&harness, NodeType::Component).len(), 2);
+    assert_eq!(pasted.len(), 1);
+    assert_eq!(type_of(&harness, &pasted[0]), Some(NodeType::Component));
+    assert_eq!(parent_of(&harness, &pasted[0]), Some(scene.clone()));
+    assert_eq!(
+        harness.state().editor().document().next_sibling(&card),
+        Some(&pasted[0]),
+        "just in front of the main"
+    );
+    // With a layer inside the main selected, the same.
+    let pasted = paste(&mut harness, &main, "accent");
+    assert_eq!(of_type(&harness, NodeType::Component).len(), 3);
+    assert_eq!(parent_of(&harness, &pasted[0]), Some(scene.clone()));
+
+    // An instance of the card cannot show inside the card either.
+    let copied = copy(&mut harness, std::slice::from_ref(&instance));
+    let pasted = paste(&mut harness, &copied, "accent");
+    assert_eq!(type_of(&harness, &pasted[0]), Some(NodeType::Instance));
+    assert_eq!(parent_of(&harness, &pasted[0]), Some(scene.clone()));
+    assert_eq!(
+        harness
+            .state()
+            .editor()
+            .document()
+            .instances_of(&card)
+            .len(),
+        2
+    );
+
+    // A plain layer still goes inside the selected main.
+    let accent = copy(&mut harness, &[NodeId::from("accent")]);
+    let pasted = paste(&mut harness, &accent, "card");
+    assert_eq!(parent_of(&harness, &pasted[0]), Some(card.clone()));
+}
+
 #[test]
 fn the_time_offset_is_typed_as_one_undo_step() {
     let mut harness = harness();

@@ -3,7 +3,7 @@
 
 use egui::Context;
 use moshionly_core::build::{self, GroupKind, Place, Reorder};
-use moshionly_core::{Document, Edit, Family, NodeId, NodeType};
+use moshionly_core::{Document, Edit, Family, Node, NodeId, NodeType};
 
 use super::Shell;
 use crate::{
@@ -84,7 +84,7 @@ impl Shell {
         for problem in assets::adopt_images(&mut nodes, self.editor.project_file()) {
             self.toasts.push(Toast::warning(problem));
         }
-        let (parent, place) = paste_target(&document, &self.editor);
+        let (parent, place) = paste_target(&document, &self.editor, &nodes);
         let result = clipboard::paste(&document, &nodes, parent.as_ref(), &place);
         match result {
             Ok((edits, roots)) => {
@@ -234,9 +234,44 @@ fn is_group(document: &Document, id: &NodeId) -> bool {
         .is_some_and(|node| matches!(node.node_type(), NodeType::Group | NodeType::MaskGroup))
 }
 
-/// Where pasted layers go: into a selected artboard or group, just in
-/// front of a selected layer, or on top of the current artboard.
-fn paste_target(document: &Document, editor: &Editor) -> (Option<NodeId>, Place) {
+/// Where pasted `nodes` go: into a selected artboard or group, just in
+/// front of a selected layer, or on top of the current artboard. Nodes
+/// that cannot go inside the main component they would land in go just in
+/// front of that main instead, in its own parent: a copied main pastes
+/// beside the main it was copied from.
+fn paste_target(document: &Document, editor: &Editor, nodes: &[Node]) -> (Option<NodeId>, Place) {
+    let (parent, place) = selected_paste_target(document, editor);
+    // Components are never nested, so this is the only main around.
+    let main = parent.as_ref().and_then(|target| {
+        document
+            .get(target)
+            .filter(|node| node.node_type() == NodeType::Component)
+            .or_else(|| document.enclosing_component(target))
+    });
+    if let Some(main) = main
+        && let Some(holder) = &main.parent
+        && !fit_inside(document, nodes, &main.id)
+    {
+        return (Some(holder.clone()), Place::After(main.id.clone()));
+    }
+    (parent, place)
+}
+
+/// Whether `nodes` may go inside the main component `main`: none of them
+/// is a main, and no instance among them shows `main`, directly or
+/// through other components.
+fn fit_inside(document: &Document, nodes: &[Node], main: &NodeId) -> bool {
+    nodes.iter().all(|node| match node.component() {
+        _ if node.node_type() == NodeType::Component => false,
+        Some(shown) => shown != main && !document.component_shows(shown, main),
+        None => true,
+    })
+}
+
+/// Where pasted layers go for the selection alone: into a selected
+/// artboard or group, just in front of a selected layer, or on top of the
+/// current artboard.
+fn selected_paste_target(document: &Document, editor: &Editor) -> (Option<NodeId>, Place) {
     if let Some(selected) = editor.selection.ids().last()
         && let Some(node) = document.get(selected)
     {
@@ -337,17 +372,17 @@ mod tests {
             ),
         );
         assert_eq!(
-            paste_target(&document, &editor),
+            paste_target(&document, &editor, &[]),
             (Some(NodeId::from("ab")), Place::Last)
         );
         editor.selection.select(NodeId::from("r"));
         assert_eq!(
-            paste_target(&document, &editor),
+            paste_target(&document, &editor, &[]),
             (Some(NodeId::from("g")), Place::After(NodeId::from("r")))
         );
         editor.selection.select(NodeId::from("g"));
         assert_eq!(
-            paste_target(&document, &editor),
+            paste_target(&document, &editor, &[]),
             (Some(NodeId::from("g")), Place::Last)
         );
         let mut registry = CommandRegistry::new();
@@ -361,5 +396,79 @@ mod tests {
             "artboards are not grouped"
         );
         assert!(registry.is_enabled(CommandId::Copy));
+    }
+
+    #[test]
+    fn what_cannot_go_inside_a_main_is_pasted_beside_it() {
+        // Badge holds an instance of Card; "chip" is an instance of Badge,
+        // so it shows Card too.
+        let document = io::parse(
+            r##"{"format":"moshionly","version":2,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard"},
+            {"id":"card","parent":"ab","index":"a0","type":"component"},
+            {"id":"r","parent":"card","index":"a0","type":"rect"},
+            {"id":"badge","parent":"ab","index":"a1","type":"component"},
+            {"id":"inner","parent":"badge","index":"a0","type":"instance","component":"card"},
+            {"id":"chip","parent":"ab","index":"a2","type":"instance","component":"badge"}
+            ]}"##,
+        )
+        .unwrap();
+        let session = moshionly_agent::SessionHandle::from_document(document.clone());
+        let mut editor = Editor::new(
+            session,
+            moshionly_render::Renderer::new(
+                moshionly_render::FontLibrary::bundled(),
+                moshionly_render::AssetLoader::default(),
+            ),
+        );
+        let copied = |ids: &[&str]| -> Vec<Node> {
+            let ids: Vec<NodeId> = ids.iter().map(|id| NodeId::from(*id)).collect();
+            clipboard::copied_nodes(&document, &ids)
+        };
+        let beside_card = (Some(NodeId::from("ab")), Place::After(NodeId::from("card")));
+        let beside_badge = (
+            Some(NodeId::from("ab")),
+            Place::After(NodeId::from("badge")),
+        );
+        for selected in ["card", "r"] {
+            editor.selection.select(NodeId::from(selected));
+            // A main, or an instance that shows the card, directly or
+            // through the badge, would show the card inside itself.
+            for clash in [
+                &["card"][..],
+                &["badge"],
+                &["inner"],
+                &["chip"],
+                &["r", "chip"],
+            ] {
+                assert_eq!(
+                    paste_target(&document, &editor, &copied(clash)),
+                    beside_card,
+                    "{clash:?} with {selected} selected"
+                );
+            }
+        }
+        // Anything else goes where the selection says.
+        editor.selection.select(NodeId::from("card"));
+        assert_eq!(
+            paste_target(&document, &editor, &copied(&["r"])),
+            (Some(NodeId::from("card")), Place::Last)
+        );
+        editor.selection.select(NodeId::from("r"));
+        assert_eq!(
+            paste_target(&document, &editor, &copied(&["r"])),
+            (Some(NodeId::from("card")), Place::After(NodeId::from("r")))
+        );
+        // An instance of the card may go inside the badge, but not one of
+        // the badge itself.
+        editor.selection.select(NodeId::from("badge"));
+        assert_eq!(
+            paste_target(&document, &editor, &copied(&["inner"])),
+            (Some(NodeId::from("badge")), Place::Last)
+        );
+        assert_eq!(
+            paste_target(&document, &editor, &copied(&["chip"])),
+            beside_badge
+        );
     }
 }
