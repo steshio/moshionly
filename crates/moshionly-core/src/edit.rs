@@ -405,8 +405,15 @@ impl Document {
                     if updated.parent != current.parent {
                         batch.reparented = Some(index);
                     }
-                    batch.note(current, index);
-                    batch.note(&updated, index);
+                    // Moving or restyling an instance cannot break the
+                    // component rules; changing what it shows, or turning
+                    // a group into a component, can.
+                    if updated.node_type() != current.node_type()
+                        || updated.component() != current.component()
+                    {
+                        batch.note(current, index);
+                        batch.note(&updated, index);
+                    }
                     batch.touch(id, Some(current), index);
                     self.remove_raw(id);
                     self.insert_raw(updated);
