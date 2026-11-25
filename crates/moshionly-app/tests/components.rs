@@ -162,6 +162,38 @@ fn a_component_is_made_placed_edited_and_detached() {
     assert_eq!(type_of(&harness, &instance), Some(NodeType::Instance));
     assert_eq!(frame(&harness, &instance), (880.0, 340.0, 600.0, 400.0));
 
+    // On the canvas it is one layer: a click anywhere on it, on the copy
+    // of the accent bar too, selects the instance, and a double click does
+    // not go into it. (Its right part hangs off the artboard.)
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(selection(&harness).is_empty());
+    for at in [pos2(950.0, 345.0), pos2(1050.0, 700.0)] {
+        let point = screen(&harness, at);
+        click(&mut harness, point);
+        assert_eq!(selection(&harness), [instance.clone()], "at {at:?}");
+    }
+    let dot = screen(&harness, pos2(1000.0, 600.0));
+    harness.hover_at(dot);
+    harness.run();
+    for _ in 0..2 {
+        harness.event(egui::Event::PointerButton {
+            pos: dot,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.event(egui::Event::PointerButton {
+            pos: dot,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run();
+    assert_eq!(selection(&harness), [instance.clone()]);
+
     // Editing a layer inside the main changes what the instance draws.
     let before = drawn(&mut harness, "scene", &instance);
     harness
