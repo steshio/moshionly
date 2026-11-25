@@ -50,8 +50,9 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         - set_duration: the length of an \"artboard\"'s timeline, in milliseconds.\n\
         - make_component: make the group \"id\" a component in place, or wrap the layers in \
         \"ids\" in a new component; \"temp_id\" names it. Then add instances of it with add \
-        {\"type\":\"instance\",\"component\":<its id or temp_id>}: each shows the component's \
-        layers and their animations, and changes when the component does.\n\
+        {\"type\":\"instance\",\"component\":<its id or temp_id>}, sized like the component \
+        unless given a width and height: each shows the component's layers and their \
+        animations, and changes when the component does.\n\
         - detach: turn the instance \"id\" (or every one of \"ids\") into a plain group that \
         looks the same, with copies of the component's layers and animations; \"temp_id\" \
         names the group. Removing a component detaches its instances the same way.\n\
