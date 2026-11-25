@@ -24,7 +24,7 @@ pub(crate) fn expanded<'a>(
         return (Cow::Borrowed(document), Vec::new());
     }
     (
-        Cow::Owned(build::without_instances(document)),
+        Cow::Owned(build::without_instances(document).0),
         notes(document, artboard),
     )
 }

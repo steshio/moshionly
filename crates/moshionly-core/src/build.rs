@@ -13,7 +13,9 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{Map, Value, json};
 
 pub(crate) use component::detach_instances_of;
-pub use component::{add_instance, detach, make_component, without_instances};
+pub use component::{
+    DetachLoss, add_instance, detach, detach_losses, make_component, without_instances,
+};
 
 use crate::color::Color;
 use crate::document::Document;

@@ -342,7 +342,7 @@ fn a_resized_instance_grows_its_box_like_a_group() {
         .unwrap();
     let (_, edits) = detach(&document, &id("big")).unwrap();
     let detached = applied(&document, &edits);
-    let flat = without_instances(&document);
+    let (flat, _) = without_instances(&document);
     for (how, result) in [("detached", &detached), ("without instances", &flat)] {
         for time in TIMES {
             assert!(
@@ -433,6 +433,55 @@ fn an_instance_resized_out_of_proportion_is_stretched_like_a_group() {
             _ => None,
         });
     assert_eq!(moved, Some(Offset::new(240.0, 0.0)));
+}
+
+#[test]
+fn detaching_says_what_it_cannot_keep() {
+    let mut document = sample();
+    let losses = |document: &Document, instance: &str| detach_losses(document, &id(instance));
+    assert_eq!(losses(&document, "copy"), []);
+    assert_eq!(losses(&document, "big"), []);
+    assert_eq!(losses(&document, "wide"), [DetachLoss::Stretched]);
+    assert_eq!(losses(&document, "dot"), [], "not an instance");
+    // 700 ms in, the move inside "card" is under way and gets squeezed.
+    document
+        .apply(&[Edit::set("copy", "time_offset", -700)])
+        .unwrap();
+    assert_eq!(losses(&document, "copy"), [DetachLoss::Squeezed]);
+    // 1200 ms in, everything inside "card" is over.
+    document
+        .apply(&[Edit::set("copy", "time_offset", -1200)])
+        .unwrap();
+    assert_eq!(losses(&document, "copy"), []);
+}
+
+#[test]
+fn a_copy_without_instances_says_what_it_cannot_keep() {
+    // An instance of "badge" starts 500 ms in. Detached on its own, the
+    // "card" inside it stays an instance and starts 500 ms in too; with
+    // every instance detached, the card's move is squeezed.
+    let document = sample();
+    let (outer, edits) = add_instance(
+        &document,
+        &id("badge"),
+        &id("ab"),
+        &Place::Last,
+        Point::ZERO,
+    )
+    .unwrap();
+    let mut document = applied(&document, &edits);
+    document
+        .apply(&[Edit::set(&outer, "time_offset", -500)])
+        .unwrap();
+    assert_eq!(detach_losses(&document, &outer), []);
+    let (_, losses) = without_instances(&document);
+    assert_eq!(
+        losses,
+        [
+            (id("wide"), DetachLoss::Stretched),
+            (outer, DetachLoss::Squeezed)
+        ]
+    );
 }
 
 #[test]
@@ -629,7 +678,8 @@ fn a_copy_without_instances_looks_the_same_and_is_the_same_every_time() {
     )
     .unwrap();
     let document = applied(&document, &edits);
-    let flat = without_instances(&document);
+    let (flat, losses) = without_instances(&document);
+    assert_eq!(losses, [], "nothing to lose");
     flat.validate().unwrap();
     assert!(
         flat.nodes()
@@ -637,7 +687,7 @@ fn a_copy_without_instances_looks_the_same_and_is_the_same_every_time() {
     );
     assert_eq!(
         flat,
-        without_instances(&document),
+        without_instances(&document).0,
         "the same ids every time"
     );
     for time in TIMES {

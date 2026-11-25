@@ -2,6 +2,7 @@
 //! instance into a plain group.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use serde_json::json;
 
@@ -147,7 +148,7 @@ pub fn add_instance(
 /// stay, so it can differ a little from the instance, whose content is
 /// stretched as a picture. With a negative `time_offset`, an animation that
 /// would start before the timeline does is squeezed into what is left of
-/// it.
+/// it. [`detach_losses`] says beforehand whether either happens.
 ///
 /// Returns the id of the new group with the edits.
 pub fn detach(document: &Document, instance: &NodeId) -> Result<(NodeId, Vec<Edit>), BuildError> {
@@ -225,15 +226,7 @@ fn detach_with(
 
     // Copies of the animations on those layers, in the order they start so
     // that animations moved to the very start keep their order.
-    let mut followers: Vec<&Node> = document
-        .walk(&main_artboard, Family::Animation)
-        .map(|(_, animation)| animation)
-        .filter(|animation| {
-            animation
-                .target()
-                .is_some_and(|target| target != &main.id && ids.contains_key(target))
-        })
-        .collect();
+    let mut followers = inner_animations(document, &main.id, &main_artboard);
     let start = |node: &Node| node.data.span().map_or(0.0, |(start, _)| start);
     followers.sort_by(|a, b| start(a).total_cmp(&start(b)));
     let indices = indices_at(
@@ -265,6 +258,85 @@ fn detach_with(
     }
     edits.push(Edit::remove(instance_id));
     Ok((group_id, edits))
+}
+
+/// A way in which [`detach`] cannot keep exactly how an instance looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetachLoss {
+    /// The instance is resized out of proportion. It stretches its content
+    /// like a picture, while the group stretches its layers like a resized
+    /// group, which keeps stroke widths and font sizes.
+    Stretched,
+    /// The instance's `time_offset` is negative, and an animation inside
+    /// its component is under way when the instance starts. The group
+    /// cannot start that animation before 0 ms, so it squeezes it into
+    /// what is left of it.
+    Squeezed,
+}
+
+impl fmt::Display for DetachLoss {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DetachLoss::Stretched => {
+                "it is resized out of proportion, so its layers are stretched like a resized \
+                 group's, keeping stroke widths and font sizes"
+            }
+            DetachLoss::Squeezed => {
+                "its time offset is negative, so the motion before 0 ms is squeezed into what \
+                 is left of it"
+            }
+        })
+    }
+}
+
+/// What [`detach`] cannot keep of how `instance` looks: nothing when the
+/// group it makes looks the same at every time, or when `instance` is not
+/// an instance of a component.
+pub fn detach_losses(document: &Document, instance: &NodeId) -> Vec<DetachLoss> {
+    let Some(NodeData::Instance(instance)) = document.get(instance).map(|node| &node.data) else {
+        return Vec::new();
+    };
+    let Some(main) = document.get(&instance.component) else {
+        return Vec::new();
+    };
+    let (NodeData::Component(component), Some(artboard)) =
+        (&main.data, document.artboard_of(&main.id))
+    else {
+        return Vec::new();
+    };
+    let mut losses = Vec::new();
+    if let Fit::Stretch(..) = Fit::between(&component.layer, &instance.layer) {
+        losses.push(DetachLoss::Stretched);
+    }
+    let early = -instance.time_offset;
+    let squeezed = early > 0.0
+        && inner_animations(document, &main.id, &artboard.id)
+            .iter()
+            .filter_map(|animation| animation.data.span())
+            .any(|(start, end)| start < early && end > early);
+    if squeezed {
+        losses.push(DetachLoss::Squeezed);
+    }
+    losses
+}
+
+/// The animations on the layers inside the component `main`, which live in
+/// its artboard `artboard`. Those on the component itself are not part of
+/// it.
+fn inner_animations<'a>(document: &'a Document, main: &NodeId, artboard: &NodeId) -> Vec<&'a Node> {
+    let inside: HashSet<&NodeId> = document
+        .walk(main, Family::Layer)
+        .map(|(_, layer)| &layer.id)
+        .collect();
+    document
+        .walk(artboard, Family::Animation)
+        .map(|(_, animation)| animation)
+        .filter(|animation| {
+            animation
+                .target()
+                .is_some_and(|target| inside.contains(target))
+        })
+        .collect()
 }
 
 /// Edits that detach every instance that would lose its component when
@@ -330,13 +402,16 @@ pub(crate) fn detach_instances_of(
 /// A copy of `document` in which every instance is detached, for code that
 /// cannot draw instances, such as exporters that convert the document
 /// rather than its frames. It looks the same as `document`, within what
-/// [`detach`] can keep.
+/// [`detach`] can keep; with it comes what that is not, by the id of the
+/// instance, in the order the instances were detached.
 ///
 /// Instances inside components are detached first, so every component's
-/// content is copied once per instance. The new nodes get ids made from
+/// content is copied once per instance and, in a valid document, every
+/// instance detached is one of `document`. The new nodes get ids made from
 /// the ids they copy, so the same document always gives the same copy.
-pub fn without_instances(document: &Document) -> Document {
+pub fn without_instances(document: &Document) -> (Document, Vec<(NodeId, DetachLoss)>) {
     let mut copy = document.clone();
+    let mut losses = Vec::new();
     for _ in 0..document.len() * 4 + 16 {
         let holds_instances = |component: &NodeId| {
             copy.walk(component, Family::Layer)
@@ -354,16 +429,19 @@ pub fn without_instances(document: &Document) -> Document {
         else {
             break;
         };
+        let lost = detach_losses(&copy, &next);
         let mut fresh = |original: &NodeId| derived_id(&copy, &next, original);
         let done = detach_with(&copy, &next, &mut fresh)
             .ok()
             .is_some_and(|(_, edits)| copy.apply(&edits).is_ok());
-        if !done {
+        if done {
+            losses.extend(lost.into_iter().map(|loss| (next.clone(), loss)));
+        } else {
             // Only a broken document gets here; leave the instance out.
             let _ = copy.apply(&[Edit::remove(&next)]);
         }
     }
-    copy
+    (copy, losses)
 }
 
 /// An id for the copy of `original` made while detaching `instance`: the
