@@ -576,6 +576,24 @@ fn copies_of_components_are_new_components() {
 }
 
 #[test]
+fn a_component_duplicated_with_its_instance_is_shown_by_the_copy() {
+    let document = sample();
+    for order in [["card", "copy"], ["copy", "card"]] {
+        let ids: Vec<NodeId> = order.iter().map(|text| id(text)).collect();
+        let (edits, copies) = duplicate(&document, &ids).unwrap();
+        let result = applied(&document, &edits);
+        let new_card = &copies[&id("card")];
+        assert_eq!(
+            result.get(&copies[&id("copy")]).and_then(Node::component),
+            Some(new_card),
+            "{order:?}"
+        );
+        assert_eq!(result.instances_of(new_card).len(), 1, "{order:?}");
+        assert_eq!(result.instances_of(&id("card")).len(), 4, "{order:?}");
+    }
+}
+
+#[test]
 fn designs_bring_their_components_along() {
     let document = sample();
     let design = import::parse_nodes(&json!([

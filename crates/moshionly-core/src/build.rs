@@ -1112,6 +1112,8 @@ pub fn clone_subtree(
 /// is copied whole, to the right of the others. An animation is copied onto
 /// the next timeline row, aimed at the same layer; a folder is copied with
 /// its animations. Nodes inside another listed node are copied once, with it.
+/// The copies of instances show the copy of their component when it is
+/// duplicated along with them, and the same component otherwise.
 ///
 /// Returns the edits with a map from every copied node's id to the id of
 /// its copy.
@@ -1141,6 +1143,16 @@ pub fn duplicate(
     }
     if edits.is_empty() && ids.is_empty() {
         return Err(BuildError::Empty);
+    }
+    // A component duplicated in the same step as its instances is a new
+    // component, and the copies of those instances show it, as when they
+    // are copied in one group.
+    for edit in &mut edits {
+        if let Edit::Add { node } = edit
+            && let Some(main) = node.component().and_then(|main| map.get(main)).cloned()
+        {
+            node.data.set_component(main);
+        }
     }
     Ok((edits, map))
 }
