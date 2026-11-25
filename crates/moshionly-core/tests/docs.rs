@@ -111,6 +111,7 @@ fn the_document_names_every_node_type_and_rule() {
         "### Text animations",
         "### Counters",
         "## Images",
+        "## Video and sound",
         "## A worked example",
     ] {
         assert!(
