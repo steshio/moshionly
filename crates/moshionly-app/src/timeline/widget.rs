@@ -300,6 +300,7 @@ impl<'a> Timeline<'a> {
                                 && all.iter().all(|key| selection.contains(key)),
                             hovered: response.as_ref().is_some_and(|r| r.hovered()) && editable,
                             faded: group.hidden || group.locked,
+                            fixed: false,
                         };
                         bars::paint_summary(ui, &tracks_painter, bar_rect, look);
                         // The summary stands for all the layer's actions:
@@ -353,6 +354,7 @@ impl<'a> Timeline<'a> {
                         selected,
                         hovered: response.as_ref().is_some_and(|r| r.hovered()) && editable,
                         faded: group.hidden || group.locked,
+                        fixed: bar.fixed,
                     };
                     bars::paint_bar(ui, &tracks_painter, bar_rect, &bar.label, bar.tone, look);
 
