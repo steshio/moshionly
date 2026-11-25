@@ -432,6 +432,36 @@ fn instances_inside_the_component_stay_instances() {
 }
 
 #[test]
+fn instances_inside_the_component_keep_playing_later_by_the_offset() {
+    // An instance of "badge", which holds an animated "card", plays 400 ms
+    // late; so does the card inside it, before and after detaching.
+    let document = sample();
+    let (outer, edits) = add_instance(
+        &document,
+        &id("badge"),
+        &id("ab"),
+        &Place::Last,
+        Point::ZERO,
+    )
+    .unwrap();
+    let mut document = applied(&document, &edits);
+    document
+        .apply(&[Edit::set(&outer, "time_offset", 400)])
+        .unwrap();
+    let (_, detached) = detach(&document, &outer).unwrap();
+    let detached = applied(&document, &detached);
+    let removed = applied(&document, &remove(&document, &[id("badge")]));
+    for (how, result) in [("detached", &detached), ("removed", &removed)] {
+        for time in TIMES {
+            assert!(
+                looks_the_same(&scene(&document, "ab", time), &scene(result, "ab", time)),
+                "{how} at {time}"
+            );
+        }
+    }
+}
+
+#[test]
 fn removing_a_component_detaches_its_instances_first() {
     // "wide" is stretched like a group when detached, so it is left out.
     let document = applied(&sample(), &[Edit::remove("wide")]);

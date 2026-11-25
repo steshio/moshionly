@@ -138,7 +138,8 @@ pub fn add_instance(
 /// (fill, stroke, corner radius, clip) and copies of the component's
 /// layers. The animations on those layers are copied too, onto the end of
 /// the instance's artboard's timeline, later by the instance's
-/// `time_offset`. Instances inside the component stay instances.
+/// `time_offset`. Instances inside the component stay instances, and their
+/// `time_offset` grows by the instance's, so they play later by it too.
 ///
 /// A copy resized in proportion is scaled to look exactly like the
 /// instance. One resized out of proportion is stretched the way a resized
@@ -213,6 +214,11 @@ fn detach_with(
             .and_then(|parent| ids.get(parent).cloned());
         if let Some(factors) = factors.get(&layer.id) {
             factors.apply_to_layer(&mut copy.data);
+        }
+        // An instance inside the component plays later by this one's
+        // offset too, like the copied animations do.
+        if let NodeData::Instance(inner) = &mut copy.data {
+            inner.time_offset = tidy(inner.time_offset + instance.time_offset);
         }
         edits.push(Edit::add(copy));
     }
