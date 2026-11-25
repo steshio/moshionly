@@ -299,6 +299,50 @@ fn a_layer_moved_out_and_back_in_keeps_one_copy_outside() {
 }
 
 #[test]
+fn a_copy_inside_a_frame_duplicated_in_moshionly_is_left_alone() {
+    let session = demo_session();
+    read(&envelope(design("#0D99FF")))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    let frame = imported(&session, "figma:abc:1:1");
+    let (edits, copies) = moshionly_core::build::duplicate(&session.document(), &[frame]).unwrap();
+    session
+        .apply(Origin::User, "Duplicate the frame", &edits)
+        .unwrap();
+    let copy = copies.values().next().unwrap().clone();
+    let before = session.document().artboards().len();
+
+    // In Figma the box now sits on the canvas, selected before its frame.
+    let nodes = json!([
+        { "id": "1:2", "type": "rect", "name": "Box", "x": 500, "y": 20,
+          "width": 100, "height": 50, "fill": "#FF5A1F", "source_id": "figma:abc:1:2" },
+        { "id": "1:1", "type": "artboard", "name": "Frame", "width": 400, "height": 300,
+          "fill": "#FFFFFF", "source_id": "figma:abc:1:1" },
+    ]);
+    let outcome = read(&envelope(nodes))
+        .unwrap()
+        .apply(&session, &ImportTarget::ReplaceMatching)
+        .unwrap();
+    assert_eq!(outcome.replaced, 1, "only the frame is put in place");
+    let document = session.document();
+    assert_eq!(
+        document.artboards().len(),
+        before + 1,
+        "the box comes over on its own"
+    );
+    let boxes_in_copy = document
+        .nodes()
+        .filter(|node| document.is_ancestor(&copy, &node.id))
+        .filter(|node| node.to_value()["fill"] == "#0D99FF")
+        .count();
+    assert_eq!(
+        boxes_in_copy, 1,
+        "the box in the duplicated frame is untouched"
+    );
+}
+
+#[test]
 fn new_frames_sent_together_keep_their_arrangement() {
     let session = demo_session();
     let nodes = json!([

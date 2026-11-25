@@ -404,8 +404,10 @@ impl PendingImport {
 ///   sends update that copy.
 /// - A layer whose earlier version sits inside another part's earlier
 ///   version has left it in Figma since. It updates a copy that came over
-///   when it left before, if there is one, and otherwise comes over as new,
-///   instead of being put in a place that is about to be replaced.
+///   on its own when it left before, if there is one, and otherwise comes
+///   over as new, instead of being put in a place that is about to be
+///   replaced. A copy inside another frame, such as one duplicated in
+///   Moshionly, is left alone.
 /// - No earlier layer is taken twice.
 fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<NodeId>> {
     // Every earlier layer of the right kind for each part, in tree order.
@@ -439,7 +441,14 @@ fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<Node
         .map(|earlier| earlier.filter(|existing| !inside(&taken, existing)))
         .collect();
     // A part whose first earlier version goes with another part's may have
-    // a copy elsewhere that came over when it left before: update that one.
+    // a copy that came over on its own when it left before: update that one.
+    // Its artboard was made around it, so that artboard has no source.
+    let on_its_own = |id: &NodeId| {
+        document
+            .artboard_of(id)
+            .and_then(|artboard| artboard.layer())
+            .is_some_and(|artboard| artboard.source_id.is_none())
+    };
     for (earlier, list) in found.iter_mut().zip(&candidates) {
         if earlier.is_some() {
             continue;
@@ -448,6 +457,7 @@ fn earlier_versions(document: &Document, parts: &[Vec<Node>]) -> Vec<Option<Node
             .iter()
             .find(|candidate| {
                 !taken.contains(*candidate)
+                    && on_its_own(candidate)
                     && !inside(&taken, candidate)
                     && !taken
                         .iter()
