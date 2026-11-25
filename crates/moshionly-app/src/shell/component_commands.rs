@@ -2,15 +2,16 @@
 //! instances of it, going from an instance to its main, and detaching an
 //! instance into a plain group.
 
-use moshionly_core::NodeId;
+use egui::Pos2;
 use moshionly_core::build;
+use moshionly_core::{NodeId, Point};
 
 use super::Shell;
 use crate::{
     commands::{CommandId, CommandRegistry},
     editor::{
         Editor,
-        components::{instance_beside, instances_in, mains_in, shown_main},
+        components::{instance_at, instance_beside, instances_in, mains_in, shown_main},
     },
     widgets::Toast,
 };
@@ -81,9 +82,17 @@ impl Shell {
     /// Selects the main component the selected instances show, switches to
     /// its artboard and brings it into view.
     fn go_to_main(&mut self) {
-        let Some(main) = shown_main(self.editor.document(), self.editor.selection.ids()) else {
+        if let Some(main) = shown_main(self.editor.document(), self.editor.selection.ids()) {
+            self.show_main(main);
+        }
+    }
+
+    /// Selects a main component, switches to its artboard and brings it
+    /// into view.
+    pub(super) fn show_main(&mut self, main: NodeId) {
+        if !self.editor.document().contains(&main) {
             return;
-        };
+        }
         self.editor.selection.select(main.clone());
         self.editor.set_actions([]);
         self.editor.follow_selection();
@@ -126,6 +135,40 @@ impl Shell {
                 .cloned()
                 .collect();
             self.editor.selection.set(kept.into_iter().chain(groups));
+        }
+    }
+
+    /// Places an instance of `main` on the artboard under `world` (a point
+    /// on the canvas), centred there, or in the middle of the current
+    /// artboard when `world` is `None`. Selects it. Says in a toast why not
+    /// when it cannot.
+    pub(super) fn place_instance(&mut self, main: &NodeId, world: Option<Pos2>) {
+        let artboard = match world {
+            Some(world) => self.editor.artboard_at(world),
+            None => self.editor.artboard().cloned(),
+        };
+        let Some(artboard) = artboard else {
+            let message = if world.is_some() {
+                "Drop the component on an artboard to place an instance of it."
+            } else {
+                "Add an artboard first: instances are placed on an artboard."
+            };
+            self.toasts.push(Toast::info(message));
+            return;
+        };
+        let Some(board) = self.editor.artboard_rect(&artboard) else {
+            return;
+        };
+        let center = world.unwrap_or(board.center()) - board.min.to_vec2();
+        let center = Point::new(f64::from(center.x), f64::from(center.y));
+        match instance_at(self.editor.document(), main, &artboard, center) {
+            Ok((instance, edits)) => {
+                if self.apply_or_toast("Insert instance", &edits) {
+                    self.editor.selection.select(instance);
+                    self.editor.set_actions([]);
+                }
+            }
+            Err(error) => self.toasts.push(Toast::warning(error.to_string())),
         }
     }
 }

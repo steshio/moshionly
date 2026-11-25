@@ -36,6 +36,7 @@ pub use self::{
     connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORT_BYTES_PER_WINDOW, MAX_IMPORTS_PER_WINDOW},
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
+    layers_panel::LayersTab,
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
     tool_bar::Tool,
 };
@@ -104,6 +105,10 @@ pub struct Shell {
     renaming: Option<(NodeId, String)>,
     /// The layers whose rows are being dragged in the list.
     list_drag: Option<Vec<NodeId>>,
+    /// What the layers panel lists.
+    layers_tab: LayersTab,
+    /// The main component whose row is being dragged to the canvas.
+    component_drag: Option<NodeId>,
     /// The timeline groups whose rows are folded away.
     collapsed_groups: HashSet<NodeId>,
     /// A drag on the timeline holds an undo step open.
@@ -240,6 +245,8 @@ impl Shell {
             reveal_row: None,
             renaming: None,
             list_drag: None,
+            layers_tab: LayersTab::default(),
+            component_drag: None,
             collapsed_groups: HashSet::new(),
             timeline_edit: false,
             timeline_layout: None,
@@ -383,6 +390,16 @@ impl Shell {
         &mut self.palette
     }
 
+    /// What the layers panel lists.
+    pub fn layers_tab(&self) -> LayersTab {
+        self.layers_tab
+    }
+
+    /// Makes the layers panel list the layers or the components.
+    pub fn set_layers_tab(&mut self, tab: LayersTab) {
+        self.layers_tab = tab;
+    }
+
     /// Shows a short message over the canvas.
     pub fn toast(&mut self, toast: Toast) {
         self.toasts.push(toast);
@@ -406,6 +423,7 @@ impl Shell {
             || self.pen.is_some()
             || self.renaming.is_some()
             || self.list_drag.is_some()
+            || self.component_drag.is_some()
             || self.connect_open
             || self.export.is_some();
 
@@ -486,6 +504,8 @@ impl Shell {
                     reveal: reveal.as_ref(),
                     renaming: &mut self.renaming,
                     dragging: &mut self.list_drag,
+                    tab: &mut self.layers_tab,
+                    component_drag: &mut self.component_drag,
                 },
             )
         });
@@ -493,6 +513,24 @@ impl Shell {
         requested.extend(layers.commands);
         if let Some(message) = layers.error {
             self.toasts.push(Toast::error(message));
+        }
+        if let Some((main, at)) = layers.place {
+            self.end_canvas_drag();
+            self.end_timeline_drag();
+            match at {
+                None => self.place_instance(&main, None),
+                // Let go over the canvas: placed there. Anywhere else, the
+                // drag was taken back.
+                Some(screen) => {
+                    if let Some(canvas) = self.canvas.filter(|canvas| canvas.contains(screen)) {
+                        let world = self.camera.screen_to_world(canvas, screen);
+                        self.place_instance(&main, Some(world));
+                    }
+                }
+            }
+        }
+        if let Some(main) = layers.show {
+            self.show_main(main);
         }
 
         let canvas_gesture = self.canvas_gesture();
