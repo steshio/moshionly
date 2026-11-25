@@ -32,7 +32,8 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         (get_schema shows them). A layer goes in \"parent\", an artboard or group (with one \
         artboard it may be left out). An animation needs \"node.target\", the layer it changes, \
         and goes on that layer's artboard timeline; \"start\" defaults to 0 and \"end\" to a \
-        typical length for the type. Give \"temp_id\" to use the new node in later operations \
+        typical length for the type. An audio item has no target: it goes on the timeline of \
+        \"parent\", an artboard. Give \"temp_id\" to use the new node in later operations \
         of the same call, wherever an id goes.\n\
         - update: \"set\" fields of \"id\" (or of every node in \"ids\"). null puts a field back \
         to its default; an object merges into the one there, except an easing or a gradient, \
@@ -196,7 +197,7 @@ fn schema() -> Value {
         },
         "parent": {
             "type": "string",
-            "description": "add, move, clone: the artboard or group a layer goes in, or the artboard or animation_group an animation goes in."
+            "description": "add, move, clone: the artboard or group a layer goes in, or the artboard or animation_group an animation or an audio item goes in."
         },
         "position": {
             "type": "string",
