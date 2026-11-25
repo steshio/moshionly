@@ -150,6 +150,15 @@ impl<'a> Converter<'a> {
             NodeData::Group(group) => {
                 self.add_group(node, group.clip, comp, parent_index, offset)?;
             }
+            // A component is drawn where it is like a group.
+            NodeData::Component(component) => {
+                self.add_group(node, component.clip, comp, parent_index, offset)?;
+            }
+            // Instances are detached into groups before converting.
+            NodeData::Instance(_) => self.warnings.layer(
+                node,
+                "is an instance that could not be converted, and is left out.",
+            ),
             NodeData::MaskGroup(_) => self.add_mask_group(node, comp, parent_index, offset)?,
             NodeData::Text(text) => self.add_text(node, text, comp, parent_index, offset)?,
             NodeData::Image(image) => self.add_image(node, image, comp, parent_index, offset)?,
@@ -304,7 +313,10 @@ impl<'a> Converter<'a> {
         let id = &node.id;
         let timeline = self.timeline;
         Some(match &node.data {
-            NodeData::Rect(_) | NodeData::Group(_) | NodeData::Image(_) => {
+            NodeData::Rect(_)
+            | NodeData::Group(_)
+            | NodeData::Component(_)
+            | NodeData::Image(_) => {
                 let uniform = self.survey.iter().all(|frame| {
                     let radii = timeline.radii(id, *frame);
                     radii.iter().all(|radius| *radius == radii[0])

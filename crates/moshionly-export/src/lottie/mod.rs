@@ -16,6 +16,7 @@
 //! | `text`, `svg` | Letters as outlines from the renderer, and pieces that move |
 //! | `poses` | How the pieces of a text move, worked out once per moment |
 //! | `images` | Pictures inside the file or beside it |
+//! | `instances` | Instances of components, detached on a copy first |
 //! | `effects` | Drop shadows and blurs |
 //! | `shapes`, `paint` | Outlines; fills and strokes in colours and gradients |
 //! | `warnings` | What could not be exported exactly, by layer |
@@ -26,6 +27,7 @@ mod effects;
 mod fit;
 mod groups;
 mod images;
+mod instances;
 mod json;
 mod layers;
 mod paint;
@@ -83,7 +85,8 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         return Ok(None);
     };
     let clock = Clock::new(times);
-    let document = cx.source.document;
+    let (document, mut notes) = instances::expanded(cx.source.document, cx.source.artboard);
+    let document: &moshionly_core::Document = &document;
     let artboard = document
         .get(cx.source.artboard)
         .ok_or_else(|| ExportError::Internal {
@@ -183,7 +186,8 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         fs::write(path, text).map_err(|error| ExportError::io("written", path, error))?;
         converter.finish()
     };
-    for warning in warnings.into_vec() {
+    notes.extend(warnings.into_vec());
+    for warning in notes {
         cx.reporter.note(warning);
     }
     cx.reporter.check()?;
