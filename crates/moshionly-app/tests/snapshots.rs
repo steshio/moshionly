@@ -23,7 +23,7 @@ use egui::vec2;
 use moshionly_app::{
     key::Key,
     settings::Settings,
-    shell::{InspectorTab, Shell},
+    shell::{InspectorTab, LayersTab, Shell},
     theme::{Theme, icons},
     timeline::{Timeline, TimelineState},
     viewport::{Artboard, Camera, Measurement, OrientedBox, Overlays, PenOverlay, Viewport},
@@ -561,6 +561,61 @@ fn animate_move() {
             .expect("the move is set");
         editor.set_playhead(2400.0);
         let (path, image) = snapshot("animate-move", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
+/// Components: the demo's card made a main component, two instances of it
+/// on a second artboard (one smaller and playing later), the Components
+/// list in the layers panel, and the selected instance's Component section
+/// with its bar on the timeline.
+#[test]
+fn components() {
+    if !can_render() {
+        return;
+    }
+    use moshionly_core::{Edit, NodeId, Point, build};
+    let size = vec2(1440.0, 900.0);
+    for variant in Variant::ALL {
+        let mut shell = demo_shell();
+        let editor = shell.editor_mut();
+        let card = NodeId::from("card");
+        let document = editor.document().clone();
+        let (_, edits) = build::make_component(&document, std::slice::from_ref(&card))
+            .expect("the card becomes a component");
+        editor.apply("Create component", &edits).unwrap();
+        let document = editor.document().clone();
+        let (copies, edits) = build::add_artboard(&document, "Copies", 1080.0, 1080.0).unwrap();
+        editor.apply("Add artboard", &edits).unwrap();
+        let mut place = |at: Point| {
+            let document = editor.document().clone();
+            let (instance, edits) =
+                build::add_instance(&document, &card, &copies, &build::Place::Last, at).unwrap();
+            editor.apply("Insert instance", &edits).unwrap();
+            instance
+        };
+        place(Point::new(240.0, 120.0));
+        let small = place(Point::new(390.0, 620.0));
+        editor
+            .apply(
+                "Resize and delay",
+                &[Edit::update(
+                    small.clone(),
+                    [
+                        ("width", serde_json::json!(300)),
+                        ("height", serde_json::json!(200)),
+                        ("time_offset", serde_json::json!(300)),
+                    ],
+                )],
+            )
+            .unwrap();
+        editor.selection.select(small);
+        editor.follow_selection();
+        shell.set_layers_tab(LayersTab::Components);
+        let (path, image) = snapshot("components", size, variant, move |ui| {
             shell.show(ui);
         });
         assert_rendered(&image, size, variant);
