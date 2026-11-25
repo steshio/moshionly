@@ -187,6 +187,14 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path) -> Result<Option<ImageFil
         converter.finish()
     };
     notes.extend(warnings.into_vec());
+    for (_, node) in document.walk(&artboard.id, Family::Animation) {
+        if node.node_type() == moshionly_core::NodeType::Audio {
+            notes.push(format!(
+                "{} is sound, which Lottie files do not carry, and is left out.",
+                warnings::name(node)
+            ));
+        }
+    }
     for warning in notes {
         cx.reporter.note(warning);
     }

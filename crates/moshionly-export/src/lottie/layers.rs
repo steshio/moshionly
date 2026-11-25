@@ -162,7 +162,13 @@ impl<'a> Converter<'a> {
             NodeData::MaskGroup(_) => self.add_mask_group(node, comp, parent_index, offset)?,
             NodeData::Text(text) => self.add_text(node, text, comp, parent_index, offset)?,
             NodeData::Image(image) => self.add_image(node, image, comp, parent_index, offset)?,
+            NodeData::Video(_) => self.warnings.layer(
+                node,
+                "is a video, which Lottie files cannot play, and is left out with its sound.",
+            ),
             // Artboards are never inside other layers.
+            NodeData::Artboard(_) => {}
+            // Animations and sound are not layers.
             _ => {}
         }
         (self.progress)(Step::Layer)
