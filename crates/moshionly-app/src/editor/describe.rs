@@ -48,7 +48,7 @@ pub fn type_label(ty: NodeType) -> &'static str {
         T::TextIn => "Text in",
         T::TextOut => "Text out",
         T::Counter => "Counter",
-        T::Audio => "Audio",
+        T::Audio => "Sound",
         T::AnimationGroup => "Folder",
     }
 }

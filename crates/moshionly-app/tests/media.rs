@@ -10,7 +10,10 @@ use std::process::Command;
 use std::time::Duration;
 
 use egui::{Key, Modifiers, vec2};
-use egui_kittest::{Harness, kittest::Queryable as _};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
 use moshionly_app::{
     audio::{AudioCall, SilentAudio},
     commands::CommandId,
@@ -322,4 +325,105 @@ fn without_ffmpeg_media_says_how_to_get_it() {
     );
     assert!(nodes_of(&harness, NodeType::Audio).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn field<'h>(harness: &'h Harness<'_, Shell>, name: &'h str) -> egui_kittest::Node<'h> {
+    harness
+        .get_all_by_label(name)
+        .find(|node| node.accesskit_node().role() != egui::accesskit::Role::Slider)
+        .unwrap_or_else(|| panic!("no field named {name}"))
+}
+
+/// Types `text` into the numeric field named `name` and presses Enter.
+fn type_into(harness: &mut Harness<'_, Shell>, name: &str, text: &str) {
+    field(harness, name).click_accesskit();
+    harness.run();
+    field(harness, name).type_text(text);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+}
+
+#[test]
+fn the_inspector_sets_when_a_video_and_a_sound_play() {
+    let document = moshionly_core::io::parse(
+        r##"{"format":"moshionly","version":3,"name":"Media","nodes":[
+        {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000},
+        {"id":"film","parent":"ab","index":"a0","type":"video","source":"/no/film.mp4",
+         "width":320,"height":180,"start":1000,"end":3000,"trim_start":500},
+        {"id":"song","parent":"ab","index":"a0","type":"audio","source":"/no/song.mp3",
+         "start":0,"end":2000}
+        ]}"##,
+    )
+    .unwrap();
+    let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+    let shell = Shell::headless(
+        Settings::default(),
+        moshionly_agent::SessionHandle::from_document(document),
+        renderer,
+    );
+    let mut harness = Harness::builder()
+        .with_size(vec2(1440.0, 900.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_context_setup(theme::install)
+        .build_ui_state(
+            |ui, shell: &mut Shell| {
+                shell.show(ui);
+            },
+            shell,
+        );
+    harness.run();
+    let clip = |harness: &Harness<'_, Shell>, id: &str| {
+        *harness
+            .state()
+            .editor()
+            .document()
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .clip()
+            .unwrap()
+    };
+    // The video's section in the Design tab.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("film"));
+    harness.run();
+    assert!(harness.query_by_label("Replace video…").is_some());
+    assert!(
+        harness
+            .query_all_by_label_contains("film.mp4")
+            .next()
+            .is_some()
+    );
+    type_into(&mut harness, "Start", "2");
+    type_into(&mut harness, "Trim start", "0.25");
+    type_into(&mut harness, "Volume", "40");
+    let film = clip(&harness, "film");
+    assert_eq!(
+        (film.start, film.end),
+        (2000.0, 4000.0),
+        "moved, same length"
+    );
+    assert_eq!(film.trim_start, 250.0);
+    assert_eq!(film.volume, 0.4);
+
+    // A sound, which belongs to no layer, in the Animate tab.
+    harness.state_mut().editor_mut().selection.clear();
+    harness.run();
+    harness.state_mut().inspector_mut().tab = moshionly_app::shell::InspectorTab::Animate;
+    harness
+        .state_mut()
+        .editor_mut()
+        .set_actions([NodeId::from("song")]);
+    harness.run();
+    assert!(harness.query_by_label("Replace sound…").is_some());
+    type_into(&mut harness, "End", "3.5");
+    assert_eq!(clip(&harness, "song").end, 3500.0);
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Change end")
+    );
 }

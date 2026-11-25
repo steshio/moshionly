@@ -11,7 +11,7 @@
 use egui::{Popup, PopupCloseBehavior, RichText, ScrollArea, Ui, Vec2};
 use moshionly_core::{Node, NodeId, NodeType};
 
-use super::{Bind, action};
+use super::{Bind, action, media};
 use crate::{
     editor::{
         actions::{MenuSection, actions_of, leaf_actions, menu_for},
@@ -100,11 +100,13 @@ pub(super) fn animate_tab(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspecte
     match (folder, selected.as_slice()) {
         (_, []) => {}
         (Some(folder), _) => several_actions(ui, bind, &display_name(folder)),
-        (None, [one]) => {
-            if let Some(node) = document.get(one).cloned() {
-                action::action_settings(ui, bind, &node);
+        (None, [one]) => match document.get(one).cloned() {
+            Some(node) if node.node_type() == NodeType::Audio => {
+                media::sound_settings(ui, bind, &node);
             }
-        }
+            Some(node) => action::action_settings(ui, bind, &node),
+            None => {}
+        },
         (None, _) => {
             let count = leaf_actions(&document, &selected).len();
             several_actions(ui, bind, &actions_title(count));
@@ -238,7 +240,7 @@ fn action_list(
 
 /// What several selected actions, or a folder, can do together, under the
 /// heading `title`.
-fn several_actions(ui: &mut Ui, bind: &mut Bind<'_>, title: &str) {
+pub(super) fn several_actions(ui: &mut Ui, bind: &mut Bind<'_>, title: &str) {
     let theme = Theme::of(ui);
     divider(ui);
     let mut duplicate = false;

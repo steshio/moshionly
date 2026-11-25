@@ -11,6 +11,7 @@ mod animate;
 mod component;
 mod design;
 mod easing;
+mod media;
 mod text;
 mod values;
 
@@ -97,6 +98,7 @@ struct Sections {
     effects: bool,
     text: bool,
     image: bool,
+    media: bool,
     shape: bool,
     actions: bool,
     easing: bool,
@@ -116,6 +118,7 @@ impl Default for Sections {
             effects: true,
             text: true,
             image: true,
+            media: true,
             shape: true,
             actions: true,
             easing: true,
@@ -132,6 +135,9 @@ pub(super) struct InspectorOutput {
     pub error: Option<String>,
     /// The person asked to choose another image for the selected images.
     pub replace_image: bool,
+    /// The person asked to choose another file for these video layers or
+    /// sounds.
+    pub replace_media: Option<Vec<moshionly_core::NodeId>>,
     /// Commands asked for with the inspector's buttons, such as going to
     /// the main component of the selected instance.
     pub commands: Vec<crate::commands::CommandId>,
@@ -277,6 +283,30 @@ pub(super) fn inspector(
     let document = Arc::clone(editor.document());
     let ids = editor.selection.ids().to_vec();
     let Some(first) = ids.first().and_then(|id| document.get(id)) else {
+        // Sound belongs to no layer: selected on its own, it shows here.
+        let sound_only = state.tab == InspectorTab::Animate
+            && !editor.actions().is_empty()
+            && editor.actions().iter().all(|id| {
+                document
+                    .get(id)
+                    .is_some_and(|node| node.node_type() == moshionly_core::NodeType::Audio)
+            });
+        if sound_only {
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let mut bind = Bind {
+                        editor,
+                        state,
+                        out: &mut out,
+                    };
+                    media::sound_only(ui, &mut bind);
+                    divider(ui);
+                    ui.add_space(theme.space.xl);
+                });
+            return out;
+        }
         empty_state(
             ui,
             icons::CURSOR,

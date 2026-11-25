@@ -600,6 +600,9 @@ impl Shell {
         if inspected.replace_image {
             self.replace_image_dialog();
         }
+        if let Some(ids) = inspected.replace_media {
+            self.replace_media_dialog(&ids);
+        }
         requested.extend(inspected.commands);
 
         self.advance_playback(&ctx);
@@ -743,6 +746,26 @@ impl Shell {
         }
         if made.videos.is_empty() && !made.sounds.is_empty() {
             self.inspector.tab = InspectorTab::Animate;
+        }
+    }
+
+    /// Asks for a file for the video layers or sounds `ids` to play
+    /// instead.
+    fn replace_media_dialog(&mut self, ids: &[NodeId]) {
+        let Some(tools) = self.media.clone() else {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        };
+        let Some(path) = self
+            .dialogs
+            .import_media()
+            .and_then(|paths| paths.into_iter().next())
+        else {
+            return;
+        };
+        let probe = std::sync::Arc::new(crate::media::FfmpegProbe::with_tools(tools));
+        if let Err(problem) = self.editor.replace_media(ids, &path, probe) {
+            self.toasts.push(Toast::error(problem));
         }
     }
 

@@ -12,7 +12,7 @@ use moshionly_core::model::{
 use moshionly_core::{Color, Edit, Node, NodeType, schema};
 use serde_json::{Value, json};
 
-use super::{Bind, component, numeric, text};
+use super::{Bind, component, media, numeric, text};
 use crate::{
     editor::{
         inspect::{
@@ -120,6 +120,9 @@ pub(super) fn design_tab(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected
     }
     if inspected.any_of(NodeType::Image) {
         text::image_section(ui, bind, inspected);
+    }
+    if inspected.any_of(NodeType::Video) {
+        media::video_section(ui, bind, inspected);
     }
     fill_section(ui, bind, inspected);
     stroke_section(ui, bind, inspected);
