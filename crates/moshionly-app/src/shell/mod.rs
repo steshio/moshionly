@@ -1151,13 +1151,15 @@ impl Shell {
     }
 
     /// Removes the selected layers, with their actions and the timeline
-    /// folders that leaves empty.
+    /// folders that leaves empty. Instances of a main component that goes
+    /// are detached into plain groups, and a toast says so.
     pub(super) fn delete_selection(&mut self) {
         let ids = self.editor.selection.ids().to_vec();
         if ids.is_empty() {
             return;
         }
         let document = std::sync::Arc::clone(self.editor.document());
+        let detached = crate::editor::components::detach_message(&document, &ids);
         let edits = match with_emptied_folders(&document, build::remove(&document, &ids)) {
             Ok(edits) => edits,
             Err(error) => {
@@ -1172,6 +1174,9 @@ impl Shell {
         };
         if self.apply_or_toast(summary, &edits) {
             self.editor.selection.clear();
+            if let Some(message) = detached {
+                self.toasts.push(Toast::info(message));
+            }
         }
     }
 
