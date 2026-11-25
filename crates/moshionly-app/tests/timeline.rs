@@ -506,3 +506,40 @@ fn a_bar_that_only_shows_something_is_not_selected_or_moved() {
     assert_eq!(harness.state().times("grow"), (900.0, 1500.0));
     assert!(harness.state().selection.is_empty());
 }
+
+#[test]
+fn a_layer_summary_snaps_the_actions_it_moves() {
+    // The Badge pulses from 1000 to 1200, and may also play a component
+    // from 365 to 865, which a bar only shows: the summary spans it too.
+    for plays in [false, true] {
+        let mut harness = harness();
+        let badge = &mut harness.state_mut().groups[1];
+        badge.bars = vec![bar("pulse", 1000.0, 1200.0)];
+        if plays {
+            let shown = Bar {
+                fixed: true,
+                ..bar("plays", 365.0, 865.0)
+            };
+            badge.bars.insert(0, shown);
+        }
+        harness.run();
+        let span = if plays {
+            (365.0, 1200.0)
+        } else {
+            (1000.0, 1200.0)
+        };
+        let from = harness.state().bar_center(3, span.0, span.1);
+        // 46 points is 230 ms: the pulse would start at 1230, which the
+        // 50 ms grid rounds to 1250. The fixed bar does not move, so its
+        // edges are not the ones that snap.
+        drag(&mut harness, from, from + vec2(46.0, 0.0));
+        assert_eq!(
+            harness.state().times("pulse"),
+            (1250.0, 1450.0),
+            "with a bar that plays a component: {plays}"
+        );
+        if plays {
+            assert_eq!(harness.state().times("plays"), (365.0, 865.0));
+        }
+    }
+}

@@ -282,6 +282,14 @@ impl<'a> Timeline<'a> {
                             .filter(|bar| !bar.fixed)
                             .map(|bar| bar.key.clone())
                             .collect();
+                        // What a drag of the summary moves, and so what
+                        // snaps: the group's actions, without those bars.
+                        let moving = group
+                            .bars
+                            .iter()
+                            .filter(|bar| !bar.fixed)
+                            .map(|bar| (bar.start, bar.end))
+                            .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)));
                         let editable = !group.locked && !all.is_empty();
                         let sense = if editable {
                             Sense::click_and_drag()
@@ -310,10 +318,10 @@ impl<'a> Timeline<'a> {
                             if (response.clicked() || grabbed) && selection != all.as_slice() {
                                 events.push(TimelineEvent::SelectionChanged { bars: all.clone() });
                             }
-                            if grabbed {
+                            if grabbed && let Some(moving) = moving {
                                 state.drag = Some(Drag::Bars {
-                                    span,
-                                    grab_time: press_origin.map_or(span.0, |p| s.time(p.x)),
+                                    span: moving,
+                                    grab_time: press_origin.map_or(moving.0, |p| s.time(p.x)),
                                     originals: originals_of(groups, &all),
                                 });
                             }
