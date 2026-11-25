@@ -412,6 +412,38 @@ mod tests {
     }
 
     #[test]
+    fn an_instance_is_hit_and_bounded_as_one_layer() {
+        // A component with a dot in its corner, and a copy of it twice its
+        // size: clicking the copy's dot finds the copy, and its bounds are
+        // its own box.
+        let document = moshionly_core::io::parse(
+            r##"{"format":"moshionly","version":2,"nodes":[
+                {"id":"ab","parent":null,"index":"a0","type":"artboard","width":400,"height":300},
+                {"id":"main","parent":"ab","index":"a0","type":"component","width":50,"height":50},
+                {"id":"dot","parent":"main","index":"a0","type":"rect","width":10,"height":10,
+                 "fill":"#000000"},
+                {"id":"copy","parent":"ab","index":"a1","type":"instance","component":"main",
+                 "x":200,"y":100,"width":100,"height":100}
+            ]}"##,
+        )
+        .unwrap();
+        let scene = moshionly_core::eval::evaluate(
+            &document,
+            &NodeId::from("ab"),
+            0.0,
+            &moshionly_core::text::MonospaceMeasurer::default(),
+        )
+        .unwrap();
+        assert_eq!(hit(&scene, 215.0, 115.0), ["copy"]);
+        assert_eq!(hit(&scene, 5.0, 5.0), ["dot"]);
+        let bounds = renderer().bounds_of(&scene, &NodeId::from("copy")).unwrap();
+        assert!(near(bounds.corners[0], Point::new(200.0, 100.0)));
+        assert!(near(bounds.corners[2], Point::new(300.0, 200.0)));
+        let visual = bounds.visual.unwrap();
+        assert!((visual.x - 200.0).abs() < 1e-6 && (visual.width - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn hits_come_front_to_back_through_transforms() {
         // A 100 by 20 bar at (50, 90), turned a quarter about its centre:
         // it now stands from (90, 50) to (110, 150).
