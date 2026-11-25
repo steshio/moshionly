@@ -9,7 +9,7 @@ use crate::{
     editor::{
         Editor,
         describe::next_name,
-        timeline::layer_icon,
+        timeline::{layer_icon, layer_tone},
         tree::{Drop, LayerRow, TreeState, drop_at, drop_edits, layer_rows},
     },
     theme::{Theme, icons},
@@ -123,8 +123,10 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
                     && document
                         .ancestors(&row.id)
                         .any(|ancestor| panel.editor.selection.contains(&ancestor.id));
+                let tint = layer_tone(row.node_type).map(|tone| theme.color.tone(tone).text);
                 let mut list_row = ListRow::new(&row.name)
                     .icon(layer_icon(row.node_type))
+                    .tint(tint)
                     .depth(row.depth)
                     .selected(selected)
                     .parent_selected(inside_selected)

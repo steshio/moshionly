@@ -337,3 +337,9 @@ pub const DOTS_NINE: &str = "\u{e1fc}";
 pub const MASK_HAPPY: &str = "\u{e9f4}";
 /// The `scan` icon.
 pub const SCAN: &str = "\u{ebb6}";
+/// The `diamonds-four` icon: a main component.
+pub const DIAMONDS_FOUR: &str = "\u{e8f4}";
+/// The `diamond` icon: an instance of a component.
+pub const DIAMOND: &str = "\u{e1ec}";
+/// The `arrow-square-out` icon.
+pub const ARROW_SQUARE_OUT: &str = "\u{e5de}";

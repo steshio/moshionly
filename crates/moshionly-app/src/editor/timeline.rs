@@ -29,10 +29,16 @@ pub fn layer_icon(ty: NodeType) -> &'static str {
         NodeType::Path => icons::PEN_NIB,
         NodeType::Text => icons::TEXT_T,
         NodeType::Image => icons::IMAGE,
-        NodeType::Component => icons::CUBE,
-        NodeType::Instance => icons::COPY,
+        NodeType::Component => icons::DIAMONDS_FOUR,
+        NodeType::Instance => icons::DIAMOND,
         _ => action_icon(ty),
     }
+}
+
+/// The colour family a layer type is marked with in lists, if any: main
+/// components and their instances are violet, as in Figma.
+pub fn layer_tone(ty: NodeType) -> Option<Tone> {
+    matches!(ty, NodeType::Component | NodeType::Instance).then_some(Tone::Violet)
 }
 
 /// The icon of an animation type.
@@ -232,6 +238,13 @@ mod tests {
             assert!(!layer_icon(*ty).is_empty());
         }
         assert_eq!(action_tone(NodeType::Show), Tone::Neutral);
+        assert_eq!(layer_tone(NodeType::Component), Some(Tone::Violet));
+        assert_eq!(layer_tone(NodeType::Instance), Some(Tone::Violet));
+        assert_eq!(layer_tone(NodeType::Group), None);
+        assert_ne!(
+            layer_icon(NodeType::Component),
+            layer_icon(NodeType::Instance)
+        );
         assert_eq!(action_tone(NodeType::TextIn), Tone::Amber);
     }
 }
