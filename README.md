@@ -22,13 +22,14 @@ There is nothing to keyframe and nothing breaks when you change the design later
 
 ## What it is built to do
 
-- **Canvas and layers**: artboards, rectangles, ellipses, stars, pen paths, text, images, groups and masks.
+- **Canvas and layers**: artboards, rectangles, ellipses, stars, pen paths, text, images, video, groups and masks.
+- **Video and sound**: drop in video clips and sound files, place and trim them on the timeline, hear them in sync while playing, and get the sound in MP4, WebM and ProRes exports (needs [ffmpeg](https://ffmpeg.org)).
 - **Components**: make a reusable piece once, place copies of it anywhere, and edit the main one to change every copy, animations included. Each copy can play the motion a little later, for staggered effects.
 - **Styling**: solid and gradient fills, strokes, corner radius, shadow, blur, blend modes.
 - **Actions**: move, scale, rotate, opacity, resize, colour and more, plus ready-made presets (fade, slide, grow, shrink, spin, blur, reveal) and text animations by letter, word or line.
 - **Easing with one slider**: smooth, natural, slow down, accelerate, overshoot, elastic, bounce, or your own curve.
 - **Timeline** where each row is an action you can drag and stretch.
-- **Export** to MP4, GIF, PNG sequence, transparent video and Lottie.
+- **Export** to MP4, GIF, PNG sequence, transparent video and Lottie, with sound in the video formats.
 - **Figma import** through a plugin that keeps layers editable and lets you re-import a changed design without losing its animations.
 - **AI chat with the provider you choose**: use a subscription you already have through its command-line agent (Claude Code and others), or an API key for Anthropic, OpenAI or any OpenAI-compatible endpoint, including local models.
 - **Agent-ready**: a built-in MCP server gives any agent the same tools the built-in chat uses: read the file, apply edits atomically, take a screenshot, export.
@@ -94,7 +95,7 @@ cargo run --release -- mcp --save crates/moshionly-core/examples/demo.moshi
 
 `moshionly --help`, `moshionly export --help` and `moshionly mcp --help` list every option.
 
-Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`) to unlock ProRes and WebM export.
+Optional: install [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`, version 5.1 or newer) to unlock video and sound layers, sound in exports, and ProRes and WebM export. Without it everything else works, and the app says where ffmpeg is needed.
 
 ## Build the Mac app yourself
 
@@ -204,7 +205,8 @@ Next:
 - [ ] Run the Figma plugin inside Figma and polish the round trip
 - [ ] Publish the signed `.dmg` with each release, and open `.moshi` files by double-clicking them
 - [x] Components: reusable pieces whose copies follow the main one, animations included
-- [ ] Video and audio layers, shader effects
+- [x] Video and audio layers: clips on the timeline, played in sync, with sound in MP4, WebM and ProRes exports (with ffmpeg)
+- [ ] Shader effects
 - [ ] Linux and Windows builds
 
 ## Contributing
