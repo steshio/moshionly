@@ -44,7 +44,7 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         on the artboard, update its x and y.)\n\
         - clone: copy the layer \"id\" with everything inside it and the animations on all of \
         it, just in front of the original unless placed otherwise, shifted by \"offset\" \
-        {x, y} and its animations (and the time_offset of copied instances) by \"time_offset\" \
+        {x, y} and its animations (so also what copied instances play) by \"time_offset\" \
         ms; good for repeating an element with a stagger. Cloning an animation copies it onto the row below, onto \"target\" if given. \
         \"temp_id\" names the copy; the result maps every original id to its copy.\n\
         - set_duration: the length of an \"artboard\"'s timeline, in milliseconds.\n\
@@ -218,7 +218,7 @@ fn schema() -> Value {
         },
         "time_offset": {
             "type": "number",
-            "description": "clone: milliseconds to shift the copied animations, and the time_offset of copied instances, by, so copies play one after another."
+            "description": "clone: milliseconds to shift the copied animations, and what copied instances play, by, so copies play one after another."
         },
         "target": {
             "type": "string",

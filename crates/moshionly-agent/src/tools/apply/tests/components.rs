@@ -1,6 +1,8 @@
 //! Components through apply_edits, get_node and query_nodes.
 
+use moshionly_core::eval::evaluate;
 use moshionly_core::model::NodeData;
+use moshionly_core::text::MonospaceMeasurer;
 use moshionly_core::{NodeId, NodeType};
 use serde_json::{Value, json};
 
@@ -55,6 +57,58 @@ fn a_group_becomes_a_component_and_instances_of_it_are_added_by_temp_id() {
         panic!("expected an instance");
     };
     assert_eq!(later.time_offset, 150.0, "the copy plays later");
+}
+
+#[test]
+fn a_component_cloned_with_its_instance_is_delayed_once() {
+    // A group holding the animated card as a component and an instance
+    // of it, copied 500 ms later.
+    let tools = demo_tools();
+    let made = apply(
+        &tools,
+        json!([
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "row", "parent": "scene", "node": { "type": "group" } },
+            { "op": "move", "id": "card", "parent": "row" },
+            { "op": "add", "temp_id": "copy", "parent": "row",
+              "node": { "type": "instance", "component": "card", "y": 600 } },
+        ]),
+    );
+    let (row, copy) = (created_id(&made, "row"), created_id(&made, "copy"));
+    let cloned = apply(
+        &tools,
+        json!([{ "op": "clone", "id": row, "time_offset": 500 }]),
+    );
+    let later = cloned["created"][0]["copies"][copy.as_str()]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let document = document(&tools);
+    let NodeData::Instance(instance) = &document.get(&NodeId::from(later.as_str())).unwrap().data
+    else {
+        panic!("expected an instance");
+    };
+    assert_eq!(
+        instance.time_offset, 0.0,
+        "its copied component plays later already"
+    );
+    // The copy shows at t + 500 what the original shows at t.
+    let drawn = |id: &str, time: f64| {
+        let scene = evaluate(
+            &document,
+            &NodeId::from("scene"),
+            time,
+            &MonospaceMeasurer::default(),
+        )
+        .unwrap();
+        let node = scene.find(&NodeId::from(id)).unwrap();
+        serde_json::to_string(node)
+            .unwrap()
+            .replace(id, "the instance")
+    };
+    for time in [0.0, 300.0, 700.0, 900.0, 1500.0] {
+        assert_eq!(drawn(&copy, time), drawn(&later, time + 500.0), "at {time}");
+    }
 }
 
 #[test]
