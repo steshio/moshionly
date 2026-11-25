@@ -55,7 +55,10 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         animations, and changes when the component does.\n\
         - detach: turn the instance \"id\" (or every one of \"ids\") into a plain group that \
         looks the same, with copies of the component's layers and animations; \"temp_id\" \
-        names the group. Removing a component detaches its instances the same way.\n\
+        names the group. Removing a component detaches its instances the same way. Two cases \
+        do not look quite the same, and the result warns about them: an instance resized out \
+        of proportion (stroke widths and font sizes stay), and a negative time_offset while \
+        the component's animations are under way (they are squeezed after 0 ms).\n\
         Where a node goes among its siblings: \"position\" \"first\" or \"last\" (the default: \
         frontmost layer, bottom timeline row), or \"before\" or \"after\" a sibling's id. Units: \
         pixels, degrees clockwise, milliseconds, opacity 0 to 100, colours \"#RRGGBB\". The \

@@ -1,7 +1,8 @@
 //! The operations that change or remove what is there: `update`, `remove`
 //! and `set_duration`.
 
-use moshionly_core::{Edit, Family, NodeType, build};
+use moshionly_core::build::{self, DetachLoss};
+use moshionly_core::{Edit, Family, NodeType};
 use serde_json::{Value, json};
 
 use super::batch::{Batch, Owner};
@@ -86,14 +87,19 @@ pub(super) fn remove(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
         .iter()
         .filter(|edit| matches!(edit, Edit::Add { .. }))
         .count();
-    let detached: Vec<String> = edits
+    // With what each group cannot keep of its instance's look. An instance
+    // copied out of another one while detaching is not listed.
+    let detached: Vec<(String, Vec<DetachLoss>)> = edits
         .iter()
         .filter_map(|edit| match edit {
             Edit::Remove { id } => batch.scratch.get(id),
             _ => None,
         })
         .filter(|node| node.node_type() == NodeType::Instance && !ids.contains(&node.id))
-        .map(|node| node.label())
+        .map(|node| {
+            let losses = build::detach_losses(&batch.scratch, &node.id);
+            (node.label(), losses)
+        })
         .collect();
     batch.commit(edits, Owner::Operation)?;
     // A detached instance is counted as detached, not as removed.
@@ -102,11 +108,27 @@ pub(super) fn remove(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
         .saturating_sub(detached.len());
     if !detached.is_empty() {
         batch.detached += detached.len();
-        batch.warnings.push(format!(
-            "A removed component was still shown by instances, so they were detached into \
-             plain groups that look the same: {}.",
-            detached.join(", ")
-        ));
+        let names: Vec<&str> = detached.iter().map(|(name, _)| name.as_str()).collect();
+        let differ: Vec<String> = detached
+            .iter()
+            .filter(|(_, losses)| !losses.is_empty())
+            .map(|(name, losses)| format!("{name}: {}", warn::losses(losses)))
+            .collect();
+        let message = if differ.is_empty() {
+            format!(
+                "A removed component was still shown by instances, so they were detached into \
+                 plain groups that look the same: {}.",
+                names.join(", ")
+            )
+        } else {
+            format!(
+                "A removed component was still shown by instances, so they were detached into \
+                 plain groups: {}. They look the same, except {}.",
+                names.join(", "),
+                differ.join("; ")
+            )
+        };
+        batch.warnings.push(message);
     }
     Ok(())
 }

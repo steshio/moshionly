@@ -5,6 +5,7 @@ use serde_json::json;
 
 use super::batch::{Batch, Owner};
 use super::place::sentence;
+use super::warn;
 use crate::tool::ToolError;
 use crate::tools::args::Args;
 
@@ -51,6 +52,17 @@ pub(super) fn detach(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     for id in ids {
         let (group, edits) = build::detach(&batch.scratch, &id)
             .map_err(|error| ToolError::Rejected(sentence(&error.to_string())))?;
+        let losses = build::detach_losses(&batch.scratch, &id);
+        if let Some(node) = batch.scratch.get(&id)
+            && !losses.is_empty()
+        {
+            let message = format!(
+                "{} became a plain group that does not look quite the same: {}.",
+                node.label(),
+                warn::losses(&losses)
+            );
+            batch.warnings.push(message);
+        }
         batch.commit(edits, Owner::Operation)?;
         if let Some(temp) = &temp {
             batch.declare(temp, &group, &args.field("temp_id"))?;

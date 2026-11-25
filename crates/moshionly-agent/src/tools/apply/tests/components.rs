@@ -203,6 +203,71 @@ fn removing_a_component_detaches_its_instances() {
     );
 }
 
+/// The card as a component with three instances in "second": "Wide",
+/// stretched out of proportion, "Early", which starts 700 ms into the
+/// card's animations, and "Plain". Returns their ids in that order.
+fn card_and_three_instances(tools: &crate::Tools) -> [String; 3] {
+    let made = apply(
+        tools,
+        json!([
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "wide", "parent": "second",
+              "node": { "type": "instance", "component": "card", "name": "Wide",
+                        "width": 900, "height": 400 } },
+            { "op": "add", "temp_id": "early", "parent": "second",
+              "node": { "type": "instance", "component": "card", "name": "Early",
+                        "time_offset": -700 } },
+            { "op": "add", "temp_id": "plain", "parent": "second",
+              "node": { "type": "instance", "component": "card", "name": "Plain" } },
+        ]),
+    );
+    ["wide", "early", "plain"].map(|temp| created_id(&made, temp))
+}
+
+fn warnings(result: &Value) -> Vec<&str> {
+    result["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+#[test]
+fn detaching_says_when_the_group_does_not_look_the_same() {
+    let tools = demo_tools();
+    let ids = card_and_three_instances(&tools);
+    let result = apply(&tools, json!([{ "op": "detach", "ids": ids }]));
+    let said = warnings(&result);
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(
+        said[0].contains("(Wide)") && said[0].contains("out of proportion"),
+        "{said:#?}"
+    );
+    assert!(
+        said[1].contains("(Early)") && said[1].contains("squeezed"),
+        "{said:#?}"
+    );
+}
+
+#[test]
+fn removing_a_component_says_which_groups_do_not_look_the_same() {
+    let tools = demo_tools();
+    card_and_three_instances(&tools);
+    let result = apply(&tools, json!([{ "op": "remove", "id": "card" }]));
+    let said = warnings(&result).join("\n");
+    assert!(said.contains("(Plain)"), "{said}");
+    assert!(said.contains("except"), "{said}");
+    assert!(
+        said.contains("(Wide): it is resized out of proportion"),
+        "{said}"
+    );
+    assert!(
+        said.contains("(Early): its time offset is negative"),
+        "{said}"
+    );
+}
+
 #[test]
 fn mistakes_with_components_are_explained() {
     let tools = demo_tools();
