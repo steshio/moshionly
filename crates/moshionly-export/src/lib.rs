@@ -4,7 +4,8 @@
 //! `moshionly export` command all call this crate. PNG, PNG sequences, GIF
 //! and MP4 are written in-process; WebM and ProRes by an installed
 //! `ffmpeg`. Lottie converts the scene model into vectors and keyframes
-//! instead of pixels.
+//! instead of pixels. Video layers and sound are read with `ffmpeg` too
+//! (see [`media`]); MP4, WebM and ProRes carry the artboard's sound.
 //!
 //! # A quick tour
 //!
@@ -71,6 +72,7 @@ mod output;
 mod png;
 pub mod progress;
 pub mod settings;
+mod soundtrack;
 pub mod timing;
 
 pub use available::{Availability, availability, availability_with, available_formats};
