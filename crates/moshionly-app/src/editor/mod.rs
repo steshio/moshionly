@@ -26,6 +26,8 @@
 //! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
 //!   typing text on the canvas.
 //! - [`clipboard`]: copying and pasting layers as Moshionly's JSON.
+//! - [`components`]: main components, where new instances of them go, and
+//!   what deleting a main does to its instances.
 //! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
@@ -35,6 +37,7 @@
 pub mod actions;
 pub mod assets;
 pub mod clipboard;
+pub mod components;
 pub mod create;
 pub mod describe;
 pub mod drag;

@@ -195,6 +195,24 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
                             out.commands.push(id);
                         }
                     }
+                    // The component commands that apply to the selection.
+                    let components: Vec<CommandId> = [
+                        CommandId::CreateComponent,
+                        CommandId::InsertInstance,
+                        CommandId::GoToMainComponent,
+                        CommandId::DetachInstance,
+                    ]
+                    .into_iter()
+                    .filter(|id| panel.registry.is_enabled(*id))
+                    .collect();
+                    if !components.is_empty() {
+                        menu_separator(ui);
+                    }
+                    for id in components {
+                        if command_item(ui, id, panel.registry, None) {
+                            out.commands.push(id);
+                        }
+                    }
                     menu_separator(ui);
                     for id in [
                         CommandId::BringToFront,

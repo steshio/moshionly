@@ -7,6 +7,7 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod component_commands;
 mod connect;
 mod edit_commands;
 mod export_dialog;
@@ -928,6 +929,7 @@ impl Shell {
             self.commands.set_enabled(id, selected);
         }
         edit_commands::enable_edit_commands(&mut self.commands, &self.editor);
+        component_commands::enable_component_commands(&mut self.commands, &self.editor);
         // Selected actions can be deleted, copied and grouped on their own.
         if self.on_actions() {
             for id in [
@@ -1098,6 +1100,7 @@ impl Shell {
             CommandId::ConnectAgent => self.connect_open = true,
             CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
+            other if self.component_command(other) => {}
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),
             CommandId::OpenProject => self.request(FileAction::Open(None)),
@@ -1267,6 +1270,10 @@ fn ends_a_canvas_drag(id: CommandId) -> bool {
             | CommandId::BringForward
             | CommandId::SendBackward
             | CommandId::SendToBack
+            | CommandId::CreateComponent
+            | CommandId::InsertInstance
+            | CommandId::GoToMainComponent
+            | CommandId::DetachInstance
             | CommandId::NewProject
             | CommandId::OpenProject
             | CommandId::Save
