@@ -74,13 +74,7 @@ pub(super) fn update(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     batch.updated += ids.len();
     batch.followed += followed;
     for id in &ids {
-        let animation = batch
-            .scratch
-            .get(id)
-            .is_some_and(|node| node.is_animation());
-        if animation {
-            warn::animation(batch, id);
-        }
+        warn::late(batch, id);
     }
     Ok(())
 }
@@ -168,16 +162,19 @@ pub(super) fn set_duration(batch: &mut Batch, args: &Args) -> Result<(), ToolErr
     )?;
     batch.durations += 1;
 
+    let runs_past = |node: &Node| warn::end_of(node).is_some_and(|end| end > duration);
     let late: Vec<String> = batch
         .scratch
         .walk(&artboard, Family::Animation)
-        .filter(|(_, node)| node.data.span().is_some_and(|(_, end)| end > duration))
+        .chain(batch.scratch.walk(&artboard, Family::Layer))
+        .filter(|(_, node)| runs_past(node))
         .map(|(_, node)| node.label())
         .take(5)
         .collect();
     if !late.is_empty() {
         batch.warnings.push(format!(
-            "These animations run past the new end at {duration} ms and are cut off: {}.",
+            "These animations, sounds or videos run past the new end at {duration} ms and are \
+             cut off: {}.",
             late.join(", ")
         ));
     }

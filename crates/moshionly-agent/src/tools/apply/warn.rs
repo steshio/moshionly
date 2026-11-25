@@ -5,7 +5,7 @@
 
 use moshionly_core::build::DetachLoss;
 use moshionly_core::eval::duration_of;
-use moshionly_core::{NodeData, NodeId, NodeType};
+use moshionly_core::{Node, NodeData, NodeId, NodeType};
 
 use super::batch::Batch;
 
@@ -52,14 +52,17 @@ pub(super) fn layer(batch: &mut Batch, id: &NodeId) {
             bounds.x, bounds.y, bounds.width, bounds.height
         ));
     }
+    // A video clip that runs past the end of its timeline.
+    late(batch, id);
 }
 
-/// Checks an animation that was added, copied or changed.
-pub(super) fn animation(batch: &mut Batch, id: &NodeId) {
+/// Checks that an animation, a sound or a video clip that was added,
+/// copied or changed does not run past the end of its timeline.
+pub(super) fn late(batch: &mut Batch, id: &NodeId) {
     let Some(node) = batch.scratch.get(id) else {
         return;
     };
-    let (Some((_, end)), Some(artboard)) = (node.data.span(), batch.scratch.artboard_of(id)) else {
+    let (Some(end), Some(artboard)) = (end_of(node), batch.scratch.artboard_of(id)) else {
         return;
     };
     let Some(duration) = duration_of(&batch.scratch, &artboard.id) else {
@@ -74,6 +77,15 @@ pub(super) fn animation(batch: &mut Batch, id: &NodeId) {
         );
         batch.warnings.push(message);
     }
+}
+
+/// When an animation, a sound or a video clip ends on its timeline, in
+/// milliseconds. `None` for everything else.
+pub(super) fn end_of(node: &Node) -> Option<f64> {
+    node.data
+        .span()
+        .map(|(_, end)| end)
+        .or_else(|| node.data.clip().map(|clip| clip.end))
 }
 
 /// Why the group a detached instance became does not look quite the same,

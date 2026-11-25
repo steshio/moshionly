@@ -868,3 +868,104 @@ fn an_artboard_is_cloned_to_the_right_with_its_timeline() {
 }
 
 mod components;
+
+#[test]
+fn video_and_sound_are_added_placed_in_time_and_shifted_by_clone() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "add", "parent": "card", "temp_id": "film", "node": {
+                "type": "video", "source": "assets/film.mp4", "width": 320, "height": 180,
+                "start": 500, "end": 2500, "trim_start": 1000, "volume": 0.5 } },
+            { "op": "add", "parent": "scene", "temp_id": "music", "node": {
+                "type": "audio", "source": "assets/music.mp3", "start": 0, "end": 3000 } },
+        ]),
+    );
+    let film = created_id(&result, "film");
+    let music = created_id(&result, "music");
+    assert_eq!(field(&tools, &music, "end"), json!(3000));
+
+    // Sound has no target to find its timeline by.
+    let error = refused(
+        &tools,
+        json!([{ "op": "add", "node": { "type": "audio", "source": "a.mp3", "start": 0, "end": 10 } }]),
+    );
+    assert!(
+        error["message"].as_str().unwrap().contains("parent"),
+        "{error}"
+    );
+
+    // A copy plays later by time_offset, video and sound alike.
+    let copied = apply(
+        &tools,
+        json!([
+            { "op": "clone", "id": film, "temp_id": "film2", "time_offset": 250 },
+            { "op": "clone", "id": music, "temp_id": "music2", "time_offset": 500 },
+        ]),
+    );
+    let (film2, music2) = (created_id(&copied, "film2"), created_id(&copied, "music2"));
+    assert_eq!(
+        (field(&tools, &film2, "start"), field(&tools, &film2, "end")),
+        (json!(750), json!(2750))
+    );
+    assert_eq!(
+        field(&tools, &film2, "trim_start"),
+        json!(1000),
+        "the same part of the file"
+    );
+    assert_eq!(
+        (
+            field(&tools, &music2, "start"),
+            field(&tools, &music2, "end")
+        ),
+        (json!(500), json!(3500))
+    );
+    let error = refused(
+        &tools,
+        json!([{ "op": "clone", "id": music, "time_offset": -100 }]),
+    );
+    assert!(
+        error["message"].as_str().unwrap().contains("before 0"),
+        "{error}"
+    );
+    let error = refused(
+        &tools,
+        json!([{ "op": "clone", "id": music, "target": "card" }]),
+    );
+    assert!(
+        error["message"].as_str().unwrap().contains("sound"),
+        "{error}"
+    );
+}
+
+#[test]
+fn clips_that_run_past_the_timeline_are_warned_about() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([{ "op": "add", "parent": "scene", "temp_id": "film", "node": {
+            "type": "video", "source": "film.mp4", "start": 3000, "end": 5000 } }]),
+    );
+    let warnings = result["warnings"].to_string();
+    assert!(warnings.contains("ends at 5000 ms"), "{warnings}");
+    let film = created_id(&result, "film");
+    let result = apply(
+        &tools,
+        json!([{ "op": "update", "id": film, "set": { "end": 3500 } }]),
+    );
+    assert!(result.get("warnings").is_none(), "{result}");
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "add", "parent": "scene", "node": {
+                "type": "audio", "name": "Music", "source": "m.mp3", "start": 0, "end": 3000 } },
+            { "op": "set_duration", "artboard": "scene", "duration": 2000 },
+        ]),
+    );
+    let warnings = result["warnings"].to_string();
+    assert!(
+        warnings.contains("(Music)") && warnings.contains(&film),
+        "{warnings}"
+    );
+}
