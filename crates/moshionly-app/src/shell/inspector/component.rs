@@ -10,6 +10,7 @@ use super::{Bind, numeric};
 use crate::{
     commands::CommandId,
     editor::{
+        components::shown_main,
         describe::display_name,
         inspect::{Inspected, set_all, tidy},
     },
@@ -88,6 +89,8 @@ fn instance_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>)
     mains.sort();
     mains.dedup();
     let main = main_label(&document, &mains);
+    // The same rule as the Go to main component command's.
+    let can_go = shown_main(&document, &ids).is_some();
     let mut open = bind.state.open.component;
     let mut changed = None;
     let (mut go, mut detach) = (false, false);
@@ -121,7 +124,8 @@ fn instance_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>)
             );
             control_row(ui, |ui| {
                 go = ui
-                    .add(
+                    .add_enabled(
+                        can_go,
                         TextButton::new("Go to main")
                             .kind(ButtonKind::Quiet)
                             .icon(icons::ARROW_SQUARE_OUT),

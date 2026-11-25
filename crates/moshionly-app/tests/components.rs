@@ -3,7 +3,10 @@
 //! to it, detaching and deleting.
 
 use egui::{Key, Modifiers, Pos2, pos2, vec2};
-use egui_kittest::{Harness, kittest::Queryable as _};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
 use moshionly_agent::SessionHandle;
 use moshionly_app::{
     settings::Settings,
@@ -460,6 +463,43 @@ fn instances_follow_a_main_resized_in_the_inspector() {
     );
     harness.state_mut().editor_mut().undo().unwrap();
     assert_eq!(frame(&harness, &instance), (880.0, 340.0, 600.0, 400.0));
+}
+
+#[test]
+fn go_to_main_is_off_for_instances_of_different_mains() {
+    let mut harness = harness();
+    card_component(&mut harness);
+    let card_copy = insert_instance(&mut harness);
+    // A second component, from a copy of the accent bar on the artboard,
+    // with an instance of its own.
+    let accent = copy(&mut harness, &[NodeId::from("accent")]);
+    paste(&mut harness, &accent, "scene");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::K);
+    harness.run();
+    let bar = selection(&harness)[0].clone();
+    assert_eq!(type_of(&harness, &bar), Some(NodeType::Component));
+    let bar_copy = insert_instance(&mut harness);
+
+    // Instances of two mains lead to neither.
+    let both = vec![card_copy.clone(), bar_copy];
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .set(both.iter().cloned());
+    harness.run();
+    assert!(harness.query_by_label("Several components").is_some());
+    let button = harness.get_by_label("Go to main");
+    assert!(button.accesskit_node().is_disabled());
+    let at = button.rect().center();
+    click(&mut harness, at);
+    assert_eq!(selection(&harness), both);
+
+    // One instance leads to its main.
+    harness.state_mut().editor_mut().selection.select(card_copy);
+    harness.run();
+    let button = harness.get_by_label("Go to main");
+    assert!(!button.accesskit_node().is_disabled());
 }
 
 #[test]
