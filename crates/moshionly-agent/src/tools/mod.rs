@@ -18,6 +18,7 @@ mod export;
 mod files;
 mod fonts;
 mod image;
+mod media;
 mod node;
 mod overview;
 mod query;
@@ -99,6 +100,7 @@ const TOOLS: &[&ToolDef] = &[
     &evaluate::EVALUATE,
     &fonts::LIST_FONTS,
     &image::IMPORT_IMAGE,
+    &media::IMPORT_MEDIA,
     &export::EXPORT,
     &undo::UNDO_LAST_AGENT_CHANGE,
 ];
