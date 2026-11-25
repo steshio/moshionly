@@ -226,20 +226,46 @@ impl<'a> Painter<'a> {
                     radii,
                     fit: *fit,
                     stroke: stroke.as_ref(),
+                    mipmaps: true,
                 };
                 image::draw(self.canvas, &frame, picture.as_ref(), opacity);
             }
             Content::Video {
-                fit, radii, stroke, ..
+                source,
+                media_time_ms,
+                fit,
+                radii,
+                stroke,
             } => {
-                // TODO: draw the frame; until frames can be read, the placeholder.
+                // The box's size on the output, so a provider can read
+                // smaller frames for a small box.
+                let matrix = self.canvas.local_to_device_as_3x3();
+                let across = f64::from(matrix.scale_x().hypot(matrix.skew_y()));
+                let down = f64::from(matrix.skew_x().hypot(matrix.scale_y()));
+                let wanted = (node.width * across, node.height * down);
+                let picture =
+                    match self
+                        .assets
+                        .video_frame(source, *media_time_ms, wanted.0, wanted.1)
+                    {
+                        Ok(picture) => Some(picture),
+                        Err(reason) => {
+                            self.warn(RenderWarning::MissingVideo {
+                                node: node.id.clone(),
+                                source: assets::shorten(source),
+                                reason,
+                            });
+                            None
+                        }
+                    };
                 let frame = image::ImageBox {
                     size: (node.width, node.height),
                     radii,
                     fit: *fit,
                     stroke: stroke.as_ref(),
+                    mipmaps: false,
                 };
-                image::draw(self.canvas, &frame, None, opacity);
+                image::draw(self.canvas, &frame, picture.as_ref(), opacity);
             }
         }
     }
