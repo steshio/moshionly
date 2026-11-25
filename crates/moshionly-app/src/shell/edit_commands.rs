@@ -70,18 +70,20 @@ impl Shell {
         if self.paste_envelope(text) {
             return;
         }
-        let mut nodes = match clipboard::read(text) {
-            Ok(nodes) => nodes,
+        let copied = match clipboard::read(text) {
+            Ok(copied) => copied,
             Err(error) => {
                 self.toasts.push(Toast::info(error.to_string()));
                 return;
             }
         };
+        let document = std::sync::Arc::clone(self.editor.document());
+        // Instances whose main is not in this document come detached.
+        let mut nodes = copied.nodes_for(&document);
         // Images from another project are copied into this one.
         for problem in assets::adopt_images(&mut nodes, self.editor.project_file()) {
             self.toasts.push(Toast::warning(problem));
         }
-        let document = std::sync::Arc::clone(self.editor.document());
         let (parent, place) = paste_target(&document, &self.editor);
         let result = clipboard::paste(&document, &nodes, parent.as_ref(), &place);
         match result {
