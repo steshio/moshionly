@@ -2,14 +2,14 @@
 
 The tools that let an AI agent work in a Moshionly file as safely and capably as a person, and the Model Context Protocol (MCP) server that offers them to agents outside the app. The built-in chat, external agents such as Claude Code, and headless scripts all go through this crate.
 
-It depends on `moshionly-core` only. Rendering, export and the list of fonts belong to the app, which hands them in through traits (`FrameSource`, `Exporter`, `FontSource`); without them the tools that need them say so, and everything else works.
+It depends on `moshionly-core` only. Rendering, export, the list of fonts and reading media files belong to the app, which hands them in through traits (`FrameSource`, `Exporter`, `FontSource`, `MediaProbe`); without them the tools that need them say so, and everything else works.
 
 ## The tools
 
 | Tool | What it does |
 |---|---|
 | `get_overview` | File name, artboards with size and duration, layer and animation counts, fonts in use, what the host can do |
-| `query_nodes` | Find nodes by family, type, name, parent, artboard, target, component, time range or ids; choose the fields; nest children; capped results that say how to narrow |
+| `query_nodes` | Find nodes by family, type, name, parent, artboard, target, component, time range (animations, sound and video clips) or ids; choose the fields; nest children; capped results that say how to narrow |
 | `get_node` | One node in full, with its box in artboard coordinates, the animations on it, and its links to components: the component an instance shows, a component's instances, the component a layer is part of |
 | `get_schema` | The node types, or the fields, defaults, value types and a ready-made operation for one type |
 | `apply_edits` | An all-or-nothing batch of `add`, `update`, `remove`, `move`, `clone`, `set_duration`, `make_component` and `detach`, with temporary ids, as one undo step |
@@ -17,10 +17,13 @@ It depends on `moshionly-core` only. Rendering, export and the list of fonts bel
 | `evaluate` | Property values of layers at chosen times, to check motion as numbers |
 | `list_fonts` | The font families the host can draw, and those the file uses |
 | `import_image` | Copies an image into the project's `assets` folder and returns the `source` to use |
-| `export` | Writes an artboard to a file in the project's `exports` folder through the host's exporter |
+| `import_media` | Copies a video or sound file into the project's `assets` folder and returns the `source`, its duration, picture size and whether it has sound, with a `video` layer or an `audio` item ready to add; needs the host's `MediaProbe` (the app reads media with `ffmpeg`) |
+| `export` | Writes an artboard to a file in the project's `exports` folder through the host's exporter; `sound` puts the artboard's sound in mp4, webm and prores, and other formats say they hold none |
 | `undo_last_agent_change` | Undoes the last agent change, never the person's own work |
 
 Components work through `apply_edits` like everything else: `make_component` turns a group into a component in place or wraps layers in a new one, `add` with `{"type":"instance","component":…}` places a copy (the component may be a `temp_id` from the same call, and the copy takes the component's size and look unless they are given), `detach` turns an instance into a group that looks the same, and `remove` on a component detaches its instances first and says so. Both warn when a group cannot look quite the same: an instance resized out of proportion keeps stroke widths and font sizes in its group, and one with a negative `time_offset` that starts while its component's animations are under way has them squeezed after 0 ms. `clone` with a `time_offset` also delays copied instances, which staggers copies of one animated component.
+
+Video and sound work through `apply_edits` too: a `video` is a layer like an `image`, and an `audio` item goes on the timeline of its `parent` (it has no target). Both have `start`, `end`, `trim_start` and `volume`; `clone` with a `time_offset` moves copied clips later like animations, and the warnings about running past the end of the timeline count clips.
 
 Every edit goes through `Document::apply` and the undo history, labelled with who made it (`Origin::User`, `Agent` or `Import`). Errors come back as results a model can act on: the operation, the field, and what to do instead. `guide::GUIDE` is the advice the model gets about working in a file (look first, units, how animations combine, durations and easing, checking with screenshots, keeping the person's work).
 
@@ -75,7 +78,7 @@ claude mcp add --transport http moshionly http://127.0.0.1:47821/mcp
 
 - The HTTP server listens on `127.0.0.1` only.
 - `/mcp` refuses any request with an `Origin` other than its own address, and any `Host` other than this machine, so a web page cannot drive it. Agent tools send no `Origin`.
-- `/import` and `/health` also answer the Figma plugin panel, whose origin is `null`, including the private-network preflight Chromium sends. Since any sandboxed page looks the same, an import is size-capped, checked through core, must carry images as `data:` URIs, and is handed to the app as a `PendingImport`; at most four wait for the app at once. The Moshionly app adds it without asking, as one undo step the person can take back, and stops adding more once six designs, or 32 MB of them, came in within the last minute (the one that crosses 32 MB is still added whole): that slows down a page posting designs in a loop, and turning off "Let agents on this computer connect" in the app stops it.
+- `/import` and `/health` also answer the Figma plugin panel, whose origin is `null`, including the private-network preflight Chromium sends. Since any sandboxed page looks the same, an import is size-capped, checked through core, must carry images as `data:` URIs and may not hold video or sound (which always refer to files), and is handed to the app as a `PendingImport`; at most four wait for the app at once. The Moshionly app adds it without asking, as one undo step the person can take back, and stops adding more once six designs, or 32 MB of them, came in within the last minute (the one that crosses 32 MB is still added whole): that slows down a page posting designs in a loop, and turning off "Let agents on this computer connect" in the app stops it.
 - Tools write files only into the project's `assets` and `exports` folders, never over an existing file (a host can allow other export paths with `ToolsConfig::export_anywhere`).
 
 ## The Figma import envelope
