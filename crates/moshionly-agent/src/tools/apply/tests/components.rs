@@ -163,6 +163,14 @@ fn instances_the_size_of_a_resized_component_follow_it() {
     assert_eq!(result["summary"], "Change 2 nodes");
     assert_eq!(size(&tools, &same), (700.0, 400.0));
     assert_eq!(size(&tools, &wide), (900.0, 400.0));
+
+    // Setting the size the card has resizes nothing.
+    let result = apply(
+        &tools,
+        json!([{ "op": "update", "id": "card", "set": { "width": 700, "fill": "#00FF00" } }]),
+    );
+    assert_eq!(result["summary"], "Change 1 node");
+    assert_eq!(size(&tools, &same), (700.0, 400.0));
 }
 
 #[test]

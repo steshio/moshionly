@@ -2,7 +2,7 @@
 //! and `set_duration`.
 
 use moshionly_core::build::{self, DetachLoss};
-use moshionly_core::{Edit, Family, NodeType};
+use moshionly_core::{Document, Edit, Family, Node, NodeType};
 use serde_json::{Value, json};
 
 use super::batch::{Batch, Owner};
@@ -64,8 +64,10 @@ pub(super) fn update(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
 
     let mut edits: Vec<Edit> = ids.iter().map(|id| Edit::update(id, set.clone())).collect();
     // Instances as large as a component that is resized take its new size,
-    // so what they show is not squeezed.
-    let follow = build::instances_follow_mains(&batch.scratch, &edits);
+    // so what they show is not squeezed. Those that already have it are
+    // not resized.
+    let mut follow = build::instances_follow_mains(&batch.scratch, &edits);
+    follow.retain(|edit| resizes(&batch.scratch, edit));
     let followed = follow.len();
     edits.extend(follow);
     batch.commit(edits, Owner::Set)?;
@@ -81,6 +83,20 @@ pub(super) fn update(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
         }
     }
     Ok(())
+}
+
+/// Whether `edit` gives a layer of `document` a width or a height other
+/// than the one it has.
+fn resizes(document: &Document, edit: &Edit) -> bool {
+    let Edit::Update { id, patch } = edit else {
+        return false;
+    };
+    let Some(layer) = document.get(id).and_then(Node::layer) else {
+        return false;
+    };
+    [("width", layer.width), ("height", layer.height)]
+        .into_iter()
+        .any(|(side, size)| patch.get(side).is_some_and(|to| to.as_f64() != Some(size)))
 }
 
 pub(super) fn remove(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
