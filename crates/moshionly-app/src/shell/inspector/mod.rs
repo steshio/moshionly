@@ -8,6 +8,7 @@
 
 mod action;
 mod animate;
+mod component;
 mod design;
 mod easing;
 mod text;
@@ -81,6 +82,7 @@ impl Default for InspectorState {
 /// Which sections of the inspector are open.
 #[derive(Clone, Copy, Debug)]
 struct Sections {
+    component: bool,
     artboard: bool,
     layout: bool,
     appearance: bool,
@@ -99,6 +101,7 @@ struct Sections {
 impl Default for Sections {
     fn default() -> Self {
         Self {
+            component: true,
             artboard: true,
             layout: true,
             appearance: true,
@@ -123,6 +126,9 @@ pub(super) struct InspectorOutput {
     pub error: Option<String>,
     /// The person asked to choose another image for the selected images.
     pub replace_image: bool,
+    /// Commands asked for with the inspector's buttons, such as going to
+    /// the main component of the selected instance.
+    pub commands: Vec<crate::commands::CommandId>,
 }
 
 /// The inspector's view of the editor for one frame.

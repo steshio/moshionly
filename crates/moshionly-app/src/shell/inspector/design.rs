@@ -11,7 +11,7 @@ use moshionly_core::model::{
 use moshionly_core::{Color, Edit, Node, NodeType, schema};
 use serde_json::{Value, json};
 
-use super::{Bind, numeric, text};
+use super::{Bind, component, numeric, text};
 use crate::{
     editor::{
         inspect::{
@@ -103,6 +103,7 @@ fn value_of<T: serde::Serialize>(value: &T) -> Value {
 }
 
 pub(super) fn design_tab(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
+    component::component_section(ui, bind, inspected);
     if inspected.all_of(NodeType::Artboard) {
         artboard_section(ui, bind, inspected);
     }

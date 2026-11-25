@@ -506,6 +506,7 @@ impl Shell {
         if inspected.replace_image {
             self.replace_image_dialog();
         }
+        requested.extend(inspected.commands);
 
         self.advance_playback(&ctx);
         self.timeline_panel(ui, &layout);
