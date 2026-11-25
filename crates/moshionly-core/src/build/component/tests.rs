@@ -329,6 +329,33 @@ fn a_detached_instance_looks_the_same_at_every_time() {
 }
 
 #[test]
+fn a_resized_instance_grows_its_box_like_a_group() {
+    // "big" shows "card" at twice its size, and then grows to four times.
+    // "wide" is stretched like a group when detached, so it is left out.
+    let mut document = applied(&sample(), &[Edit::remove("wide")]);
+    document
+        .apply(&[add(json!({
+            "id": "grow", "parent": "ab", "index": "a5", "type": "resize", "target": "big",
+            "start": 0, "end": 1000, "from": { "width": 200, "height": 100 },
+            "to": { "width": 400, "height": 200 }, "easing": { "type": "linear" }
+        }))])
+        .unwrap();
+    let (_, edits) = detach(&document, &id("big")).unwrap();
+    let detached = applied(&document, &edits);
+    let flat = without_instances(&document);
+    for (how, result) in [("detached", &detached), ("without instances", &flat)] {
+        for time in TIMES {
+            assert!(
+                looks_the_same(&scene(&document, "ab", time), &scene(result, "ab", time)),
+                "{how} at {time}: {:#?}\nbecame\n{:#?}",
+                drawn(&scene(&document, "ab", time)),
+                drawn(&scene(result, "ab", time)),
+            );
+        }
+    }
+}
+
+#[test]
 fn detaching_keeps_the_instances_own_animations_and_leaves_the_components() {
     let document = sample();
     let (group, edits) = detach(&document, &id("copy")).unwrap();

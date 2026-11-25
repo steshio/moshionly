@@ -161,6 +161,34 @@ fn a_resized_instance_scales_the_content_to_its_box() {
 }
 
 #[test]
+fn a_resize_animation_on_an_instance_grows_its_box_not_its_content() {
+    // "i1" rests at twice the component's size and grows to four times.
+    let mut document = with_component(json!([
+        { "id": "grow", "type": "resize", "target": "i1", "start": 0, "end": 1000,
+          "to": { "width": 400, "height": 200 }, "anchor": "top_left", "easing": linear() },
+    ]));
+    document
+        .apply(&[Edit::update(
+            "i1",
+            [("width", json!(200)), ("height", json!(100))],
+        )])
+        .unwrap();
+    let scene = at(&document, 1000.0);
+    let copy = node(&scene, "i1");
+    assert_eq!((copy.width, copy.height), (400.0, 200.0));
+    let [holder] = copy.children() else {
+        panic!("expected one scaled holder");
+    };
+    // The content keeps the resting fit; the component's box, in its own
+    // units, grows so that its background fills the instance's box.
+    assert_eq!(holder.transform, Affine::scale(2.0, 2.0));
+    assert_eq!((holder.width, holder.height), (200.0, 100.0));
+    let inside = holder.children();
+    assert_eq!((inside[0].width, inside[0].height), (200.0, 100.0));
+    assert_eq!((inside[1].width, inside[1].height), (10.0, 10.0));
+}
+
+#[test]
 fn instances_nest_and_their_offsets_add_up() {
     let document = with_component(json!([
         { "id": "go", "type": "move", "target": "dot", "start": 0, "end": 1000,

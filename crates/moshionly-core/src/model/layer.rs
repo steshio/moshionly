@@ -493,8 +493,10 @@ impl From<Component> for Group {
 /// At time `t` it shows the component's look and children as the component
 /// looks at `t - time_offset`, with every animation that targets a layer
 /// inside the component. When its box differs from the component's, that
-/// content is scaled to fill it. Its own placement and effects, and the
-/// animations that target the instance, are its own. It holds no layers.
+/// content is scaled to fill it; a resize animation on the instance changes
+/// its box the way it changes a group's, not the content's scale. Its own
+/// placement and effects, and the animations that target the instance, are
+/// its own. It holds no layers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Instance {

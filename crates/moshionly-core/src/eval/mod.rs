@@ -56,9 +56,12 @@
 //! component itself belong to where it is placed and are left out.
 //! Before the offset has passed, the instance shows the component as it is
 //! before its animations start. When the instance's box differs from the
-//! component's, the content is scaled to fill it. Every scene node drawn
-//! for an instance carries the instance's id, so the instance is one layer
-//! to hit testing and selection.
+//! component's, the content is scaled to fill it. A resize animation on the
+//! instance changes its box the way it changes a group's: the component's
+//! background, outline and clip follow the box, and the layers keep the
+//! scale that fits the instance's resting box. Every scene node drawn for
+//! an instance carries the instance's id, so the instance is one layer to
+//! hit testing and selection.
 
 mod preset;
 mod state;
@@ -544,10 +547,11 @@ impl<'a> Evaluator<'a> {
         Content::Group { children }
     }
 
-    /// What an instance shows: its component's look and layers at the
-    /// instance's time minus its offset, scaled to the instance's box, with
-    /// every scene node carrying the instance's id. Nothing when the
-    /// component is missing or instances nest too deep.
+    /// What an instance shows: its component's look over the instance's
+    /// current box and its layers scaled to the instance's resting box, at
+    /// the instance's time minus its offset, with every scene node carrying
+    /// the instance's id. Nothing when the component is missing or
+    /// instances nest too deep.
     fn instance(&self, node: &Node, instance: &Instance, state: &LayerState) -> Content {
         let nothing = Content::Group {
             children: Vec::new(),
@@ -576,11 +580,9 @@ impl<'a> Evaluator<'a> {
         };
         // Animations on the component itself belong to where it is placed,
         // so its own look is the one at rest.
-        let Some(look) = Channels::default().resolve(main, inner.time) else {
+        let Some(mut look) = Channels::default().resolve(main, inner.time) else {
             return nothing;
         };
-        let mut content = inner.frame(main, component.clip, &look);
-        relabel(&mut content, &node.id);
         let ratio = |size: f64, main: f64| {
             if main > 0.0 && (size / main).is_finite() {
                 size / main
@@ -588,10 +590,17 @@ impl<'a> Evaluator<'a> {
                 1.0
             }
         };
+        // The content fits the instance's resting box. A resize animation
+        // on the instance changes its box the way it changes a group's:
+        // the background, outline and clip follow it, the layers do not.
         let (sx, sy) = (
-            ratio(state.width, look.width),
-            ratio(state.height, look.height),
+            ratio(instance.layer.width, look.width),
+            ratio(instance.layer.height, look.height),
         );
+        look.width = state.width / sx;
+        look.height = state.height / sy;
+        let mut content = inner.frame(main, component.clip, &look);
+        relabel(&mut content, &node.id);
         if sx == 1.0 && sy == 1.0 {
             return content;
         }

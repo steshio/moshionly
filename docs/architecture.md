@@ -115,7 +115,7 @@ enum Edit {
 
 The `Scene` is a plain data tree with every value resolved for that instant: transforms, opacity, clip and mask, paints, shape geometry, text broken into drawable units, images and effects. It has no dependency on a graphics library and can be serialised. The renderer, the Lottie exporter and hit testing all read it.
 
-An instance is evaluated in place: its component's subtree is evaluated with the animations of the component's artboard at the instance's time minus its `time_offset` (not limited to 0, so an instance whose offset has not passed shows the component before its animations start), scaled to the instance's box, and every scene node of it carries the instance's id, so hit testing, bounds and selection treat it as one layer. Nested instances are evaluated the same way, with a depth limit as a guard.
+An instance is evaluated in place: its component's subtree is evaluated with the animations of the component's artboard at the instance's time minus its `time_offset` (not limited to 0, so an instance whose offset has not passed shows the component before its animations start), scaled to the instance's resting box (a `resize` animation on the instance changes its box like a group's, not the content's scale), and every scene node of it carries the instance's id, so hit testing, bounds and selection treat it as one layer. Nested instances are evaluated the same way, with a depth limit as a guard.
 
 Text needs fonts to be measured, and fonts belong to the renderer. Core therefore asks a `TextMeasurer` for line and glyph-cluster boxes when it needs to split text for per-letter, per-word or per-line animation.
 
