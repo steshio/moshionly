@@ -47,7 +47,7 @@ use crate::{
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
     connect::AgentServer,
-    dialogs::{Dialogs, NoDialogs, is_image, is_project},
+    dialogs::{Dialogs, NoDialogs, is_image, is_media, is_project},
     editor::{
         Editor,
         actions::{ActionError, targets_of, with_emptied_folders},
@@ -241,9 +241,15 @@ impl Shell {
             session.clone(),
             crate::host::stoppable_app_host(&renderer, &own_work),
         );
+        let mut commands = CommandRegistry::new();
+        // Shown while media cannot be imported.
+        commands.set_disabled_reason(
+            CommandId::ImportMedia,
+            Some(crate::media::FFMPEG_NEEDED.to_owned()),
+        );
         Self {
             settings,
-            commands: CommandRegistry::new(),
+            commands,
             inspector: InspectorState::default(),
             toasts: Toasts::default(),
             palette: Palette::default(),
@@ -646,7 +652,8 @@ impl Shell {
             .is_some_and(|editing| editing.created)
     }
 
-    /// Images dropped on the window are placed where they were dropped.
+    /// Images, videos and sound dropped on the window are placed where
+    /// they were dropped.
     fn dropped_files(&mut self, ctx: &Context) {
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
@@ -664,6 +671,15 @@ impl Shell {
             let at = self.pointer;
             self.import_images(&images, at);
         }
+        let media: Vec<&std::path::Path> = dropped
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .filter(|path| is_media(path))
+            .collect();
+        if !media.is_empty() {
+            let at = self.pointer;
+            self.import_media(&media, at);
+        }
         // A project dropped on the window is opened.
         if let Some(project) = dropped.iter().find(|path| is_project(path)) {
             self.request(FileAction::Open(Some(project.clone())));
@@ -677,6 +693,56 @@ impl Shell {
             let paths: Vec<&std::path::Path> =
                 paths.iter().map(std::path::PathBuf::as_path).collect();
             self.import_images(&paths, None);
+        }
+    }
+
+    /// Asks for video and sound files and adds them to the current
+    /// artboard. Without `ffmpeg`, says how to get it.
+    fn import_media_dialog(&mut self) {
+        self.editor.tool = Tool::Select;
+        if self.media.is_none() {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        }
+        if let Some(paths) = self.dialogs.import_media() {
+            let paths: Vec<&std::path::Path> =
+                paths.iter().map(std::path::PathBuf::as_path).collect();
+            self.import_media(&paths, None);
+        }
+    }
+
+    /// Adds video and sound files, as video layers centred on `at` (or on
+    /// the current artboard) and audio items on its timeline, and says
+    /// what could not be used and when the scene grew to fit them. Sound
+    /// alone shows the Animate tab, where its settings are.
+    fn import_media(&mut self, paths: &[&std::path::Path], at: Option<Pos2>) {
+        let Some(tools) = self.media.clone() else {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        };
+        let probe = std::sync::Arc::new(crate::media::FfmpegProbe::with_tools(tools));
+        let made = self.editor.import_media(paths, at, probe);
+        for problem in &made.problems {
+            self.toasts.push(Toast::error(problem.clone()));
+        }
+        if let Some(length) = made.scene_length {
+            self.toasts.push(Toast::info(format!(
+                "The scene now lasts {} s, to fit what was added.",
+                crate::widgets::numeric::format_value(length / 1000.0, 2)
+            )));
+        }
+        if let Some(name) = made.unknown_length.first() {
+            self.toasts.push(Toast::info(format!(
+                "{name} does not say how long it is, so it plays for {} s. Drag its end on the \
+                 timeline to change that.",
+                crate::widgets::numeric::format_value(
+                    crate::editor::media::UNKNOWN_LENGTH / 1000.0,
+                    2
+                )
+            )));
+        }
+        if made.videos.is_empty() && !made.sounds.is_empty() {
+            self.inspector.tab = InspectorTab::Animate;
         }
     }
 
@@ -1107,6 +1173,9 @@ impl Shell {
         if !self.editor.actions().is_empty() {
             self.commands.set_enabled(CommandId::Deselect, true);
         }
+        // Media is read with ffmpeg; without it the command says so.
+        self.commands
+            .set_enabled(CommandId::ImportMedia, self.media.is_some());
         let has_artboards = !self.editor.document().artboards().is_empty();
         self.commands
             .set_enabled(CommandId::SelectAll, has_artboards);
@@ -1263,6 +1332,7 @@ impl Shell {
             CommandId::ConnectAgent => self.connect_open = true,
             CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
+            CommandId::ImportMedia => self.import_media_dialog(),
             other if self.component_command(other) => {}
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),
@@ -1495,6 +1565,7 @@ fn ends_a_canvas_drag(id: CommandId) -> bool {
             | CommandId::Save
             | CommandId::SaveAs
             | CommandId::ImportImage
+            | CommandId::ImportMedia
             | CommandId::Export
     ) || Tool::from_command(id).is_some()
 }

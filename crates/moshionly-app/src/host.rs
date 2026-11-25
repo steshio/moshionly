@@ -67,7 +67,7 @@ fn host_with(renderer: &Renderer, exporter: AppExporter, cancel: &CancelToken) -
         .with_fonts(Arc::new(LibraryFonts::new(fonts.clone())))
         .with_exporter(Arc::new(exporter.with_renderer(renderer.clone())))
         .with_measurer(Arc::new(fonts))
-        .with_media(Arc::new(crate::media::FfmpegProbe))
+        .with_media(Arc::new(crate::media::FfmpegProbe::located()))
 }
 
 /// Exports and screenshots done for tools, which can be stopped and

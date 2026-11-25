@@ -30,15 +30,33 @@ pub fn asset_loader(project: Option<PathBuf>, tools: Option<&MediaTools>) -> Ass
     }
 }
 
-/// The agent tools' way of reading media files: `ffmpeg`'s `ffprobe`,
-/// found when asked, so installing `ffmpeg` while the app runs is enough
-/// for agents.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FfmpegProbe;
+/// How the agent tools read media files: with `ffmpeg`'s `ffprobe`.
+#[derive(Clone, Debug, Default)]
+pub struct FfmpegProbe {
+    /// The tools to read with; `None` finds them each time, so installing
+    /// `ffmpeg` while the app runs is enough for agents.
+    tools: Option<MediaTools>,
+}
+
+impl FfmpegProbe {
+    /// A probe that finds `ffmpeg` each time it is asked.
+    pub fn located() -> Self {
+        Self::default()
+    }
+
+    /// A probe that reads with `tools`.
+    pub fn with_tools(tools: MediaTools) -> Self {
+        Self { tools: Some(tools) }
+    }
+}
 
 impl MediaProbe for FfmpegProbe {
     fn probe(&self, path: &Path) -> Result<moshionly_agent::MediaInfo, HostError> {
-        let info = media::probe(path).map_err(host_error)?;
+        let info = match &self.tools {
+            Some(tools) => tools.probe(path),
+            None => media::probe(path),
+        }
+        .map_err(host_error)?;
         Ok(moshionly_agent::MediaInfo {
             duration_ms: info.duration_ms,
             width: info.width,
@@ -88,7 +106,7 @@ mod tests {
 
     #[test]
     fn agents_are_told_what_a_file_is_not() {
-        let missing = FfmpegProbe.probe(Path::new("/no/such/clip.mp4"));
+        let missing = FfmpegProbe::located().probe(Path::new("/no/such/clip.mp4"));
         assert!(missing.is_err());
     }
 }

@@ -100,7 +100,10 @@ impl Shell {
                 .overlays(&overlays)
                 .cursor(tool_cursor(tool))
                 .show(ui, canvas);
-            (viewport, tool_bar::tool_bar(ui, canvas, tool))
+            (
+                viewport,
+                tool_bar::tool_bar(ui, canvas, tool, &self.commands),
+            )
         });
         drop(artboards);
 
