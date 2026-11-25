@@ -2,10 +2,10 @@
 
 use moshionly_core::model::NodeData;
 use moshionly_core::{NodeId, NodeType};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{apply, created_id, document, refused};
-use crate::tools::testing::demo_tools;
+use crate::tools::testing::{call, demo_tools};
 
 fn node_type(tools: &crate::Tools, id: &str) -> Option<NodeType> {
     document(tools)
@@ -194,4 +194,41 @@ fn mistakes_with_components_are_explained() {
         error["message"].as_str().unwrap().contains("inside itself"),
         "{error}"
     );
+}
+
+#[test]
+fn get_node_and_query_nodes_show_the_links() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "copy", "parent": "second",
+              "node": { "type": "instance", "component": "card" } },
+        ]),
+    );
+    let copy = created_id(&result, "copy");
+
+    let main = call(&tools, "get_node", json!({ "id": "card" }));
+    assert_eq!(main["instances"][0]["id"], json!(copy));
+    let instance = call(&tools, "get_node", json!({ "id": copy }));
+    assert_eq!(instance["shows_component"]["id"], "card");
+    let inside = call(&tools, "get_node", json!({ "id": "title" }));
+    assert_eq!(inside["in_component"]["id"], "card");
+    assert!(inside["component_note"].is_string());
+
+    let found = call(&tools, "query_nodes", json!({ "component": "card" }));
+    let ids: Vec<&Value> = found["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| &node["id"])
+        .collect();
+    assert_eq!(ids, [&json!(copy)]);
+    let counted = call(
+        &tools,
+        "query_nodes",
+        json!({ "type": ["component"], "fields": ["instance_count"] }),
+    );
+    assert_eq!(counted["nodes"][0]["instance_count"], 1);
 }

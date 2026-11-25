@@ -19,9 +19,18 @@ and change it only through the tools. Every apply_edits call is one step the per
 # How a file is built
 - A file holds artboards: frames on the canvas, each with a size and a timeline whose length \
 is its duration in milliseconds.
-- Layers are what is drawn: group, mask_group, rect, ellipse, star, path, text, image. A \
-layer's x and y are its top-left corner inside its parent (artboard or group); rotation and \
-scale turn and size it around its centre. Later siblings are drawn in front of earlier ones.
+- Layers are what is drawn: group, mask_group, rect, ellipse, star, path, text, image, \
+component, instance. A layer's x and y are its top-left corner inside its parent (artboard or \
+group); rotation and scale turn and size it around its centre. Later siblings are drawn in front \
+of earlier ones.
+- A component is a group that is reused: every instance of it shows its look and layers, with \
+the animations on those layers, and changes when the component changes. Make one with \
+make_component (a group, or layers to wrap) and place copies with add \
+{\"type\":\"instance\",\"component\":<id>}, which can sit in any artboard. An instance's \
+time_offset plays the component's animations that many milliseconds later: give each copy a \
+little more to stagger them. Animate a layer inside the component to animate every copy; \
+animate the instance itself (move, fade_in and so on) for that copy alone. detach turns an \
+instance into a plain group to change one copy on its own.
 - The layers as they are stored are the design at rest. Motion is kept apart from it: an \
 animation is a node that says \"from start to end, change this property of that layer\" (its \
 target). There are no keyframes. Animations sit in rows on their artboard's timeline; an \
@@ -74,7 +83,8 @@ bounce for playful moments, and linear for steady motion such as a spin or a scr
 - Distance: slides of 20 to 80 px read as polish; sliding the full width reads as a change of \
 scene.
 - Stagger related elements by 40 to 120 ms in reading order instead of moving them all at once \
-(clone with time_offset, or add animations with stepped starts).
+(clone with time_offset, add animations with stepped starts, or give instances of one animated \
+component stepped time_offset values).
 - Give the eye time: let the main element land before supporting ones move, hold the finished \
 composition for a second or more, and make sure the artboard's duration covers every animation.
 
@@ -209,6 +219,9 @@ mod tests {
             "replaces",
             "milliseconds",
             "Stagger",
+            "make_component",
+            "time_offset",
+            "detach",
             "Be brief",
         ] {
             assert!(GUIDE.contains(topic), "the guide does not mention {topic}");
