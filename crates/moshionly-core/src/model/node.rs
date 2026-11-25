@@ -522,6 +522,14 @@ impl NodeData {
         }
     }
 
+    /// Points an instance at another component. Does nothing for other
+    /// nodes.
+    pub fn set_component(&mut self, component: NodeId) {
+        if let NodeData::Instance(instance) = self {
+            instance.component = component;
+        }
+    }
+
     /// Start and end of an animation in milliseconds. Instants start and end
     /// at the same moment. `None` for layers and animation groups.
     pub fn span(&self) -> Option<(f64, f64)> {

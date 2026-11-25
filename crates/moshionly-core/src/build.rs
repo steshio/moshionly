@@ -6,9 +6,14 @@
 //! [`Document::apply`]), so that the change is validated and can be undone
 //! like any other.
 
+mod component;
+
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
+
+pub(crate) use component::detach_instances_of;
+pub use component::{add_instance, detach, make_component, without_instances};
 
 use crate::color::Color;
 use crate::document::Document;
@@ -85,6 +90,31 @@ pub enum BuildError {
     /// The type is not one the helper can make.
     #[error("{0} is not a {1} type")]
     WrongType(NodeType, &'static str),
+    /// The operation needs a component and got something else.
+    #[error("{0} is not a component")]
+    NotAComponent(String),
+    /// The operation needs an instance and got something else.
+    #[error("{0} is not an instance, so there is nothing to detach")]
+    NotAnInstance(String),
+    /// The layer is a component already.
+    #[error("{0} is a component already")]
+    AlreadyAComponent(String),
+    /// The result would have a component inside another component.
+    #[error(
+        "{0}, and a component cannot be inside another component; put an instance of it there instead"
+    )]
+    NestedComponent(String),
+    /// An instance would end up inside the component it shows, directly or
+    /// through other components.
+    #[error(
+        "an instance of {component} cannot go in {place}: that is inside {component}, or inside a component that {component} shows, so it would show itself forever"
+    )]
+    ComponentLoop {
+        /// The component the instance would show.
+        component: String,
+        /// Where the instance was to go.
+        place: String,
+    },
     /// No fractional index could be made.
     #[error(transparent)]
     Index(#[from] IndexError),
@@ -126,6 +156,8 @@ pub enum GroupKind {
     Group,
     /// A `mask_group`: the backmost of the grouped layers masks the others.
     Mask,
+    /// A `component`: a group whose look and layers instances can show.
+    Component,
 }
 
 /// Space left between artboards that are laid out next to each other.
@@ -827,6 +859,7 @@ pub fn group(
     let (name, data): (&str, NodeData) = match kind {
         GroupKind::Group => ("Group", Group::default().into()),
         GroupKind::Mask => ("Mask group", MaskGroup::default().into()),
+        GroupKind::Component => ("Component", Component::default().into()),
     };
     let mut node = Node::new(data)
         .with_parent(parent)
@@ -945,9 +978,13 @@ pub fn ungroup(document: &Document, id: &NodeId) -> Result<Vec<Edit>, BuildError
 
 /// Edits that remove nodes, leaving out the ones that go anyway because a
 /// listed node contains them or is their target.
+///
+/// A component that goes, listed or inside a listed node, first has its
+/// instances detached (see [`detach`]), so that they keep their look as
+/// plain groups. It all happens in the one batch.
 pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
     let listed: HashSet<&NodeId> = ids.iter().collect();
-    top_level(document, ids)
+    let removed: Vec<&NodeId> = top_level(document, ids)
         .into_iter()
         .filter(|id| document.contains(id))
         .filter(|id| {
@@ -963,8 +1000,10 @@ pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
                             .any(|ancestor| listed.contains(&ancestor.id))
                 })
         })
-        .map(Edit::remove)
-        .collect()
+        .collect();
+    let mut edits = component::detach_orphans(document, &removed);
+    edits.extend(removed.into_iter().map(Edit::remove));
+    edits
 }
 
 /// A copy of `node` under a fresh id, recorded in `ids`.
@@ -976,6 +1015,10 @@ fn copy_of(node: &Node, ids: &mut HashMap<NodeId, NodeId>) -> Node {
 
 /// Edits that copy a layer with everything in it and every animation that
 /// targets the layer or something in it.
+///
+/// A component that is copied becomes a new component, and the instances
+/// copied with it show the new one; an instance copied without its
+/// component shows the same component as before.
 ///
 /// The copy of `root` goes under `parent` at `place` (for an artboard both
 /// are ignored: the copy is placed to the right of the existing artboards).
@@ -1051,6 +1094,12 @@ pub fn clone_subtree(
     for copy in &mut copies {
         if let Some(target) = copy.target().and_then(|target| ids.get(target)) {
             copy.data.set_target(target.clone());
+        }
+        // A copied component is a new component, and the instances copied
+        // with it show the copy. Instances of components that were not
+        // copied keep showing the same one.
+        if let Some(component) = copy.component().and_then(|component| ids.get(component)) {
+            copy.data.set_component(component.clone());
         }
     }
     Ok((copies.into_iter().map(Edit::add).collect(), ids))
