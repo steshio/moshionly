@@ -516,6 +516,18 @@ impl<'a> Evaluator<'a> {
     /// What a group or a component draws: its background, its children
     /// (clipped to the box when `clip` is set) and its outline.
     fn frame(&self, node: &Node, clip: bool, state: &LayerState) -> Content {
+        self.frame_around(node, clip, state, self.children(&node.id))
+    }
+
+    /// [`frame`](Self::frame) around `inside` in place of the node's
+    /// children.
+    fn frame_around(
+        &self,
+        node: &Node,
+        clip: bool,
+        state: &LayerState,
+        inside: Vec<SceneNode>,
+    ) -> Content {
         let shape = |fill: Option<ScenePaint>, stroke: Option<SceneStroke>| {
             let content = Content::Rect {
                 radii: fitted(state.radii, state.width, state.height),
@@ -528,7 +540,6 @@ impl<'a> Evaluator<'a> {
         if let Some(fill) = paint(state.fill.as_ref(), state.width, state.height) {
             children.push(shape(Some(fill), None));
         }
-        let inside = self.children(&node.id);
         if clip {
             // The clip sits on a node of its own so that it cuts the
             // children but not the group's own shadow.
@@ -597,6 +608,31 @@ impl<'a> Evaluator<'a> {
             ratio(instance.layer.width, look.width),
             ratio(instance.layer.height, look.height),
         );
+        if sx == 0.0 || sy == 0.0 {
+            // A resting box with no width or no height squeezes the layers
+            // flat, as in the group detaching the instance makes, and the
+            // rest cannot be scaled back up from it: the background,
+            // outline and clip take the instance's current box as it is.
+            // With no size at all, the layers, outline and corners shrink
+            // to nothing.
+            let mut layers = Vec::new();
+            if sx == 0.0 && sy == 0.0 {
+                if let Some(stroke) = &mut look.stroke {
+                    stroke.width = 0.0;
+                }
+                look.radii = [0.0; 4];
+            } else {
+                let children = inner.children(&main.id);
+                let mut squeezed = plain(&node.id, &look, Content::Group { children });
+                squeezed.transform = Affine::scale(sx, sy);
+                layers.push(squeezed);
+            }
+            look.width = state.width;
+            look.height = state.height;
+            let mut content = inner.frame_around(main, component.clip, &look, layers);
+            relabel(&mut content, &node.id);
+            return content;
+        }
         look.width = state.width / sx;
         look.height = state.height / sy;
         let mut content = inner.frame(main, component.clip, &look);

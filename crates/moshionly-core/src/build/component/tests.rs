@@ -355,6 +355,69 @@ fn a_resized_instance_grows_its_box_like_a_group() {
     }
 }
 
+/// Whether every size and transform in `node` is a number.
+fn finite(node: &SceneNode) -> bool {
+    node.width.is_finite()
+        && node.height.is_finite()
+        && node.transform.0.iter().all(|value| value.is_finite())
+        && node.mask.as_deref().is_none_or(finite)
+        && node.children().iter().all(finite)
+}
+
+#[test]
+fn an_instance_with_no_width_or_height_at_rest_grows_its_box_like_a_group() {
+    // "big" rests with no width, or with no size at all, and grows to 200
+    // by 100. Its layers are squeezed flat, as in the group detaching it
+    // makes; its background grows with its box. The dot is not turned,
+    // since detaching stretches a turned layer along its own axes.
+    for rest in [
+        json!({ "width": 0, "height": 100 }),
+        json!({ "width": 0, "height": 0 }),
+    ] {
+        let mut document = applied(&sample(), &[Edit::remove("wide")]);
+        document
+            .apply(&[
+                Edit::update(
+                    "big",
+                    [
+                        ("width", rest["width"].clone()),
+                        ("height", rest["height"].clone()),
+                    ],
+                ),
+                Edit::set("dot", "rotation", 0),
+                add(json!({
+                    "id": "grow", "parent": "ab", "index": "a5", "type": "resize", "target": "big",
+                    "start": 0, "end": 1000, "from": rest,
+                    "to": { "width": 200, "height": 100 }, "easing": { "type": "linear" }
+                })),
+            ])
+            .unwrap();
+        let (_, edits) = detach(&document, &id("big")).unwrap();
+        let detached = applied(&document, &edits);
+        for time in TIMES {
+            let before = scene(&document, "ab", time);
+            assert!(
+                before.nodes.iter().all(finite),
+                "{rest} at {time}: {before:#?}"
+            );
+            assert!(
+                looks_the_same(&before, &scene(&detached, "ab", time)),
+                "{rest} at {time}: {:#?}\nbecame\n{:#?}",
+                drawn(&before),
+                drawn(&scene(&detached, "ab", time)),
+            );
+            // It grows about its centre, at x 0: once it is wider than
+            // 100, halfway through, its background is under (50, 160).
+            let hit = before.hit_test(Point::new(50.0, 160.0));
+            assert_eq!(
+                hit.contains(&id("big")),
+                time > 500.0,
+                "{rest} at {time}: {hit:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn detaching_keeps_the_instances_own_animations_and_leaves_the_components() {
     let document = sample();
