@@ -62,9 +62,15 @@ pub(super) fn update(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
         set.insert(name.into(), json!(real));
     }
 
-    let edits: Vec<Edit> = ids.iter().map(|id| Edit::update(id, set.clone())).collect();
+    let mut edits: Vec<Edit> = ids.iter().map(|id| Edit::update(id, set.clone())).collect();
+    // Instances as large as a component that is resized take its new size,
+    // so what they show is not squeezed.
+    let follow = build::instances_follow_mains(&batch.scratch, &edits);
+    let followed = follow.len();
+    edits.extend(follow);
     batch.commit(edits, Owner::Set)?;
     batch.updated += ids.len();
+    batch.followed += followed;
     for id in &ids {
         let animation = batch
             .scratch

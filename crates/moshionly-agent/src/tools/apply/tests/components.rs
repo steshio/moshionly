@@ -111,6 +111,60 @@ fn a_component_cloned_with_its_instance_is_delayed_once() {
     }
 }
 
+/// The width and height of the layer `id`.
+fn size(tools: &crate::Tools, id: &str) -> (f64, f64) {
+    let document = document(tools);
+    let layer = document.get(&NodeId::from(id)).unwrap().layer().unwrap();
+    (layer.width, layer.height)
+}
+
+#[test]
+fn instances_the_size_of_a_resized_component_follow_it() {
+    // "same" is sized like the card; "wide" was made wider.
+    let tools = demo_tools();
+    let made = apply(
+        &tools,
+        json!([
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "same", "parent": "second",
+              "node": { "type": "instance", "component": "card" } },
+            { "op": "add", "temp_id": "wide", "parent": "second",
+              "node": { "type": "instance", "component": "card", "y": 500, "width": 900,
+                        "height": 400 } },
+        ]),
+    );
+    let (same, wide) = (created_id(&made, "same"), created_id(&made, "wide"));
+    let before = document(&tools);
+    let result = apply(
+        &tools,
+        json!([{ "op": "update", "id": "card", "set": { "width": 800, "height": 500 } }]),
+    );
+    assert_eq!(
+        result["summary"],
+        "Change 1 node and resize 2 instances to match"
+    );
+    assert_eq!(size(&tools, "card"), (800.0, 500.0));
+    assert_eq!(size(&tools, &same), (800.0, 500.0));
+    // Each side on its own: "wide" keeps its width and follows the height.
+    assert_eq!(size(&tools, &wide), (900.0, 500.0));
+    // One undo step puts them all back.
+    assert_eq!(
+        tools.session().read(|session| session.undo_steps().len()),
+        2
+    );
+    tools.session().undo().unwrap();
+    assert_eq!(*document(&tools), *before);
+
+    // A side the same operation sets on an instance keeps what it sets.
+    let result = apply(
+        &tools,
+        json!([{ "op": "update", "ids": ["card", same], "set": { "width": 700 } }]),
+    );
+    assert_eq!(result["summary"], "Change 2 nodes");
+    assert_eq!(size(&tools, &same), (700.0, 400.0));
+    assert_eq!(size(&tools, &wide), (900.0, 400.0));
+}
+
 #[test]
 fn layers_are_wrapped_in_a_new_component() {
     let tools = demo_tools();

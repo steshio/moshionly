@@ -52,6 +52,8 @@ pub(super) struct Batch {
     pub created: Vec<Value>,
     /// Number of nodes changed by `update`.
     pub updated: usize,
+    /// Number of instances resized along with their component by `update`.
+    pub followed: usize,
     /// Number of nodes put somewhere else by `move`.
     pub moved: usize,
     /// Number of nodes that went, counting what went along.
@@ -78,6 +80,7 @@ impl Batch {
             temp: HashMap::new(),
             created: Vec::new(),
             updated: 0,
+            followed: 0,
             moved: 0,
             removed: 0,
             durations: 0,
@@ -355,6 +358,12 @@ impl Batch {
         }
         if self.updated > 0 {
             parts.push(format!("change {}", count(self.updated, "node", "nodes")));
+        }
+        if self.followed > 0 {
+            parts.push(format!(
+                "resize {} to match",
+                count(self.followed, "instance", "instances")
+            ));
         }
         if self.moved > 0 {
             parts.push(format!("move {}", count(self.moved, "node", "nodes")));

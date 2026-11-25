@@ -30,7 +30,8 @@ make_component (a group, or layers to wrap) and place copies with add \
 time_offset plays the component's animations that many milliseconds later: give each copy a \
 little more to stagger them. Animate a layer inside the component to animate every copy; \
 animate the instance itself (move, fade_in and so on) for that copy alone. detach turns an \
-instance into a plain group to change one copy on its own.
+instance into a plain group to change one copy on its own. Resizing a component resizes the \
+instances that were its size with it.
 - The layers as they are stored are the design at rest. Motion is kept apart from it: an \
 animation is a node that says \"from start to end, change this property of that layer\" (its \
 target). There are no keyframes. Animations sit in rows on their artboard's timeline; an \
