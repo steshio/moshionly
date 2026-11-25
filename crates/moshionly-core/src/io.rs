@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "moshionly",
-//!   "version": 2,
+//!   "version": 3,
 //!   "name": "Launch teaser",
 //!   "nodes": [
 //!     {"id":"ab12","parent":null,"index":"a0","type":"artboard","name":"Scene 1"},
@@ -38,10 +38,11 @@ pub const FORMAT: &str = "moshionly";
 
 /// The format version this build reads and writes.
 ///
-/// Version 2 added the `component` and `instance` layer types. Files of
-/// version 1 read as they are; an older build asked to open a version 2
-/// file says to update Moshionly instead of failing on an unknown type.
-pub const VERSION: u32 = 2;
+/// Version 2 added the `component` and `instance` layer types, and version
+/// 3 the `video` layer and the `audio` timeline item. Older files read as
+/// they are; an older build asked to open a newer file says to update
+/// Moshionly instead of failing on an unknown type.
+pub const VERSION: u32 = 3;
 
 /// The file extension of project files, without the dot.
 pub const EXTENSION: &str = "moshi";
@@ -132,9 +133,9 @@ type Migration = fn(&mut Map<String, Value>) -> Result<(), String>;
 /// afterwards.
 fn migration_from(version: u32) -> Option<Migration> {
     match version {
-        // Version 2 only added node types, so a version 1 file is a valid
-        // version 2 file as it is.
-        1 => Some(|_| Ok(())),
+        // Versions 2 and 3 only added node types, so an older file is a
+        // valid newer file as it is.
+        1 | 2 => Some(|_| Ok(())),
         _ => None,
     }
 }
@@ -530,7 +531,7 @@ mod tests {
     /// The example from the architecture document.
     const EXAMPLE: &str = r##"{
   "format": "moshionly",
-  "version": 2,
+  "version": 3,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -556,7 +557,7 @@ mod tests {
             text,
             r##"{
   "format": "moshionly",
-  "version": 2,
+  "version": 3,
   "name": "Launch teaser",
   "nodes": [
     {"id":"ab12","parent":null,"index":"a0","type":"artboard","name":"Scene 1","width":1080,"height":1080,"fill":"#FFFFFF"},
@@ -597,7 +598,7 @@ mod tests {
         let text = to_string(&empty);
         assert_eq!(
             text,
-            "{\n  \"format\": \"moshionly\",\n  \"version\": 2,\n  \"name\": \"Nothing \\\"yet\\\"\",\n  \"nodes\": []\n}\n"
+            "{\n  \"format\": \"moshionly\",\n  \"version\": 3,\n  \"name\": \"Nothing \\\"yet\\\"\",\n  \"nodes\": []\n}\n"
         );
         assert_eq!(parse(&text).unwrap(), empty);
     }
@@ -649,12 +650,15 @@ mod tests {
     }
 
     #[test]
-    fn version_one_files_load_and_save_as_version_two() {
-        let old = EXAMPLE.replace("\"version\": 2", "\"version\": 1");
-        let document = parse(&old).unwrap();
-        assert_eq!(document, parse(EXAMPLE).unwrap());
-        assert!(to_string(&document).contains("\n  \"version\": 2,\n"));
-        assert_eq!(to_value(&document)["version"], json!(2));
+    fn older_files_load_and_save_as_the_current_version() {
+        for version in ["1", "2"] {
+            let old = EXAMPLE.replace("\"version\": 3", &format!("\"version\": {version}"));
+            assert_ne!(old, EXAMPLE);
+            let document = parse(&old).unwrap();
+            assert_eq!(document, parse(EXAMPLE).unwrap());
+            assert!(to_string(&document).contains("\n  \"version\": 3,\n"));
+            assert_eq!(to_value(&document)["version"], json!(3));
+        }
     }
 
     #[test]
