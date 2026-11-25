@@ -95,7 +95,10 @@ fn edits(input: &Value, name_of: NameOf<'_>) -> String {
 
 /// One operation of `apply_edits` in two or three words.
 fn operation(operation: &Value, name_of: NameOf<'_>) -> String {
-    let op = string(operation, "op").unwrap_or("change");
+    // `make_component` reads as "make component".
+    let op = string(operation, "op")
+        .unwrap_or("change")
+        .replace('_', " ");
     let what = operation
         .get("node")
         .and_then(|node| {
@@ -337,6 +340,14 @@ mod tests {
                 &json!({ "operations": [{ "op": "remove", "ids": ["a", "b"] }], "dry_run": true })
             ),
             "remove 2 nodes (check only)"
+        );
+        let components = json!({ "operations": [
+            { "op": "make_component", "ids": ["a", "b"] },
+            { "op": "detach", "id": "copy" },
+        ]});
+        assert_eq!(
+            describe("apply_edits", &components),
+            "make component 2 nodes, detach “copy”"
         );
     }
 
