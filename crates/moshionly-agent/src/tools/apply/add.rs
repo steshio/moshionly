@@ -74,7 +74,12 @@ pub(super) fn add(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
             }
             None
         }
-        Family::Layer => Some(layer_parent(batch, args, ty, placement.parent.clone())?),
+        Family::Layer => {
+            if ty == NodeType::Instance {
+                read_component(batch, &mut node, &node_field)?;
+            }
+            Some(layer_parent(batch, args, ty, placement.parent.clone())?)
+        }
         Family::Animation if ty == NodeType::AnimationGroup => match &placement.parent {
             Parent::Given(parent) => Some(parent.clone()),
             _ => {
@@ -265,6 +270,60 @@ fn read_target(
     };
     node.insert("target".into(), json!(target));
     Ok(target)
+}
+
+/// The component `node.component` names, written back as its real id. What
+/// the new instance leaves out of its name, size, opacity, blend mode, blur
+/// and shadow is taken from the component, so it looks like it.
+fn read_component(
+    batch: &Batch,
+    node: &mut Map<String, Value>,
+    node_field: &str,
+) -> Result<(), ToolError> {
+    let field = format!("{node_field}.component");
+    let component = match node.get("component") {
+        Some(Value::String(text)) => batch.resolve(text, &field)?,
+        None | Some(Value::Null) => {
+            return Err(ToolError::argument(
+                field.clone(),
+                format!(
+                    "\"{field}\" is required: the id of the component the instance shows (or \
+                     the temp_id of one made earlier in this batch). query_nodes with \
+                     {{\"type\":[\"component\"]}} lists them; make_component makes one."
+                ),
+            ));
+        }
+        Some(other) => {
+            return Err(ToolError::argument(
+                field.clone(),
+                format!(
+                    "\"{field}\" should be the id of a component, but it is {}.",
+                    shown(other)
+                ),
+            ));
+        }
+    };
+    node.insert("component".into(), json!(component));
+    if let Some(main) = batch.scratch.get(&component)
+        && let Some(layer) = main.layer()
+        && main.node_type() == NodeType::Component
+        && let Value::Object(look) = json!({
+            "name": layer.name,
+            "width": layer.width,
+            "height": layer.height,
+            "opacity": layer.opacity,
+            "blend_mode": layer.blend_mode,
+            "blur": layer.blur,
+            "shadow": layer.shadow,
+        })
+    {
+        for (name, value) in look {
+            if !value.is_null() && !node.contains_key(&name) {
+                node.insert(name, value);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Gives an animation a `start` of 0 and an `end` a typical length after

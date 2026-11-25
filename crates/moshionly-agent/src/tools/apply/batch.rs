@@ -58,6 +58,11 @@ pub(super) struct Batch {
     pub removed: usize,
     /// Number of artboards whose duration was set.
     pub durations: usize,
+    /// Number of components made.
+    pub components: usize,
+    /// Number of instances detached, by detach and by removing their
+    /// component.
+    pub detached: usize,
     /// Things the model should know although nothing failed.
     pub warnings: Vec<String>,
 }
@@ -76,6 +81,8 @@ impl Batch {
             moved: 0,
             removed: 0,
             durations: 0,
+            components: 0,
+            detached: 0,
             warnings: Vec::new(),
         }
     }
@@ -315,6 +322,10 @@ impl Batch {
         let mut added = [0usize; 2];
         let mut copied = [0usize; 2];
         for entry in &self.created {
+            // Made from what was there; counted on their own below.
+            if entry.get("component").is_some() || entry.get("detached_from").is_some() {
+                continue;
+            }
             let family = entry["type"]
                 .as_str()
                 .and_then(NodeType::parse)
@@ -353,6 +364,18 @@ impl Batch {
         }
         if self.durations > 0 {
             parts.push("set the duration".to_owned());
+        }
+        if self.components > 0 {
+            parts.push(format!(
+                "make {}",
+                count(self.components, "component", "components")
+            ));
+        }
+        if self.detached > 0 {
+            parts.push(format!(
+                "detach {}",
+                count(self.detached, "instance", "instances")
+            ));
         }
         let mut summary = match parts.as_slice() {
             [] => "Change nothing".to_owned(),

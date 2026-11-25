@@ -1,7 +1,7 @@
 //! The operations that change or remove what is there: `update`, `remove`
 //! and `set_duration`.
 
-use moshionly_core::{Edit, Family, build};
+use moshionly_core::{Edit, Family, NodeType, build};
 use serde_json::{Value, json};
 
 use super::batch::{Batch, Owner};
@@ -42,19 +42,23 @@ pub(super) fn update(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
             ));
         }
     }
-    if let Some(target) = set.get("target") {
-        let field = format!("{set_field}.target");
-        let Value::String(text) = target else {
+    // Fields that hold an id may hold a temporary id from this batch.
+    for (name, what) in [("target", "a layer"), ("component", "a component")] {
+        let Some(value) = set.get(name) else {
+            continue;
+        };
+        let field = format!("{set_field}.{name}");
+        let Value::String(text) = value else {
             return Err(ToolError::argument(
                 field.clone(),
                 format!(
-                    "\"{field}\" should be the id of a layer, but it is {}.",
-                    shown(target)
+                    "\"{field}\" should be the id of {what}, but it is {}.",
+                    shown(value)
                 ),
             ));
         };
-        let target = batch.resolve(text, &field)?;
-        set.insert("target".into(), json!(target));
+        let real = batch.resolve(text, &field)?;
+        set.insert(name.into(), json!(real));
     }
 
     let edits: Vec<Edit> = ids.iter().map(|id| Edit::update(id, set.clone())).collect();
@@ -76,8 +80,34 @@ pub(super) fn remove(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     let ids = batch.targets(args, "the id of the node to remove, or \"ids\" for several")?;
     let before = batch.scratch.len();
     let edits = build::remove(&batch.scratch, &ids);
+    // The instances of a component that goes are detached first, which
+    // adds the groups that take their place.
+    let added = edits
+        .iter()
+        .filter(|edit| matches!(edit, Edit::Add { .. }))
+        .count();
+    let detached: Vec<String> = edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Edit::Remove { id } => batch.scratch.get(id),
+            _ => None,
+        })
+        .filter(|node| node.node_type() == NodeType::Instance && !ids.contains(&node.id))
+        .map(|node| node.label())
+        .collect();
     batch.commit(edits, Owner::Operation)?;
-    batch.removed += before - batch.scratch.len();
+    // A detached instance is counted as detached, not as removed.
+    batch.removed += (before + added)
+        .saturating_sub(batch.scratch.len())
+        .saturating_sub(detached.len());
+    if !detached.is_empty() {
+        batch.detached += detached.len();
+        batch.warnings.push(format!(
+            "A removed component was still shown by instances, so they were detached into \
+             plain groups that look the same: {}.",
+            detached.join(", ")
+        ));
+    }
     Ok(())
 }
 

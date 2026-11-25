@@ -9,6 +9,7 @@
 mod add;
 mod batch;
 mod change;
+mod component;
 mod place;
 mod structure;
 mod warn;
@@ -43,10 +44,17 @@ pub(crate) static APPLY_EDITS: ToolDef = ToolDef {
         on the artboard, update its x and y.)\n\
         - clone: copy the layer \"id\" with everything inside it and the animations on all of \
         it, just in front of the original unless placed otherwise, shifted by \"offset\" \
-        {x, y} and its animations by \"time_offset\" ms; good for repeating an element with a \
-        stagger. Cloning an animation copies it onto the row below, onto \"target\" if given. \
+        {x, y} and its animations (and the time_offset of copied instances) by \"time_offset\" \
+        ms; good for repeating an element with a stagger. Cloning an animation copies it onto the row below, onto \"target\" if given. \
         \"temp_id\" names the copy; the result maps every original id to its copy.\n\
         - set_duration: the length of an \"artboard\"'s timeline, in milliseconds.\n\
+        - make_component: make the group \"id\" a component in place, or wrap the layers in \
+        \"ids\" in a new component; \"temp_id\" names it. Then add instances of it with add \
+        {\"type\":\"instance\",\"component\":<its id or temp_id>}: each shows the component's \
+        layers and their animations, and changes when the component does.\n\
+        - detach: turn the instance \"id\" (or every one of \"ids\") into a plain group that \
+        looks the same, with copies of the component's layers and animations; \"temp_id\" \
+        names the group. Removing a component detaches its instances the same way.\n\
         Where a node goes among its siblings: \"position\" \"first\" or \"last\" (the default: \
         frontmost layer, bottom timeline row), or \"before\" or \"after\" a sibling's id. Units: \
         pixels, degrees clockwise, milliseconds, opacity 0 to 100, colours \"#RRGGBB\". The \
@@ -113,6 +121,18 @@ const OPERATIONS: &[Operation] = &[
         check: None,
         run: change::set_duration,
     },
+    Operation {
+        name: "make_component",
+        fields: component::MAKE_FIELDS,
+        check: None,
+        run: component::make_component,
+    },
+    Operation {
+        name: "detach",
+        fields: component::DETACH_FIELDS,
+        check: None,
+        run: component::detach,
+    },
 ];
 
 /// Names models reach for, and the operation each one means.
@@ -132,6 +152,11 @@ const ALIASES: &[(&str, &str)] = &[
     ("reparent", "move"),
     ("reorder", "move"),
     ("duration", "set_duration"),
+    ("component", "make_component"),
+    ("create_component", "make_component"),
+    ("componentize", "make_component"),
+    ("detach_instance", "detach"),
+    ("unlink", "detach"),
 ];
 
 fn schema() -> Value {
@@ -148,7 +173,7 @@ fn schema() -> Value {
         },
         "temp_id": {
             "type": "string",
-            "description": "add, clone: a name of your choosing for the new node or copy, such as \"title\". Later operations of this call can use it wherever an id goes. The result gives the real id."
+            "description": "add, clone, make_component, detach: a name of your choosing for the new node, copy, component or group, such as \"title\". Later operations of this call can use it wherever an id goes. The result gives the real id."
         },
         "id": {
             "type": "string",
@@ -157,7 +182,7 @@ fn schema() -> Value {
         "ids": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "update, remove: several nodes at once, in place of \"id\"."
+            "description": "update, remove, detach: several nodes at once, in place of \"id\". make_component: the layers to wrap in a new component."
         },
         "set": {
             "type": "object",
@@ -192,7 +217,7 @@ fn schema() -> Value {
         },
         "time_offset": {
             "type": "number",
-            "description": "clone: milliseconds to shift the copied animations by, so copies play one after another."
+            "description": "clone: milliseconds to shift the copied animations, and the time_offset of copied instances, by, so copies play one after another."
         },
         "target": {
             "type": "string",

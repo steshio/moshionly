@@ -322,6 +322,11 @@ fn shift_animations(args: &Args, edits: &mut [Edit], by: f64) -> Result<(), Tool
             name => format!("{} ({name})", node.node_type()),
         };
         let start = match &mut node.data {
+            // A copied instance plays its component's animations later too.
+            NodeData::Instance(instance) => {
+                instance.time_offset += by;
+                continue;
+            }
             NodeData::Show(instant) | NodeData::Hide(instant) => {
                 instant.start += by;
                 if let Some(end) = &mut instant.end {
