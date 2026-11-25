@@ -986,6 +986,19 @@ pub fn ungroup(document: &Document, id: &NodeId) -> Result<Vec<Edit>, BuildError
 /// instances detached (see [`detach`]), so that they keep their look as
 /// plain groups. It all happens in the one batch.
 pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
+    remove_with_losses(document, ids).0
+}
+
+/// [`remove`], with what detaching cannot keep of the look of each
+/// instance of `document` it detaches, in the order they are detached
+/// (see [`detach_losses`]): nothing for those that look the same.
+/// Detaching an instance can copy instances of other components that go
+/// out of its component, which are detached too; they are part of the
+/// group that takes its place, so what is lost there counts toward it.
+pub fn remove_with_losses(
+    document: &Document,
+    ids: &[NodeId],
+) -> (Vec<Edit>, Vec<(NodeId, Vec<DetachLoss>)>) {
     let listed: HashSet<&NodeId> = ids.iter().collect();
     let removed: Vec<&NodeId> = top_level(document, ids)
         .into_iter()
@@ -1004,9 +1017,9 @@ pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
                 })
         })
         .collect();
-    let mut edits = component::detach_orphans(document, &removed);
+    let (mut edits, losses) = component::detach_orphans(document, &removed);
     edits.extend(removed.into_iter().map(Edit::remove));
-    edits
+    (edits, losses)
 }
 
 /// A copy of `node` under a fresh id, recorded in `ids`.

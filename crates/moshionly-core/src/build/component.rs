@@ -429,8 +429,12 @@ fn inner_animations<'a>(document: &'a Document, main: &NodeId, artboard: &NodeId
 /// Edits that detach every instance that would lose its component when
 /// the nodes `removed` go, so that their look is kept as plain groups. A
 /// component inside a removed node goes too. Instances that go themselves
-/// are left alone.
-pub(super) fn detach_orphans(document: &Document, removed: &[&NodeId]) -> Vec<Edit> {
+/// are left alone. With the edits comes what detaching cannot keep of
+/// each instance (see [`detach_with_losses`]).
+pub(super) fn detach_orphans(
+    document: &Document,
+    removed: &[&NodeId],
+) -> (Vec<Edit>, Vec<(NodeId, Vec<DetachLoss>)>) {
     let mut gone: HashSet<NodeId> = removed.iter().map(|id| (*id).clone()).collect();
     for id in removed {
         gone.extend(
@@ -444,7 +448,7 @@ pub(super) fn detach_orphans(document: &Document, removed: &[&NodeId]) -> Vec<Ed
         .filter(|id| document.get(id).map(Node::node_type) == Some(NodeType::Component))
         .cloned()
         .collect();
-    detach_instances_of(document, &doomed, &gone)
+    detach_with_losses(document, &doomed, &gone)
 }
 
 /// Edits that detach every instance of the components `doomed`, except
@@ -456,9 +460,25 @@ pub(crate) fn detach_instances_of(
     doomed: &HashSet<NodeId>,
     gone: &HashSet<NodeId>,
 ) -> Vec<Edit> {
+    detach_with_losses(document, doomed, gone).0
+}
+
+/// [`detach_instances_of`], with what detaching cannot keep of each
+/// instance of `document` it detaches, in the order they are detached
+/// (see [`detach_losses`]). An instance copied out of one while detaching
+/// it is part of the group that takes its place, so what detaching the
+/// copy cannot keep counts toward that one.
+fn detach_with_losses(
+    document: &Document,
+    doomed: &HashSet<NodeId>,
+    gone: &HashSet<NodeId>,
+) -> (Vec<Edit>, Vec<(NodeId, Vec<DetachLoss>)>) {
+    let mut losses: Vec<(NodeId, Vec<DetachLoss>)> = Vec::new();
     if doomed.is_empty() {
-        return Vec::new();
+        return (Vec::new(), losses);
     }
+    // The instance of `document` that each new node was copied for.
+    let mut origin: HashMap<NodeId, NodeId> = HashMap::new();
     let mut scratch = document.clone();
     let mut edits = Vec::new();
     for _ in 0..document.len() * 4 + 16 {
@@ -475,15 +495,32 @@ pub(crate) fn detach_instances_of(
         let Some(next) = next else {
             break;
         };
+        let lost = detach_losses(&scratch, &next);
         let Ok((_, step)) = detach(&scratch, &next) else {
             break;
         };
         if scratch.apply(&step).is_err() {
             break;
         }
+        let root = origin.get(&next).cloned().unwrap_or_else(|| next.clone());
+        for edit in &step {
+            if let Edit::Add { node } = edit {
+                origin.insert(node.id.clone(), root.clone());
+            }
+        }
+        match losses.iter_mut().find(|(id, _)| *id == root) {
+            Some((_, known)) => {
+                for loss in lost {
+                    if !known.contains(&loss) {
+                        known.push(loss);
+                    }
+                }
+            }
+            None => losses.push((root, lost)),
+        }
         edits.extend(step);
     }
-    edits
+    (edits, losses)
 }
 
 /// A copy of `document` in which every instance is detached, for code that

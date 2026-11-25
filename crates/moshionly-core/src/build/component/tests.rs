@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use super::*;
-use crate::build::{clone_subtree, duplicate, remove};
+use crate::build::{clone_subtree, duplicate, remove, remove_with_losses};
 use crate::eval::evaluate;
 use crate::geometry::Affine;
 use crate::import::{self, Destination};
@@ -652,6 +652,39 @@ fn removing_a_component_inside_another_removed_one_detaches_both() {
         result
             .nodes()
             .all(|node| node.node_type() != NodeType::Instance)
+    );
+}
+
+#[test]
+fn removing_components_says_what_each_instance_loses_with_its_copies() {
+    // An instance "outer" of "badge" starts 500 ms in. Removing "badge"
+    // and "card" detaches it, then the copy of the card's instance in it,
+    // which starts 500 ms in too and squeezes the card's move; that counts
+    // toward "outer", whose group the copy is part of.
+    let document = sample();
+    let (outer, edits) = add_instance(
+        &document,
+        &id("badge"),
+        &id("ab"),
+        &Place::Last,
+        Point::ZERO,
+    )
+    .unwrap();
+    let mut document = applied(&document, &edits);
+    document
+        .apply(&[Edit::set(&outer, "time_offset", -500)])
+        .unwrap();
+    let ids = [id("badge"), id("card")];
+    let (edits, losses) = remove_with_losses(&document, &ids);
+    applied(&document, &edits);
+    assert_eq!(
+        losses,
+        [
+            (id("copy"), vec![]),
+            (id("big"), vec![]),
+            (id("wide"), vec![DetachLoss::Stretched]),
+            (outer, vec![DetachLoss::Squeezed]),
+        ]
     );
 }
 
