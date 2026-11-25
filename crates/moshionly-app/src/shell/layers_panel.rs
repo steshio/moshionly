@@ -87,6 +87,15 @@ pub(super) fn layers_panel(ui: &mut Ui, panel: &mut LayersPanel<'_>) -> LayersOu
     });
     ui.add_space(theme.space.xs);
     if *panel.tab == LayersTab::Components {
+        // Leaving the layer tree ends a rename as a click elsewhere does,
+        // keeping what was typed: its field is not drawn here, so it can
+        // never report losing focus.
+        if let Some((id, name)) = panel.renaming.take() {
+            let name = name.trim();
+            if !name.is_empty() {
+                rename(panel.editor, &id, name, &mut out);
+            }
+        }
         components_list(ui, panel, &mut out);
         return out;
     }
