@@ -486,6 +486,27 @@ fn instances_bring_their_components_content_and_animations() {
     assert!((moved(copy, 1500.0) - 100.0).abs() < 0.5);
 }
 
+#[test]
+fn an_instance_that_starts_part_way_through_its_animations_is_warned_about() {
+    // "Early" starts 500 ms into the move; by the time "Late" starts, 1500
+    // ms in, the move is over.
+    let nodes = r##",{"id":"main","parent":"board","index":"a0","type":"component","name":"Main",
+            "x":10,"y":10,"width":200,"height":100}
+        ,{"id":"dot","parent":"main","index":"a0","type":"rect","name":"Dot",
+            "width":50,"height":50,"fill":"#FF0000"}
+        ,{"id":"early","parent":"board","index":"a1","type":"instance","name":"Early",
+            "component":"main","x":500,"y":10,"width":200,"height":100,"time_offset":-500}
+        ,{"id":"late","parent":"board","index":"a2","type":"instance","name":"Late",
+            "component":"main","x":10,"y":300,"width":200,"height":100,"time_offset":-1500}
+        ,{"id":"go","parent":"board","index":"a0","type":"move","target":"dot",
+            "start":0,"end":1000,"to":{"x":100},"easing":{"type":"linear"}}"##;
+    let (_, exported) = export_document(document(2000.0, nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    assert!(said.contains("\"Early\" is an instance"), "{said}");
+    assert!(said.contains("squeezed"), "{said}");
+    assert_eq!(exported.warnings.len(), 1, "{said}");
+}
+
 /// The layer named `name` anywhere in the file: at the top or in a
 /// precomposition.
 fn any_layer<'a>(lottie: &'a Value, name: &str) -> &'a Value {

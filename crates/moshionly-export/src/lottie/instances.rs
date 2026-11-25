@@ -5,8 +5,9 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use moshionly_core::model::{LayerProps, NodeData};
-use moshionly_core::{Document, Family, NodeId, build};
+use moshionly_core::build::{self, DetachLoss};
+use moshionly_core::model::NodeData;
+use moshionly_core::{Document, Family, NodeId};
 
 use super::warnings;
 
@@ -23,15 +24,13 @@ pub(crate) fn expanded<'a>(
     if !has_instances {
         return (Cow::Borrowed(document), Vec::new());
     }
-    (
-        Cow::Owned(build::without_instances(document).0),
-        notes(document, artboard),
-    )
+    let (flat, losses) = build::without_instances(document);
+    (Cow::Owned(flat), notes(document, artboard, &losses))
 }
 
 /// Warnings for the instances `artboard` shows, directly or inside other
-/// components, that detaching cannot keep exactly.
-fn notes(document: &Document, artboard: &NodeId) -> Vec<String> {
+/// components, that detaching did not keep exactly: `losses` says which.
+fn notes(document: &Document, artboard: &NodeId, losses: &[(NodeId, DetachLoss)]) -> Vec<String> {
     let mut notes = Vec::new();
     let mut seen = HashSet::new();
     let mut pending = vec![artboard.clone()];
@@ -40,36 +39,26 @@ fn notes(document: &Document, artboard: &NodeId) -> Vec<String> {
             let NodeData::Instance(instance) = &node.data else {
                 continue;
             };
-            let Some(main) = document.get(&instance.component) else {
-                continue;
-            };
-            if let Some(layer) = main.layer()
-                && out_of_proportion(layer, &instance.layer)
-            {
-                notes.push(format!(
-                    "{} is an instance resized out of proportion; here its content is \
-                     stretched like a resized group, keeping stroke widths and font sizes.",
-                    warnings::name(node)
-                ));
+            let lost = losses.iter().filter(|(id, _)| *id == node.id);
+            for (_, loss) in lost {
+                let name = warnings::name(node);
+                notes.push(match loss {
+                    DetachLoss::Stretched => format!(
+                        "{name} is an instance resized out of proportion; here its content is \
+                         stretched like a resized group, keeping stroke widths and font sizes."
+                    ),
+                    DetachLoss::Squeezed => format!(
+                        "{name} is an instance that starts {} ms into its component's \
+                         animations; here the motion before that is squeezed into what is \
+                         left of it.",
+                        -instance.time_offset
+                    ),
+                });
             }
-            if seen.insert(main.id.clone()) {
-                pending.push(main.id.clone());
+            if seen.insert(instance.component.clone()) {
+                pending.push(instance.component.clone());
             }
         }
     }
     notes
-}
-
-/// Whether an instance's box is the component's scaled unevenly.
-fn out_of_proportion(component: &LayerProps, instance: &LayerProps) -> bool {
-    let ratio = |size: f64, main: f64| (main > 0.0).then(|| size / main);
-    match (
-        ratio(instance.width, component.width),
-        ratio(instance.height, component.height),
-    ) {
-        (Some(sx), Some(sy)) if sx.is_finite() && sy.is_finite() => {
-            (sx - sy).abs() > 1e-9 * sx.abs().max(sy.abs()).max(1.0)
-        }
-        _ => false,
-    }
 }

@@ -163,7 +163,7 @@ is set to the centre of the layer's box, as Moshionly does).
 | Group that fades, blends, blurs, casts a shadow or clips | A precomposition, sized to cover all of it that can be seen; a clip is a mask of its rounded box |
 | Mask group | A track matte: the mask over a precomposition of the rest |
 | Component | Like a group, where it is placed |
-| Instance | Like a group holding copies of its component's layers and of their animations, later by its time offset: the export detaches every instance on a copy of the document first |
+| Instance | Like a group holding copies of its component's layers and of their animations, later by its time offset (a negative offset cannot start them before 0 ms; see Warnings): the export detaches every instance on a copy of the document first |
 | Text | Outlines of the letters, made with the renderer's own fonts, so it looks the same everywhere without font files |
 | Text animations | One animated group per letter, word or line |
 | Counter | Each value shown for its stretch of time, its letters placed from compositions drawn once per letter shape |
@@ -213,7 +213,9 @@ ellipse (drawn centred), letters that blur as they come in, a gradient on a
 counting text, characters drawn as pictures such as emoji, a picture that
 cannot be read (left out), an instance resized out of proportion (its
 content is stretched like a resized group, keeping stroke widths and font
-sizes). One layer never stops the export.
+sizes), an instance with a negative time offset whose component's
+animations are still running when it starts (the motion before that is
+squeezed into what is left of it). One layer never stops the export.
 
 ## The command-line example
 
