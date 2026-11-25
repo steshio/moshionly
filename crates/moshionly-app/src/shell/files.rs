@@ -190,7 +190,7 @@ impl Shell {
             return false;
         };
         let path = std::path::absolute(&path).unwrap_or(path);
-        let gathered = self.gather_images(&path);
+        let gathered = self.gather_files(&path);
         // An untitled project takes the name of its file.
         let stem = path
             .file_stem()
@@ -232,11 +232,12 @@ impl Shell {
     }
 
     /// Before the project is saved as `path`: when that is in another
-    /// folder, or the project was never saved, copies the images it uses
-    /// into that folder and points the image layers at the copies, as one
-    /// undo step, so that the saved project is complete on its own. Says
-    /// which images could not be copied. Returns whether the step was made.
-    fn gather_images(&mut self, path: &Path) -> bool {
+    /// folder, or the project was never saved, copies the images, videos
+    /// and sound it uses into that folder and points the nodes at the
+    /// copies, as one undo step, so that the saved project is complete on
+    /// its own. Says which files could not be copied. Returns whether the
+    /// step was made.
+    fn gather_files(&mut self, path: &Path) -> bool {
         let from = self.editor.session().path();
         if from
             .as_deref()
@@ -244,7 +245,7 @@ impl Shell {
         {
             return false;
         }
-        let gathered = assets::gather_images(self.editor.document(), from.as_deref(), path);
+        let gathered = assets::gather_files(self.editor.document(), from.as_deref(), path);
         for problem in gathered.problems {
             self.toasts.push(Toast::warning(problem));
         }
@@ -331,9 +332,9 @@ impl Shell {
     }
 }
 
-/// The undo step that points image layers at their copies next to a newly
-/// saved project file.
-const GATHERED: &str = "Copy images into the project";
+/// The undo step that points image and video layers and sound at their
+/// copies next to a newly saved project file.
+const GATHERED: &str = "Copy files into the project";
 
 /// A message as a sentence: a capital at the start.
 pub(super) fn sentence(message: &str) -> String {
