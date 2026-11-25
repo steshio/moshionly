@@ -465,6 +465,68 @@ fn instances_follow_a_main_resized_in_the_inspector() {
     assert_eq!(frame(&harness, &instance), (880.0, 340.0, 600.0, 400.0));
 }
 
+/// Clicks into the first field named `label` and presses each key in
+/// `keys` with Shift, the way a person steps a value by tens.
+fn step_by_tens(harness: &mut Harness<'_, Shell>, label: &str, keys: &[Key]) {
+    harness
+        .get_all_by_label(label)
+        .next()
+        .unwrap_or_else(|| panic!("no field named {label}"))
+        .click_accesskit();
+    harness.run();
+    for key in keys {
+        harness.key_press_modifiers(Modifiers::SHIFT, *key);
+        harness.run();
+    }
+}
+
+#[test]
+fn a_main_stepped_in_the_inspector_compares_instances_with_where_it_began() {
+    let mut harness = harness();
+    let card = card_component(&mut harness);
+    let instance = insert_instance(&mut harness);
+    let width = |harness: &Harness<'_, Shell>, id: &NodeId| frame(harness, id).2;
+    harness
+        .state_mut()
+        .editor_mut()
+        .apply("Resize", &[Edit::set(&instance, "width", 700.0)])
+        .unwrap();
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(card.clone());
+    harness.run();
+
+    // From 600 to 800 in one edit. On the way the main is 700 wide, like
+    // the instance, which was resized by hand when the edit began.
+    step_by_tens(&mut harness, "Width", &[Key::ArrowUp; 20]);
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert_eq!(width(&harness, &card), 800.0);
+    assert_eq!(width(&harness, &instance), 700.0);
+    // One undo step puts it back.
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Resize")
+    );
+    harness.state_mut().editor_mut().undo().unwrap();
+    assert_eq!(width(&harness, &card), 600.0);
+    assert_eq!(width(&harness, &instance), 700.0);
+
+    // An instance the main's size follows it there and back.
+    harness.state_mut().editor_mut().undo().unwrap();
+    harness.run();
+    assert_eq!(width(&harness, &instance), 600.0);
+    step_by_tens(&mut harness, "Width", &[Key::ArrowUp]);
+    assert_eq!(width(&harness, &instance), 610.0);
+    step_by_tens(&mut harness, "Width", &[Key::ArrowDown]);
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert_eq!(width(&harness, &card), 600.0);
+    assert_eq!(width(&harness, &instance), 600.0);
+}
+
 #[test]
 fn go_to_main_is_off_for_instances_of_different_mains() {
     let mut harness = harness();

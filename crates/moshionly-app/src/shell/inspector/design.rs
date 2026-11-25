@@ -411,8 +411,9 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
                     let ok = working.apply(&edits).is_ok();
                     (edits, working, ok)
                 });
-                // Instances the size of a resized main follow it.
-                let before = std::sync::Arc::clone(bind.editor.document());
+                // Instances the size of a resized main when the edit began
+                // follow it.
+                let before = bind.began();
                 bind.field(&response, "Resize", || {
                     let mut edits = match inside {
                         Some((settle, working, true)) => [
