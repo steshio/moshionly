@@ -912,3 +912,56 @@ fn instances_the_edits_change_themselves_keep_what_they_get() {
     ];
     assert_eq!(instances_follow_mains(&document, &edits), []);
 }
+
+#[test]
+fn a_detached_instance_plays_its_videos_later_by_its_offset() {
+    let mut document = sample();
+    document
+        .apply(&[add(
+            json!({ "id": "film", "parent": "card", "index": "a1", "type": "video",
+                    "source": "film.mp4", "width": 40, "height": 30,
+                    "start": 200, "end": 1500, "trim_start": 100 }),
+        )])
+        .unwrap();
+    let clip_of_copy = |document: &Document| {
+        let copies: Vec<&Node> = document
+            .nodes()
+            .filter(|node| node.node_type() == NodeType::Video && node.id != id("film"))
+            .collect();
+        assert_eq!(copies.len(), 1);
+        let layer = copies[0].layer().unwrap();
+        (*copies[0].data.clip().unwrap(), layer.hidden)
+    };
+    let detached = |offset: f64| {
+        let mut document = document.clone();
+        document
+            .apply(&[Edit::set("copy", "time_offset", offset)])
+            .unwrap();
+        let (_, edits) = detach(&document, &id("copy")).unwrap();
+        let result = applied(&document, &edits);
+        // It looks the same, the video showing the same moment of its file.
+        for time in TIMES.into_iter().filter(|time| *time >= 300.0) {
+            assert!(
+                looks_the_same(&scene(&document, "ab", time), &scene(&result, "ab", time)),
+                "offset {offset}, at {time}"
+            );
+        }
+        clip_of_copy(&result)
+    };
+    let (later, hidden) = detached(300.0);
+    assert_eq!(
+        (later.start, later.end, later.trim_start),
+        (500.0, 1800.0, 100.0)
+    );
+    assert!(!hidden);
+    // Moved to before 0, it starts at 0 further into its file.
+    let (early, _) = detached(-700.0);
+    assert_eq!(
+        (early.start, early.end, early.trim_start),
+        (0.0, 800.0, 600.0)
+    );
+    // Over before 0: the instance never shows it, and neither does the copy.
+    let (gone, hidden) = detached(-1600.0);
+    assert!(hidden);
+    assert_eq!(gone.volume, 0.0);
+}

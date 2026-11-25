@@ -229,6 +229,18 @@ impl<'a> Painter<'a> {
                 };
                 image::draw(self.canvas, &frame, picture.as_ref(), opacity);
             }
+            Content::Video {
+                fit, radii, stroke, ..
+            } => {
+                // TODO: draw the frame; until frames can be read, the placeholder.
+                let frame = image::ImageBox {
+                    size: (node.width, node.height),
+                    radii,
+                    fit: *fit,
+                    stroke: stroke.as_ref(),
+                };
+                image::draw(self.canvas, &frame, None, opacity);
+            }
         }
     }
 
@@ -275,6 +287,6 @@ fn is_flat(node: &SceneNode) -> bool {
         | Content::Ellipse { fill, stroke, .. }
         | Content::Star { fill, stroke, .. }
         | Content::Path { fill, stroke, .. } => fill.is_none() || stroke.is_none(),
-        Content::Text(_) | Content::Image { .. } => false,
+        Content::Text(_) | Content::Image { .. } | Content::Video { .. } => false,
     }
 }

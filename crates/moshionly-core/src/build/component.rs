@@ -227,7 +227,9 @@ pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> 
 /// layers. The animations on those layers are copied too, onto the end of
 /// the instance's artboard's timeline, later by the instance's
 /// `time_offset`. Instances inside the component stay instances, and their
-/// `time_offset` grows by the instance's, so they play later by it too.
+/// `time_offset` grows by the instance's, so they play later by it too;
+/// video clips move later by it (one moved to before 0 starts at 0 further
+/// into its file, and one over before 0 is hidden and silent).
 ///
 /// A copy resized in proportion is scaled to look exactly like the
 /// instance. One resized out of proportion is stretched the way a resized
@@ -304,9 +306,23 @@ fn detach_with(
             factors.apply_to_layer(&mut copy.data);
         }
         // An instance inside the component plays later by this one's
-        // offset too, like the copied animations do.
+        // offset too, like the copied animations do, and so does a video.
         if let NodeData::Instance(inner) = &mut copy.data {
             inner.time_offset = tidy(inner.time_offset + instance.time_offset);
+        }
+        let played_before_zero = copy
+            .data
+            .clip_mut()
+            .is_some_and(|clip| !clip.shift(instance.time_offset));
+        if played_before_zero {
+            // The instance never shows or plays it: it is over before the
+            // timeline starts.
+            if let Some(clip) = copy.data.clip_mut() {
+                clip.volume = 0.0;
+            }
+            if let Some(layer) = copy.data.layer_mut() {
+                layer.hidden = true;
+            }
         }
         edits.push(Edit::add(copy));
     }

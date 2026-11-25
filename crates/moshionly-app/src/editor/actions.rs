@@ -700,10 +700,12 @@ mod tests {
         // An artboard can only change its background.
         let artboard = menu_for(document, &[id("ab")]);
         assert_eq!(artboard, [(MenuSection::Change, NodeType::Fill)]);
-        // Every animation type except folders is somewhere in the menu.
+        // Every animation type except folders and sound is somewhere in
+        // the menu.
         for ty in NodeType::ALL {
             let listed = MENU.iter().any(|(_, entry)| entry == ty);
-            let action = ty.family() == Family::Animation && *ty != NodeType::AnimationGroup;
+            let action = ty.family() == Family::Animation
+                && !matches!(ty, NodeType::AnimationGroup | NodeType::Audio);
             assert_eq!(listed, action, "{ty}");
         }
     }

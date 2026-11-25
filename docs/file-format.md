@@ -228,9 +228,24 @@ A copy of a main component: shows its look, layers and animations, time_offset m
 | `component` | id | required | Id of the main component this instance shows: a `component` layer anywhere in the document, in any artboard. |
 | `time_offset` | number | `0` | How much later than the component this instance plays the component's animations, in milliseconds; negative plays them earlier. Give each copy a little more to stagger them. |
 
+#### `video`
+
+A video clip from a file: between start and end it shows the file's frames like an image and plays its sound.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `source` | string | required | Where the video comes from: a path relative to the project file or an absolute path. Video cannot be embedded as a `data:` URI. |
+| `fit` | `"cover"`, `"contain"` or `"stretch"` | `"cover"` | How the frames fill the box when their proportions differ. |
+| `stroke` | [stroke](#stroke) | none | Outline of the box. |
+| `corner_radius` | [corner_radius](#corner_radius) | `0` | Rounding of the corners in pixels. |
+| `start` | number | required | When the clip starts playing, in milliseconds from the start of the artboard, 0 or more. |
+| `end` | number | required | When the clip stops playing, in milliseconds from the start of the artboard; after `start`. |
+| `trim_start` | number | `0` | Where in the file the clip begins, in milliseconds from the start of the file, 0 or more: at `start` the clip is this far into its file. |
+| `volume` | number | `1` | How loud the clip's sound plays, from 0 (silent) to 1 (as recorded). |
+
 ### Fields of every animation
 
-Every animation that runs over time has these. `show`, `hide` and `animation_group` list their own fields below.
+Every animation that runs over time has these. `show`, `hide`, `audio` and `animation_group` list their own fields below.
 
 | Field | Value | Default | Meaning |
 |---|---|---|---|
@@ -524,6 +539,23 @@ Counts the first number in a text layer up or down, keeping the text around it.
 | `from` | number | none | Number shown at the start. Default: the number at that moment. |
 | `to` | number | none | Number shown at the end. Default: the number written in the text. |
 
+### Sound
+
+Sound on the timeline. It changes no layer, so it has no `target`. Video layers play their own sound too.
+
+#### `audio`
+
+Sound from a file that plays between start and end on the artboard's timeline; it draws nothing and has no target.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `name` | string | `""` | Label shown on the timeline row. |
+| `source` | string | required | Where the sound comes from: a path relative to the project file or an absolute path, of a sound file or a video file with sound. Sound cannot be embedded as a `data:` URI. |
+| `start` | number | required | When the clip starts playing, in milliseconds from the start of the artboard, 0 or more. |
+| `end` | number | required | When the clip stops playing, in milliseconds from the start of the artboard; after `start`. |
+| `trim_start` | number | `0` | Where in the file the clip begins, in milliseconds from the start of the file, 0 or more: at `start` the clip is this far into its file. |
+| `volume` | number | `1` | How loud the clip's sound plays, from 0 (silent) to 1 (as recorded). |
+
 ### Timeline structure
 
 Folders for the timeline. They do not change playback.
@@ -546,8 +578,8 @@ A folder that organises animations on the timeline; it does not change playback.
 | `opacity` | every layer except `artboard` |
 | `resize` | every layer except `artboard` |
 | `fill` | `artboard`, `group`, `rect`, `ellipse`, `star`, `path`, `text`, `component` |
-| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component` |
-| `corner_radius` | `group`, `rect`, `image`, `component` |
+| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component`, `video` |
+| `corner_radius` | `group`, `rect`, `image`, `component`, `video` |
 | `blur` | every layer except `artboard` |
 | `shadow` | every layer except `artboard` |
 | `show` | every layer except `artboard` |

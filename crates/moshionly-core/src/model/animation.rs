@@ -765,6 +765,8 @@ pub enum AnimationKind {
     Preset,
     /// Works on the content of a text layer.
     Text,
+    /// Plays sound on the timeline and changes no layer: `audio`.
+    Media,
     /// Organises other animations: `animation_group`.
     Structure,
 }

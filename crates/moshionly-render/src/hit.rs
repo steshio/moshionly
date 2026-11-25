@@ -177,7 +177,7 @@ impl Geometry<'_> {
                 });
                 union(filled, stroked)
             }
-            Content::Image { stroke, .. } => {
+            Content::Image { stroke, .. } | Content::Video { stroke, .. } => {
                 let reach = stroke
                     .as_ref()
                     .map_or(0.0, |stroke| stroke_reach(stroke, true));
@@ -248,7 +248,9 @@ fn touches(node: &SceneNode, point: Point, reach: f64) -> bool {
                 (Some(_), None) => false,
             }
         }
-        Content::Image { radii, .. } => geometry::rect(node.width, node.height, radii).contains(at),
+        Content::Image { radii, .. } | Content::Video { radii, .. } => {
+            geometry::rect(node.width, node.height, radii).contains(at)
+        }
         // Text is found by its box: between letters counts.
         Content::Text(_) => node.frame().contains(point),
         Content::Group { .. } => false,

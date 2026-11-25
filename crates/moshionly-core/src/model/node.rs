@@ -17,6 +17,7 @@ use super::layer::{
     Artboard, Component, EllipseLayer, Group, ImageLayer, Instance, LayerProps, MaskGroup,
     PathLayer, RectLayer, StarLayer, TextLayer,
 };
+use super::media::{Audio, ClipTiming, VideoLayer};
 use super::paint::{CornerRadius, Paint, Stroke};
 use crate::defaults;
 use crate::easing::Easing;
@@ -75,6 +76,8 @@ pub enum NodeData {
     Component(Component),
     /// A copy of a main component.
     Instance(Instance),
+    /// A video clip.
+    Video(VideoLayer),
 
     /// Shifts a layer from its resting position.
     Move(MoveAnimation),
@@ -137,6 +140,9 @@ pub enum NodeData {
     TextOut(TextAnimation),
     /// Counts a number in a text layer.
     Counter(CounterAnimation),
+
+    /// Sound on the timeline.
+    Audio(Audio),
 
     /// A folder of animations on the timeline.
     AnimationGroup(AnimationGroup),
@@ -206,6 +212,7 @@ macro_rules! node_types {
     (@kind instant) => { Some(AnimationKind::Instant) };
     (@kind preset) => { Some(AnimationKind::Preset) };
     (@kind text) => { Some(AnimationKind::Text) };
+    (@kind media) => { Some(AnimationKind::Media) };
     (@kind structure) => { Some(AnimationKind::Structure) };
 }
 
@@ -221,6 +228,7 @@ node_types! {
     Image, "image", layer, "A bitmap image from a file or a data URI.";
     Component, "component", layer, "A main component: a group whose look, layers and their animations every instance of it shows; edit it and every instance changes.";
     Instance, "instance", layer, "A copy of a main component: shows its look, layers and animations, time_offset milliseconds later; holds no layers of its own.";
+    Video, "video", layer, "A video clip from a file: between start and end it shows the file's frames like an image and plays its sound.";
 
     Move, "move", property, "Shifts a layer by an offset from its resting position. Additive: several moves add up.";
     Rotate, "rotate", property, "Turns a layer by an angle added to its resting rotation. Additive: several rotations add up.";
@@ -254,6 +262,8 @@ node_types! {
     TextIn, "text_in", text, "Text appears letter by letter, word by word or line by line, each with a fade, slide, scale or blur.";
     TextOut, "text_out", text, "Text disappears letter by letter, word by word or line by line.";
     Counter, "counter", text, "Counts the first number in a text layer up or down, keeping the text around it.";
+
+    Audio, "audio", media, "Sound from a file that plays between start and end on the artboard's timeline; it draws nothing and has no target.";
 
     AnimationGroup, "animation_group", structure, "A folder that organises animations on the timeline; it does not change playback.";
 }
@@ -317,6 +327,7 @@ impl NodeData {
             NodeData::Image(_) => NodeType::Image,
             NodeData::Component(_) => NodeType::Component,
             NodeData::Instance(_) => NodeType::Instance,
+            NodeData::Video(_) => NodeType::Video,
             NodeData::Move(_) => NodeType::Move,
             NodeData::Rotate(_) => NodeType::Rotate,
             NodeData::Scale(_) => NodeType::Scale,
@@ -346,6 +357,7 @@ impl NodeData {
             NodeData::TextIn(_) => NodeType::TextIn,
             NodeData::TextOut(_) => NodeType::TextOut,
             NodeData::Counter(_) => NodeType::Counter,
+            NodeData::Audio(_) => NodeType::Audio,
             NodeData::AnimationGroup(_) => NodeType::AnimationGroup,
         }
     }
@@ -369,6 +381,7 @@ impl NodeData {
             NodeData::Image(n) => Some(&n.layer),
             NodeData::Component(n) => Some(&n.layer),
             NodeData::Instance(n) => Some(&n.layer),
+            NodeData::Video(n) => Some(&n.layer),
             _ => None,
         }
     }
@@ -387,6 +400,7 @@ impl NodeData {
             NodeData::Image(n) => Some(&mut n.layer),
             NodeData::Component(n) => Some(&mut n.layer),
             NodeData::Instance(n) => Some(&mut n.layer),
+            NodeData::Video(n) => Some(&mut n.layer),
             _ => None,
         }
     }
@@ -417,6 +431,7 @@ impl NodeData {
             NodeData::Text(n) => n.stroke.as_ref(),
             NodeData::Image(n) => n.stroke.as_ref(),
             NodeData::Component(n) => n.stroke.as_ref(),
+            NodeData::Video(n) => n.stroke.as_ref(),
             _ => None,
         }
     }
@@ -428,6 +443,7 @@ impl NodeData {
             NodeData::Rect(n) => Some(n.corner_radius),
             NodeData::Image(n) => Some(n.corner_radius),
             NodeData::Component(n) => Some(n.corner_radius),
+            NodeData::Video(n) => Some(n.corner_radius),
             _ => None,
         }
     }
@@ -491,7 +507,8 @@ impl NodeData {
         }
     }
 
-    /// The layer an animation changes. `None` for layers and animation groups.
+    /// The layer an animation changes. `None` for layers, animation groups
+    /// and audio items.
     pub fn target(&self) -> Option<&NodeId> {
         match self {
             NodeData::Show(n) | NodeData::Hide(n) => Some(&n.target),
@@ -530,12 +547,54 @@ impl NodeData {
         }
     }
 
-    /// Start and end of an animation in milliseconds. Instants start and end
-    /// at the same moment. `None` for layers and animation groups.
+    /// Start and end of an animation or an audio item in milliseconds.
+    /// Instants start and end at the same moment. `None` for layers (video
+    /// layers included: see [`NodeData::clip`]) and animation groups.
     pub fn span(&self) -> Option<(f64, f64)> {
         match self {
             NodeData::Show(n) | NodeData::Hide(n) => Some((n.start, n.start)),
+            NodeData::Audio(n) => Some((n.clip.start, n.clip.end)),
             other => other.timing().map(|timing| (timing.start, timing.end)),
+        }
+    }
+
+    /// When a video layer or an audio item plays, from where in its file,
+    /// and how loud. `None` for every other node.
+    pub fn clip(&self) -> Option<&ClipTiming> {
+        match self {
+            NodeData::Video(n) => Some(&n.clip),
+            NodeData::Audio(n) => Some(&n.clip),
+            _ => None,
+        }
+    }
+
+    /// Mutable access to [`NodeData::clip`].
+    pub fn clip_mut(&mut self) -> Option<&mut ClipTiming> {
+        match self {
+            NodeData::Video(n) => Some(&mut n.clip),
+            NodeData::Audio(n) => Some(&mut n.clip),
+            _ => None,
+        }
+    }
+
+    /// The file an image, a video or an audio item shows or plays, as
+    /// written in the document. `None` for every other node.
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            NodeData::Image(n) => Some(&n.source),
+            NodeData::Video(n) => Some(&n.source),
+            NodeData::Audio(n) => Some(&n.source),
+            _ => None,
+        }
+    }
+
+    /// Mutable access to [`NodeData::source`], for moving files.
+    pub fn source_mut(&mut self) -> Option<&mut String> {
+        match self {
+            NodeData::Image(n) => Some(&mut n.source),
+            NodeData::Video(n) => Some(&mut n.source),
+            NodeData::Audio(n) => Some(&mut n.source),
+            _ => None,
         }
     }
 
@@ -549,6 +608,7 @@ impl NodeData {
         match self {
             NodeData::Show(n) | NodeData::Hide(n) => &n.name,
             NodeData::AnimationGroup(n) => &n.name,
+            NodeData::Audio(n) => &n.name,
             other => match (other.layer(), other.timing()) {
                 (Some(layer), _) => &layer.name,
                 (None, Some(timing)) => &timing.name,
@@ -583,6 +643,7 @@ node_data_from! {
     ImageLayer => Image,
     Component => Component,
     Instance => Instance,
+    VideoLayer => Video,
     MoveAnimation => Move,
     RotateAnimation => Rotate,
     ScaleAnimation => Scale,
@@ -598,6 +659,7 @@ node_data_from! {
     ShrinkIn => ShrinkIn,
     ShrinkOut => ShrinkOut,
     CounterAnimation => Counter,
+    Audio => Audio,
     AnimationGroup => AnimationGroup,
 }
 
@@ -660,7 +722,8 @@ impl Node {
         self.data.layer()
     }
 
-    /// The layer an animation changes. `None` for layers and animation groups.
+    /// The layer an animation changes. `None` for layers, animation groups
+    /// and audio items.
     pub fn target(&self) -> Option<&NodeId> {
         self.data.target()
     }
@@ -821,6 +884,8 @@ mod tests {
             json!({ "type": "component", "name": "Button", "clip": true, "corner_radius": 8, "fill": "#0D99FF",
                     "stroke": { "width": 1 } }),
             json!({ "type": "instance", "component": "m1", "time_offset": -150, "width": 240 }),
+            json!({ "type": "video", "source": "assets/clip.mp4", "fit": "contain", "corner_radius": 12,
+                    "stroke": { "width": 2 }, "start": 500, "end": 2500, "trim_start": 1200, "volume": 0.5 }),
         ];
         for mut layer in layers {
             let fields = layer.as_object_mut().unwrap();
@@ -858,6 +923,20 @@ mod tests {
         assert!(base(json!({ "type": "rect", "fill": "blue" })).contains("not a colour"));
         assert!(base(json!({ "type": "image" })).contains("missing field `source`"));
         assert!(base(json!({ "type": "instance" })).contains("missing field `component`"));
+        assert!(
+            base(json!({ "type": "video", "source": "a.mp4", "end": 100 }))
+                .contains("missing field `start`")
+        );
+        assert!(
+            base(json!({ "type": "video", "source": "a.mp4", "start": 0, "end": 1, "fill": "#FFFFFF" }))
+                .contains("fill")
+        );
+        assert!(
+            base(
+                json!({ "type": "audio", "source": "a.mp3", "start": 0, "end": 1, "target": "x" })
+            )
+            .contains("target")
+        );
         assert!(
             base(json!({ "type": "instance", "component": "m1", "fill": "#FFFFFF" }))
                 .contains("fill")
@@ -992,7 +1071,9 @@ mod tests {
             .map(|example| example["type"].as_str().unwrap().to_owned())
             .collect();
         for ty in NodeType::ALL {
-            if ty.family() == Family::Animation && *ty != NodeType::AnimationGroup {
+            if ty.family() == Family::Animation
+                && !matches!(ty, NodeType::AnimationGroup | NodeType::Audio)
+            {
                 assert!(
                     covered.iter().any(|name| name == ty.as_str()),
                     "no example for {ty}"
@@ -1018,6 +1099,59 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn audio_items_are_timeline_rows_without_a_target() {
+        let source = json!({
+            "id": "s1", "parent": "ab12", "index": "a2", "type": "audio", "name": "Music",
+            "source": "assets/music.mp3", "start": 250, "end": 4250, "trim_start": 3000, "volume": 0.8
+        });
+        let audio = Node::from_value(source.clone()).unwrap();
+        assert_eq!(audio.family(), Family::Animation);
+        assert_eq!(
+            audio.node_type().animation_kind(),
+            Some(AnimationKind::Media)
+        );
+        assert_eq!(audio.name(), "Music");
+        assert_eq!(audio.target(), None);
+        assert_eq!(audio.data.span(), Some((250.0, 4250.0)));
+        assert_eq!(audio.data.timing(), None);
+        assert_eq!(audio.data.source(), Some("assets/music.mp3"));
+        let clip = audio.data.clip().unwrap();
+        assert_eq!((clip.trim_start, clip.volume), (3000.0, 0.8));
+        assert_eq!(audio.to_value(), source);
+        assert_eq!(Node::from_value(audio.to_full_value()).unwrap(), audio);
+        // Without trim and volume, the defaults are left out.
+        let plain = Node::from_value(json!({
+            "id": "s2", "parent": "ab12", "index": "a3", "type": "audio", "source": "a.wav",
+            "start": 0, "end": 10, "trim_start": 0, "volume": 1
+        }))
+        .unwrap();
+        assert_eq!(plain.to_value().as_object().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn video_layers_are_layers_with_a_clip() {
+        let mut video = NodeData::from(VideoLayer {
+            layer: LayerProps::new("Clip", 0.0, 0.0, 320.0, 180.0),
+            source: "assets/clip.mov".into(),
+            fit: crate::model::ImageFit::Cover,
+            stroke: None,
+            corner_radius: CornerRadius::Uniform(8.0),
+            clip: ClipTiming::new(0.0, 2000.0),
+        });
+        assert_eq!(video.family(), Family::Layer);
+        assert_eq!(video.span(), None, "a layer has no span; it has a clip");
+        assert_eq!(video.clip().map(ClipTiming::duration), Some(2000.0));
+        assert_eq!(video.corner_radius(), Some(CornerRadius::Uniform(8.0)));
+        assert_eq!(video.fill(), None);
+        video.clip_mut().unwrap().volume = 0.0;
+        *video.source_mut().unwrap() = "other.mp4".into();
+        assert_eq!(video.clip().unwrap().volume, 0.0);
+        assert_eq!(video.source(), Some("other.mp4"));
+        assert!(!NodeType::Video.holds_layers());
+        assert_eq!(NodeData::from(RectLayer::default()).source(), None);
     }
 
     #[test]
@@ -1094,6 +1228,6 @@ mod tests {
             !NodeType::TextIn.is_entrance(),
             "text animations are their own kind"
         );
-        assert_eq!(NodeType::ALL.len(), 41);
+        assert_eq!(NodeType::ALL.len(), 43);
     }
 }

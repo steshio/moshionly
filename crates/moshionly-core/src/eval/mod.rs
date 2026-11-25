@@ -62,6 +62,14 @@
 //! scale that fits the instance's resting box. Every scene node drawn for
 //! an instance carries the instance's id, so the instance is one layer to
 //! hit testing and selection.
+//!
+//! # Video and sound
+//!
+//! A `video` layer shows the frame of its file at `trim_start + (t -
+//! start)` while its clip plays, from `start` up to `end`, and is left out
+//! of the scene the rest of the time; at rest it shows the frame at
+//! `trim_start`. The scene only says which moment of the file to show:
+//! reading the file is for whoever draws it.
 
 mod preset;
 mod state;
@@ -491,7 +499,27 @@ impl<'a> Evaluator<'a> {
                 radii: fitted(state.radii, state.width, state.height),
                 stroke: stroke(state.stroke.as_ref(), state.width, state.height),
             },
-            // Artboards are roots and never nested; animations are not drawn.
+            NodeData::Video(video) => {
+                // In the design a video shows where its clip begins; while
+                // animating it only shows while its clip plays.
+                let media_time_ms = if self.timelines.animate {
+                    if !video.clip.plays_at(self.time) {
+                        return None;
+                    }
+                    video.clip.media_time(self.time)
+                } else {
+                    video.clip.trim_start
+                };
+                Content::Video {
+                    source: video.source.clone(),
+                    media_time_ms,
+                    fit: video.fit,
+                    radii: fitted(state.radii, state.width, state.height),
+                    stroke: stroke(state.stroke.as_ref(), state.width, state.height),
+                }
+            }
+            // Artboards are roots and never nested; animations and sound
+            // are not drawn.
             _ => return None,
         };
         let layer = node.layer()?;

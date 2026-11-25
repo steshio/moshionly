@@ -53,13 +53,14 @@ impl Outline {
 }
 
 /// The outline of the shape a node draws, or `None` for a node that is not
-/// a shape (a group or a text). An image counts as its rounded box.
+/// a shape (a group or a text). An image or a video counts as its rounded
+/// box.
 pub(crate) fn outline(node: &SceneNode) -> Option<Outline> {
     let closed = |path: sk::Path| Outline::new(path, true);
     Some(match &node.content {
-        Content::Rect { radii, .. } | Content::Image { radii, .. } => {
-            closed(rect(node.width, node.height, radii))
-        }
+        Content::Rect { radii, .. }
+        | Content::Image { radii, .. }
+        | Content::Video { radii, .. } => closed(rect(node.width, node.height, radii)),
         Content::Ellipse {
             start_angle,
             sweep,

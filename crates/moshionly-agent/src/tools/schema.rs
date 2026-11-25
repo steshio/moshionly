@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use moshionly_core::model::{Audio, ClipTiming};
 use moshionly_core::validate::animation_applies_to;
 use moshionly_core::{Family, Node, NodeId, NodeType, build, schema};
 use serde_json::{Map, Value, json};
@@ -116,7 +117,9 @@ fn describe_type(ty: NodeType) -> String {
          \"before\", \"after\" on the operation).\n",
     );
 
-    if ty.family() == Family::Animation && ty != NodeType::AnimationGroup {
+    // Folders and sound have no target.
+    if ty.family() == Family::Animation && !matches!(ty, NodeType::AnimationGroup | NodeType::Audio)
+    {
         let layers: Vec<&str> = NodeType::ALL
             .iter()
             .filter(|layer| animation_applies_to(ty, **layer))
@@ -154,6 +157,14 @@ fn example(ty: NodeType) -> Value {
     let target = NodeId::from("LAYER_ID");
     let data = match ty.family() {
         Family::Layer => build::default_layer(ty),
+        Family::Animation if ty == NodeType::Audio => Some(
+            Audio {
+                name: String::new(),
+                source: "assets/sound.mp3".into(),
+                clip: ClipTiming::new(0.0, 4000.0),
+            }
+            .into(),
+        ),
         Family::Animation => build::default_animation(ty, &target, 0.0),
     };
     let mut node = Map::new();
@@ -171,6 +182,10 @@ fn example(ty: NodeType) -> Value {
         NodeType::Artboard => {}
         NodeType::AnimationGroup => {
             node.insert("name".into(), json!("Intro"));
+            operation.insert("parent".into(), json!("ARTBOARD_ID"));
+        }
+        // Sound has no target to find its artboard by.
+        NodeType::Audio => {
             operation.insert("parent".into(), json!("ARTBOARD_ID"));
         }
         _ if ty.family() == Family::Layer => {
@@ -316,7 +331,7 @@ mod tests {
             json!({ "type": "corner_radius" }),
         );
         assert!(
-            text.contains("\nWorks on these layer types: group, rect, image, component.\n"),
+            text.contains("\nWorks on these layer types: group, rect, image, component, video.\n"),
             "{text}"
         );
     }

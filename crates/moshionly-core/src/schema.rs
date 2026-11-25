@@ -197,6 +197,10 @@ fn parent_schema(ty: NodeType) -> Value {
             "$ref": "#/$defs/NodeId",
             "description": "Id of the artboard, group, mask_group or component this layer is in."
         }),
+        (NodeType::Audio, _) => json!({
+            "$ref": "#/$defs/NodeId",
+            "description": "Id of the artboard whose timeline the sound is on, or of an animation_group in that artboard."
+        }),
         (_, Family::Animation) => json!({
             "$ref": "#/$defs/NodeId",
             "description": "Id of the artboard whose timeline this is on, or of an animation_group in that artboard. Not the layer it changes: that goes in \"target\"."
@@ -411,6 +415,7 @@ pub fn overview() -> String {
             Some(AnimationKind::Instant) => "Instant animations",
             Some(AnimationKind::Preset) => "Preset animations",
             Some(AnimationKind::Text) => "Text animations",
+            Some(AnimationKind::Media) => "Sound",
             Some(AnimationKind::Structure) => "Timeline structure",
         };
         if group != heading {
@@ -543,7 +548,9 @@ fn alias(field: &str) -> Option<&'static str> {
         "size" => "font_size",
         "duration" => "end",
         "delay" | "begin" | "start_time" => "start",
-        "end_time" => "end",
+        "end_time" | "out_point" => "end",
+        "trim" | "in_point" | "media_start" | "clip_offset" => "trim_start",
+        "gain" | "level" | "loudness" => "volume",
         "layer" | "target_id" | "node" => "target",
         "ease" | "curve" | "timing" => "easing",
         "z" | "z_index" | "order" => "index",
@@ -660,11 +667,12 @@ mod tests {
             "Instant animations:",
             "Preset animations:",
             "Text animations:",
+            "Sound:",
             "Timeline structure:",
         ] {
             assert!(overview.contains(heading), "{overview}");
         }
-        assert_eq!(overview.lines().count(), NodeType::ALL.len() + 6);
+        assert_eq!(overview.lines().count(), NodeType::ALL.len() + 7);
     }
 
     #[test]
@@ -786,7 +794,15 @@ mod tests {
         for ty in NodeType::ALL {
             let data = crate::build::default_layer(*ty)
                 .or_else(|| crate::build::default_animation(*ty, &NodeId::from("t"), 0.0))
-                .unwrap_or_else(|| crate::model::AnimationGroup::default().into());
+                .unwrap_or_else(|| match ty {
+                    NodeType::Audio => crate::model::Audio {
+                        name: String::new(),
+                        source: "music.mp3".into(),
+                        clip: crate::model::ClipTiming::new(0.0, 1000.0),
+                    }
+                    .into(),
+                    _ => crate::model::AnimationGroup::default().into(),
+                });
             let node = Node::new(data).with_parent("p");
             let schema = node_schema(*ty);
             let properties = schema["properties"].as_object().unwrap();

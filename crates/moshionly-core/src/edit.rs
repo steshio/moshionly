@@ -1167,7 +1167,7 @@ mod tests {
             (animation("fade_in", "ab"), "put the layers in a group"),
             (
                 animation("corner_radius", "label"),
-                "group, rect, image or component",
+                "group, rect, image, component or video",
             ),
             (
                 animation("text_in", "r1"),
