@@ -166,13 +166,20 @@ pub fn plays_label(main: &str, time_offset: f64) -> String {
 }
 
 /// The bar that says which main component an instance plays and when, or
-/// `None` when it plays no animation within the scene.
-fn plays_bar(document: &Document, node: &Node) -> Option<Bar> {
+/// `None` when it plays no animation within the scene. `spans` remembers
+/// [`main_span`] for each main, as many instances often show one.
+fn plays_bar(
+    document: &Document,
+    node: &Node,
+    spans: &mut HashMap<NodeId, Option<(f64, f64)>>,
+) -> Option<Bar> {
     let NodeData::Instance(instance) = &node.data else {
         return None;
     };
     let main = document.get(&instance.component)?;
-    let (start, end) = main_span(document, &main.id)?;
+    let (start, end) = (*spans
+        .entry(main.id.clone())
+        .or_insert_with(|| main_span(document, &main.id)))?;
     let (start, end) = (start + instance.time_offset, end + instance.time_offset);
     if end <= 0.0 && start < 0.0 {
         // All played before the scene starts.
@@ -224,8 +231,9 @@ pub fn timeline_groups(
         }
     }
     // Instances first say what they play.
+    let mut spans = HashMap::new();
     for (_, node) in document.walk(artboard, Family::Layer) {
-        if let Some(bar) = plays_bar(document, node) {
+        if let Some(bar) = plays_bar(document, node, &mut spans) {
             bars.entry(node.id.clone()).or_default().insert(0, bar);
         }
     }
