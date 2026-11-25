@@ -69,12 +69,16 @@
 //! start)` while its clip plays, from `start` up to `end`, and is left out
 //! of the scene the rest of the time; at rest it shows the frame at
 //! `trim_start`. The scene only says which moment of the file to show:
-//! reading the file is for whoever draws it.
+//! reading the file is for whoever draws it. Sound is not part of a
+//! scene: [`sounds`] lists what plays over a stretch of the timeline.
 
 mod preset;
+mod sound;
 mod state;
 mod textfx;
 mod tween;
+
+pub use sound::{Sound, sounds};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
