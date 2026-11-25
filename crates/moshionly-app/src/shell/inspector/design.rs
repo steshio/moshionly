@@ -4,6 +4,7 @@
 //! the person did; the edits are made after each section is drawn.
 
 use egui::Ui;
+use moshionly_core::build::instances_follow_mains;
 use moshionly_core::model::{
     BlendMode, Gradient, GradientStop, LayerProps, LinearGradient, NodeData, Paint, RadialGradient,
     Shadow, Stroke, StrokePosition,
@@ -14,7 +15,6 @@ use serde_json::{Value, json};
 use super::{Bind, component, numeric, text};
 use crate::{
     editor::{
-        components::instances_follow_mains,
         inspect::{
             Inspected, artboard_of, resize_all, set_all, shared, stretch_contents, text_of, tidy,
         },

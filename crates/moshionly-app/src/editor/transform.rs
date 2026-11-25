@@ -9,11 +9,11 @@
 //! Positions are in world (canvas) coordinates, angles in degrees clockwise.
 
 use egui::{Pos2, Rect, Vec2, pos2, vec2};
+use moshionly_core::build::instances_follow_mains;
 use moshionly_core::model::{AutoSize, NodeData};
 use moshionly_core::{Affine, Document, Edit, Family, Node, NodeId, NodeType, Point};
 use serde_json::{Map, Value};
 
-use super::components::instances_follow_mains;
 use super::inspect::{text_of, tidy};
 use crate::viewport::Anchor;
 
