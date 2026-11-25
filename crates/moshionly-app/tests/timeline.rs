@@ -51,6 +51,7 @@ fn bar(key: &str, start: f64, end: f64) -> Bar {
         start,
         end,
         instant: false,
+        fixed: false,
     }
 }
 
@@ -481,4 +482,27 @@ fn a_marker_moves_from_anywhere_on_it_and_never_resizes() {
         "a marker has no ends to resize"
     );
     assert_eq!(state.selection, keys(&["show"]));
+}
+
+#[test]
+fn a_bar_that_only_shows_something_is_not_selected_or_moved() {
+    let mut harness = harness();
+    // The Badge's grow becomes a bar that only shows what it plays.
+    harness.state_mut().groups[1].bars[0].fixed = true;
+    harness.run();
+    let grow = harness.state().bar_center(4, 900.0, 1500.0);
+    click(&mut harness, grow);
+    assert!(harness.state().selection.is_empty());
+    assert!(
+        harness
+            .state()
+            .events
+            .contains(&TimelineEvent::GroupClicked {
+                key: Key::new("Badge")
+            })
+    );
+    let later = grow + vec2(100.0, 0.0);
+    drag(&mut harness, grow, later);
+    assert_eq!(harness.state().times("grow"), (900.0, 1500.0));
+    assert!(harness.state().selection.is_empty());
 }

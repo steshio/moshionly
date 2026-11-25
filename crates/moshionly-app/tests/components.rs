@@ -221,6 +221,14 @@ fn the_components_list_places_instances_and_go_to_main_comes_back() {
             .is_none(),
         "an instance is selected, not the main"
     );
+    // The timeline of its artboard says what it plays: the card's title,
+    // amount and dot come in on the card's own timeline.
+    assert_eq!(
+        harness.state().editor().artboard(),
+        Some(&away),
+        "the instance's artboard is the current one"
+    );
+    assert!(harness.query_by_label("Plays Card").is_some());
 
     // Dragging the row onto the canvas places one where it lands.
     let origin = harness
