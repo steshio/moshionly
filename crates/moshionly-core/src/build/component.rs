@@ -1,17 +1,17 @@
-//! Components: making one, placing instances of it, and detaching an
-//! instance into a plain group.
+//! Components: making one, placing instances of it, keeping them the size
+//! of a resized component, and detaching an instance into a plain group.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use super::{
     BuildError, GroupKind, Place, check_holds, existing, group, index_at, indices_at, layer_of,
     tidy, top_level,
 };
 use crate::document::Document;
-use crate::edit::Edit;
+use crate::edit::{Edit, patched};
 use crate::geometry::Point;
 use crate::id::NodeId;
 use crate::model::{
@@ -130,6 +130,89 @@ pub fn add_instance(
         None,
     )?);
     Ok((node.id.clone(), vec![Edit::add(node)]))
+}
+
+/// How near two sizes are to count as the same: a hundredth of a pixel,
+/// the precision the editor keeps them to.
+const SAME_SIZE: f64 = 0.01;
+
+/// Edits that keep instances the size of their component when `edits`
+/// resize it, so that what they show is not squeezed or stretched: an
+/// instance as wide as the component was takes its new width, and the same
+/// for the height, each side on its own. An instance resized by hand keeps
+/// its size, and so does a side of an instance that `edits` set
+/// themselves. Instances that `edits` remove, or point at another
+/// component, are left alone.
+///
+/// `document` is the document before `edits`. The edits returned go after
+/// them, in the same batch, so that one undo step resizes the component and
+/// its instances.
+pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> {
+    const SIDES: [&str; 2] = ["width", "height"];
+    // Each component that `edits` update, as they leave it, in the order
+    // they first touch it; and what they do to the other nodes.
+    let mut mains: Vec<(&NodeId, Node)> = Vec::new();
+    let mut set: HashMap<&NodeId, [bool; 2]> = HashMap::new();
+    let mut left_alone: HashSet<&NodeId> = HashSet::new();
+    for edit in edits {
+        match edit {
+            Edit::Update { id, patch } => {
+                let sides = set.entry(id).or_default();
+                for (side, field) in SIDES.iter().enumerate() {
+                    sides[side] |= patch.contains_key(*field);
+                }
+                if patch.contains_key("component") {
+                    left_alone.insert(id);
+                }
+                let at = match mains.iter().position(|(main, _)| *main == id) {
+                    Some(at) => at,
+                    None => match document.get(id) {
+                        Some(node) if node.node_type() == NodeType::Component => {
+                            mains.push((id, node.clone()));
+                            mains.len() - 1
+                        }
+                        _ => continue,
+                    },
+                };
+                // A patch that does not apply fails the batch anyway.
+                if let Ok(after) = patched(&mains[at].1, patch) {
+                    mains[at].1 = after;
+                }
+            }
+            Edit::Remove { id } => {
+                left_alone.insert(id);
+            }
+            Edit::Add { .. } => {}
+        }
+    }
+    let same = |a: f64, b: f64| (a - b).abs() <= SAME_SIZE;
+    let mut follow = Vec::new();
+    for (id, after) in &mains {
+        let (Some(was), Some(now)) = (document.get(id).and_then(Node::layer), after.layer()) else {
+            continue;
+        };
+        let (was, now) = ([was.width, was.height], [now.width, now.height]);
+        for instance in document.instances_of(id) {
+            let gone = left_alone.contains(&instance.id)
+                || document
+                    .ancestors(&instance.id)
+                    .any(|ancestor| left_alone.contains(&ancestor.id));
+            let Some(own) = instance.layer().filter(|_| !gone) else {
+                continue;
+            };
+            let own_set = set.get(&instance.id).copied().unwrap_or_default();
+            let mut patch = Map::new();
+            for (side, size) in [own.width, own.height].into_iter().enumerate() {
+                if !own_set[side] && same(size, was[side]) && !same(now[side], was[side]) {
+                    patch.insert(SIDES[side].to_owned(), Value::from(now[side]));
+                }
+            }
+            if !patch.is_empty() {
+                follow.push(Edit::update(instance.id.clone(), patch));
+            }
+        }
+    }
+    follow
 }
 
 /// Edits that replace an instance with a plain group that looks the same.

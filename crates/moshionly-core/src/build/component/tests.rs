@@ -702,3 +702,112 @@ fn a_copy_without_instances_looks_the_same_and_is_the_same_every_time() {
         }
     }
 }
+
+/// The width and height of the layer `node` of `document`.
+fn size(document: &Document, node: &str) -> (f64, f64) {
+    let layer = document.get(&id(node)).unwrap().layer().unwrap();
+    (layer.width, layer.height)
+}
+
+/// Whether anything in `node` is drawn stretched or squeezed.
+fn has_scale(node: &SceneNode) -> bool {
+    let [a, b, c, d, ..] = node.transform.0;
+    (a.hypot(b) - 1.0).abs() > 1e-9
+        || (c.hypot(d) - 1.0).abs() > 1e-9
+        || node.children().iter().any(has_scale)
+}
+
+#[test]
+fn instances_the_size_of_their_component_follow_it() {
+    let document = sample();
+    let resize = [Edit::update(
+        "card",
+        [("width", json!(160)), ("height", json!(80))],
+    )];
+    let follow = instances_follow_mains(&document, &resize);
+    let result = applied(&document, &[&resize[..], &follow].concat());
+    // "copy" was the card's size, and so was "inner", inside a component
+    // in another artboard.
+    assert_eq!(size(&result, "copy"), (160.0, 80.0));
+    assert_eq!(size(&result, "inner"), (160.0, 80.0));
+    // "wide" was made wider by hand, so only its height follows; "big"
+    // keeps both sides.
+    assert_eq!(size(&result, "wide"), (300.0, 80.0));
+    assert_eq!(size(&result, "big"), (200.0, 100.0));
+    // So what they show is not squeezed.
+    for (artboard, instance) in [("ab", "copy"), ("ab2", "inner")] {
+        let scene = scene(&result, artboard, 0.0);
+        let drawn = scene.find(&id(instance)).unwrap();
+        assert!(!has_scale(drawn), "{instance}: {drawn:?}");
+    }
+}
+
+#[test]
+fn a_size_follows_within_a_hundredth_and_the_last_one_counts() {
+    let mut document = sample();
+    document
+        .apply(&[
+            Edit::set("copy", "width", 100.004),
+            Edit::set("inner", "width", 100.5),
+        ])
+        .unwrap();
+    // One side: "copy" is as wide as the card within a hundredth, "inner"
+    // is not.
+    assert_eq!(
+        instances_follow_mains(&document, &[Edit::set("card", "width", 120)]),
+        [Edit::set("copy", "width", 120.0)]
+    );
+    // The last size the edits give counts.
+    assert_eq!(
+        instances_follow_mains(
+            &document,
+            &[
+                Edit::set("card", "width", 120),
+                Edit::set("card", "width", 150)
+            ]
+        ),
+        [Edit::set("copy", "width", 150.0)]
+    );
+    // A side put back to its default, 100, takes that.
+    assert_eq!(
+        instances_follow_mains(&document, &[Edit::set("card", "height", Value::Null)]),
+        ["copy", "wide", "inner"].map(|instance| Edit::set(instance, "height", 100.0))
+    );
+    // Nothing follows what does not resize a component.
+    for edit in [
+        Edit::set("card", "fill", "#00FF00"),
+        Edit::set("card", "width", 100.004),
+        Edit::set("copy", "width", 300),
+        Edit::set("dot", "width", 300),
+    ] {
+        assert_eq!(
+            instances_follow_mains(&document, &[edit.clone()]),
+            [],
+            "{edit:?}"
+        );
+    }
+}
+
+#[test]
+fn instances_the_edits_change_themselves_keep_what_they_get() {
+    let document = sample();
+    let resize = Edit::update("card", [("width", json!(160)), ("height", json!(80))]);
+    // A side set by the same edits stays as they set it.
+    let edits = [resize.clone(), Edit::set("copy", "width", 90)];
+    let follow = instances_follow_mains(&document, &edits);
+    assert!(
+        follow.contains(&Edit::set("copy", "height", 80.0)),
+        "{follow:?}"
+    );
+    let result = applied(&document, &[&edits[..], &follow].concat());
+    assert_eq!(size(&result, "copy"), (90.0, 80.0));
+    // An instance that goes, or is inside something that goes, or shows
+    // another component from now on, is left alone.
+    let edits = [
+        resize,
+        Edit::remove("wide"),
+        Edit::remove("badge"),
+        Edit::set("copy", "component", "badge"),
+    ];
+    assert_eq!(instances_follow_mains(&document, &edits), []);
+}

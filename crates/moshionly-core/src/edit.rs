@@ -583,7 +583,7 @@ fn interchangeable(from: NodeType, to: Option<&Value>) -> bool {
 }
 
 /// The node that results from applying `patch` to `node`.
-fn patched(node: &Node, patch: &Map<String, Value>) -> Result<Node, Problem> {
+pub(crate) fn patched(node: &Node, patch: &Map<String, Value>) -> Result<Node, Problem> {
     let label = node.label();
     let fixed = |field: &str, current: &str| match patch.get(field) {
         Some(value) if value.as_str() != Some(current) => Err(Problem::new(

@@ -14,7 +14,8 @@ use serde_json::{Map, Value, json};
 
 pub(crate) use component::detach_instances_of;
 pub use component::{
-    DetachLoss, add_instance, detach, detach_losses, make_component, without_instances,
+    DetachLoss, add_instance, detach, detach_losses, instances_follow_mains, make_component,
+    without_instances,
 };
 
 use crate::color::Color;
