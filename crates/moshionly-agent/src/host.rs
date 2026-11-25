@@ -1,5 +1,5 @@
-//! What the host supplies: rendered frames, exports, fonts and text
-//! measuring.
+//! What the host supplies: rendered frames, exports, fonts, text
+//! measuring and reading media files.
 //!
 //! This crate knows documents, not pixels. Whoever embeds it (the editor,
 //! the `moshionly` command) owns the renderer and the exporter and hands
@@ -171,17 +171,21 @@ pub struct ExportOptions {
     /// Whether to leave the artboard's background out, for formats that can
     /// be transparent.
     pub transparent: bool,
+    /// Whether MP4, WebM and ProRes files carry the artboard's sound, when
+    /// it has any.
+    pub sound: bool,
 }
 
 impl Default for ExportOptions {
     /// Actual size, 30 frames per second, the design at rest, with its
-    /// background.
+    /// background and its sound.
     fn default() -> Self {
         Self {
             scale: 1.0,
             fps: 30.0,
             time_ms: None,
             transparent: false,
+            sound: true,
         }
     }
 }
@@ -258,6 +262,30 @@ pub trait FontSource: Send + Sync {
     fn families(&self) -> Vec<FontFamily>;
 }
 
+/// What a video or sound file holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaInfo {
+    /// How long the file plays, in milliseconds, when it says.
+    pub duration_ms: Option<f64>,
+    /// Width of the picture in pixels as shown; 0 without video.
+    pub width: u32,
+    /// Height of the picture in pixels as shown; 0 without video.
+    pub height: u32,
+    /// Whether the file has a picture.
+    pub has_video: bool,
+    /// Whether the file has sound.
+    pub has_sound: bool,
+}
+
+/// Reads what video and sound files hold. The editor implements this with
+/// `ffmpeg`; without it, media cannot be imported.
+pub trait MediaProbe: Send + Sync {
+    /// What the file at `path` holds, or why it cannot be read (for
+    /// example: not a media file, or the program that reads media is not
+    /// installed).
+    fn probe(&self, path: &Path) -> Result<MediaInfo, HostError>;
+}
+
 /// A text measurer that can be shared between threads.
 pub type SharedMeasurer = Arc<dyn TextMeasurer + Send + Sync>;
 
@@ -290,6 +318,8 @@ pub struct Host {
     /// Measures text with real fonts. Without one, sizes of text boxes that
     /// follow their text are estimated.
     pub measurer: Option<SharedMeasurer>,
+    /// Reads video and sound files. Without it, media cannot be imported.
+    pub media: Option<Arc<dyn MediaProbe>>,
 }
 
 impl fmt::Debug for Host {
@@ -299,6 +329,7 @@ impl fmt::Debug for Host {
             .field("exporter", &self.exporter.is_some())
             .field("fonts", &self.fonts.is_some())
             .field("measurer", &self.measurer.is_some())
+            .field("media", &self.media.is_some())
             .finish()
     }
 }
@@ -331,6 +362,12 @@ impl Host {
     /// The same host, measuring text with real fonts.
     pub fn with_measurer(mut self, measurer: SharedMeasurer) -> Self {
         self.measurer = Some(measurer);
+        self
+    }
+
+    /// The same host, able to read video and sound files.
+    pub fn with_media(mut self, media: Arc<dyn MediaProbe>) -> Self {
+        self.media = Some(media);
         self
     }
 
@@ -369,7 +406,7 @@ mod tests {
         assert!(real);
         assert_eq!(
             format!("{host:?}"),
-            "Host { frames: false, exporter: false, fonts: false, measurer: true }"
+            "Host { frames: false, exporter: false, fonts: false, measurer: true, media: false }"
         );
     }
 }

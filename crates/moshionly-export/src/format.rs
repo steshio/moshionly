@@ -123,6 +123,11 @@ impl Format {
         self != Format::Mp4
     }
 
+    /// Whether the format can carry sound: MP4, WebM and ProRes.
+    pub fn supports_sound(self) -> bool {
+        matches!(self, Format::Mp4 | Format::WebM | Format::ProRes)
+    }
+
     /// Whether the format is written by running `ffmpeg`, which must then
     /// be installed.
     pub fn needs_ffmpeg(self) -> bool {

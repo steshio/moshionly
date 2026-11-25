@@ -223,6 +223,7 @@ fn options(args: &Args, format: ExportFormat) -> Result<ExportOptions, ToolError
         fps,
         time_ms,
         transparent,
+        ..ExportOptions::default()
     })
 }
 

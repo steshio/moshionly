@@ -6,6 +6,7 @@
 //! what is wrong or returns a [`Plan`]: the exact pixel size, render
 //! options and moments every writer works from.
 
+use moshionly_core::eval::sounds;
 use moshionly_core::model::{NodeData, Paint};
 use moshionly_core::{Color, Document, NodeId, Rect};
 use moshionly_render::{Background, RenderOptions};
@@ -139,6 +140,10 @@ pub struct Settings {
     /// Whether a Lottie file carries its images inside it or as files
     /// beside it. Default: inside.
     pub lottie_images: LottieImages,
+    /// Whether MP4, WebM and ProRes files carry the artboard's sound (its
+    /// audio items and the sound of its videos), when it has any. Default:
+    /// on.
+    pub sound: bool,
 }
 
 impl Default for Settings {
@@ -154,6 +159,7 @@ impl Default for Settings {
             gif_loop: Loop::default(),
             dither: true,
             lottie_images: LottieImages::default(),
+            sound: true,
         }
     }
 }
@@ -221,6 +227,12 @@ impl Settings {
         self
     }
 
+    /// The same settings with sound on or off.
+    pub fn with_sound(mut self, sound: bool) -> Self {
+        self.sound = sound;
+        self
+    }
+
     /// Checks the settings for exporting `artboard` of `document` as
     /// `format`, and works out exactly what will be written.
     pub fn plan(
@@ -264,6 +276,13 @@ impl Settings {
         if self.gif_loop == Loop::Times(0) {
             return Err(SettingsError::NoPlays);
         }
+        let sound = self.sound
+            && format.supports_sound()
+            && moments.frames().is_some_and(|times| {
+                let start = times.start_ms();
+                let end = start + times.duration_ms();
+                !sounds(document, artboard, start, end).is_empty()
+            });
         Ok(Plan {
             format,
             artboard: artboard.clone(),
@@ -278,6 +297,7 @@ impl Settings {
             gif_loop: self.gif_loop,
             dither: self.dither,
             lottie_images: self.lottie_images,
+            sound,
         })
     }
 
@@ -513,6 +533,11 @@ pub struct Plan {
     pub dither: bool,
     /// Where a Lottie file's images go.
     pub lottie_images: LottieImages,
+    /// Whether the file gets a sound track: the format can hold one, the
+    /// settings ask for it, and sound plays in the stretch exported. (A
+    /// file whose sound turns out to be unreadable, or `ffmpeg` missing,
+    /// can still leave it out.)
+    pub sound: bool,
 }
 
 impl Plan {
@@ -698,6 +723,46 @@ mod tests {
             ]}}"#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn sound_goes_in_formats_that_hold_it_when_it_plays() {
+        let document = io::parse(
+            r##"{"format":"moshionly","version":3,"name":"Sound","nodes":[
+                {"id":"board","parent":null,"index":"a0","type":"artboard","width":100,
+                 "height":100,"duration":4000},
+                {"id":"music","parent":"board","index":"a0","type":"audio","source":"m.mp3",
+                 "start":1000,"end":2000}
+            ]}"##,
+        )
+        .unwrap();
+        let sound = |settings: Settings, format: Format| {
+            settings
+                .plan(format, &document, &NodeId::from("board"))
+                .unwrap()
+                .sound
+        };
+        for format in [Format::Mp4, Format::WebM, Format::ProRes] {
+            assert!(format.supports_sound());
+            assert!(sound(Settings::default(), format), "{format}");
+        }
+        for format in [
+            Format::Png,
+            Format::PngSequence,
+            Format::Gif,
+            Format::Lottie,
+        ] {
+            assert!(!format.supports_sound());
+            assert!(!sound(Settings::default(), format), "{format}");
+        }
+        assert!(!sound(Settings::default().with_sound(false), Format::Mp4));
+        // Only the stretch exported counts.
+        let before = Settings::default().with_range(None, Some(1000.0));
+        assert!(!sound(before, Format::Mp4));
+        let across = Settings::default().with_range(Some(1500.0), None);
+        assert!(sound(across, Format::Mp4));
+        // An artboard without sound has none.
+        assert!(!plan_for(Settings::default(), Format::Mp4).unwrap().sound);
     }
 
     fn plan_for(settings: Settings, format: Format) -> Result<Plan, SettingsError> {

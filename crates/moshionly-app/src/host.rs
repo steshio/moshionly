@@ -532,6 +532,7 @@ mod tests {
             fps: 24.0,
             time_ms: Some(500.0),
             transparent: true,
+            sound: true,
         })
         .unwrap();
         assert_eq!(settings.size, moshionly_export::Size::Scale(2.0));
