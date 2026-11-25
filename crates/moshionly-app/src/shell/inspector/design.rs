@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use super::{Bind, component, numeric, text};
 use crate::{
     editor::{
+        components::instances_follow_mains,
         inspect::{
             Inspected, artboard_of, resize_all, set_all, shared, stretch_contents, text_of, tidy,
         },
@@ -410,14 +411,21 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
                     let ok = working.apply(&edits).is_ok();
                     (edits, working, ok)
                 });
-                bind.field(&response, "Resize", || match inside {
-                    Some((settle, working, true)) => [
-                        settle,
-                        resize_all(&framed, value, height, keep),
-                        stretch_contents(&working, &framed, value, height, keep),
-                    ]
-                    .concat(),
-                    _ => settled(resize_all(&framed, value, height, keep)),
+                // Instances the size of a resized main follow it.
+                let before = std::sync::Arc::clone(bind.editor.document());
+                bind.field(&response, "Resize", || {
+                    let mut edits = match inside {
+                        Some((settle, working, true)) => [
+                            settle,
+                            resize_all(&framed, value, height, keep),
+                            stretch_contents(&working, &framed, value, height, keep),
+                        ]
+                        .concat(),
+                        _ => settled(resize_all(&framed, value, height, keep)),
+                    };
+                    let follow = instances_follow_mains(&before, &edits);
+                    edits.extend(follow);
+                    edits
                 });
             }
             Field::Rotation => bind.field(&response, "Rotate", || {

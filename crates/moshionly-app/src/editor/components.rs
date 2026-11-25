@@ -5,12 +5,14 @@
 //! animations every instance of it (`instance`) shows. The engine draws
 //! instances and keeps them up to date; the rules here are about the
 //! editor: which components the components list shows, where an inserted
-//! instance lands, and which commands apply to a selection.
+//! instance lands, how instances follow a resized main, and which commands
+//! apply to a selection.
 
 use std::collections::{HashMap, HashSet};
 
 use moshionly_core::build::{self, BuildError, Place};
 use moshionly_core::{Document, Edit, Family, Node, NodeId, NodeType, Point};
+use serde_json::{Map, Value};
 
 use super::describe::display_name;
 
@@ -195,6 +197,68 @@ pub fn detach_message(document: &Document, ids: &[NodeId]) -> Option<String> {
             several.len()
         )),
     }
+}
+
+/// Edits that keep instances the size of their main when `edits` resize
+/// the main, as Figma's do: an instance as wide as its main was takes the
+/// main's new width, and the same for the height, each side on its own.
+/// An instance resized by hand keeps its size, and a side that `edits` set
+/// on the instance itself keeps that. Without this, the engine would
+/// squeeze or stretch the main's content into the old box. `document` is
+/// the document before `edits`.
+pub fn instances_follow_mains(document: &Document, edits: &[Edit]) -> Vec<Edit> {
+    const SIDES: [&str; 2] = ["width", "height"];
+    // The width and height `edits` give each node; a later edit wins.
+    let mut sizes: HashMap<&NodeId, [Option<f64>; 2]> = HashMap::new();
+    for edit in edits {
+        if let Edit::Update { id, patch } = edit {
+            let size = sizes.entry(id).or_default();
+            for (side, field) in SIDES.iter().enumerate() {
+                if let Some(value) = patch.get(*field).and_then(Value::as_f64) {
+                    size[side] = Some(value);
+                }
+            }
+        }
+    }
+    // Sizes are tidied to a hundredth.
+    let same = |a: f64, b: f64| (a - b).abs() < 0.005;
+    let mut follow = Vec::new();
+    let mut done: HashSet<&NodeId> = HashSet::new();
+    for edit in edits {
+        let Edit::Update { id, .. } = edit else {
+            continue;
+        };
+        let Some(main) = document
+            .get(id)
+            .filter(|node| node.node_type() == NodeType::Component && done.insert(&node.id))
+        else {
+            continue;
+        };
+        let (Some(layer), Some(new)) = (main.layer(), sizes.get(id)) else {
+            continue;
+        };
+        let was = [layer.width, layer.height];
+        for instance in document.instances_of(id) {
+            let Some(own) = instance.layer() else {
+                continue;
+            };
+            let set = sizes.get(&instance.id).copied().unwrap_or_default();
+            let mut patch = Map::new();
+            for (side, now) in [own.width, own.height].into_iter().enumerate() {
+                if let Some(to) = new[side]
+                    && set[side].is_none()
+                    && same(now, was[side])
+                    && !same(to, was[side])
+                {
+                    patch.insert(SIDES[side].to_owned(), Value::from(to));
+                }
+            }
+            if !patch.is_empty() {
+                follow.push(Edit::update(instance.id.clone(), patch));
+            }
+        }
+    }
+    follow
 }
 
 #[cfg(test)]

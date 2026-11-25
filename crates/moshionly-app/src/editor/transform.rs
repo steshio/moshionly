@@ -13,6 +13,7 @@ use moshionly_core::model::{AutoSize, NodeData};
 use moshionly_core::{Affine, Document, Edit, Family, Node, NodeId, NodeType, Point};
 use serde_json::{Map, Value};
 
+use super::components::instances_follow_mains;
 use super::inspect::{text_of, tidy};
 use crate::viewport::Anchor;
 
@@ -409,8 +410,24 @@ pub fn resized(
 /// The edits that resize `items` of `document` from their box `start` to
 /// `to`. A single layer takes the box as it is; several are stretched with
 /// it, each about its own axes. A group that does not clip stretches its
-/// contents with it (see [`scales_contents`]).
+/// contents with it (see [`scales_contents`]), and the instances of a main
+/// it resizes follow it (see [`instances_follow_mains`]).
 pub fn resize_edits(
+    document: &Document,
+    items: &[Item],
+    start: &WorldBox,
+    to: &WorldBox,
+    changed: (bool, bool),
+) -> Vec<Edit> {
+    let mut edits = boxes_resized(document, items, start, to, changed);
+    let follow = instances_follow_mains(document, &edits);
+    edits.extend(follow);
+    edits
+}
+
+/// The edits that give `items` their part of the box `to`, and stretch
+/// the contents of those that stretch them.
+fn boxes_resized(
     document: &Document,
     items: &[Item],
     start: &WorldBox,
@@ -848,6 +865,78 @@ mod tests {
         let after = resize_by(&doc, &["copy"], Anchor::BottomRight, vec2(200.0, 100.0));
         assert_eq!(props(&after, "copy"), (400.0, 100.0, 400.0, 200.0, 0.0));
         assert_eq!(props(&after, "a"), props(&doc, "a"), "the main stays");
+    }
+
+    #[test]
+    fn instances_the_size_of_their_main_follow_it() {
+        // "same" is as large as the main; "wide" was made wider by hand;
+        // "turned" is upright no more, and "inside" is in a group.
+        let doc = io::parse(
+            r##"{"format":"moshionly","version":2,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","width":2000,"height":2000},
+            {"id":"main","parent":"ab","index":"a0","type":"component","x":100,"y":100,"width":200,"height":100,"clip":true},
+            {"id":"a","parent":"main","index":"a0","type":"rect","x":0,"y":0,"width":100,"height":50},
+            {"id":"same","parent":"ab","index":"a1","type":"instance","component":"main","x":400,"y":100,"width":200,"height":100},
+            {"id":"wide","parent":"ab","index":"a2","type":"instance","component":"main","x":700,"y":100,"width":300,"height":100},
+            {"id":"turned","parent":"ab","index":"a3","type":"instance","component":"main","x":400,"y":600,"width":200,"height":100,"rotation":90},
+            {"id":"bag","parent":"ab","index":"a4","type":"group","x":100,"y":1000,"width":200,"height":100},
+            {"id":"inside","parent":"bag","index":"a0","type":"instance","component":"main","x":0,"y":0,"width":200,"height":100}
+            ]}"##,
+        )
+        .unwrap();
+        let after = resize_by(&doc, &["main"], Anchor::BottomRight, vec2(200.0, 50.0));
+        assert_eq!(props(&after, "main"), (100.0, 100.0, 400.0, 150.0, 0.0));
+        // Each side on its own, and the instances stay where they are.
+        assert_eq!(props(&after, "same"), (400.0, 100.0, 400.0, 150.0, 0.0));
+        assert_eq!(props(&after, "wide"), (700.0, 100.0, 300.0, 150.0, 0.0));
+        assert_eq!(props(&after, "inside"), (0.0, 0.0, 400.0, 150.0, 0.0));
+        // So none of them squeezes what it shows.
+        let scene = moshionly_core::evaluate_at_rest(
+            &after,
+            &NodeId::from("ab"),
+            &moshionly_core::MonospaceMeasurer::default(),
+        )
+        .unwrap();
+        for id in ["same", "inside"] {
+            let drawn = scene.find(&NodeId::from(id)).unwrap();
+            assert!(
+                !has_scale(drawn),
+                "{id} shows the main at its own size: {drawn:?}"
+            );
+        }
+
+        // A main stretched as part of a group carries its instances along.
+        let doc_in_group = {
+            let mut doc = doc.clone();
+            doc.apply(&[
+                Edit::set(NodeId::from("main"), "parent", "bag"),
+                Edit::set(NodeId::from("main"), "x", 0.0),
+                Edit::set(NodeId::from("main"), "y", 0.0),
+                Edit::set(NodeId::from("main"), "index", "a1"),
+            ])
+            .unwrap();
+            doc
+        };
+        let after = resize_by(&doc_in_group, &["bag"], Anchor::Right, vec2(200.0, 0.0));
+        assert_eq!(props(&after, "main").2, 400.0);
+        assert_eq!(props(&after, "same").2, 400.0);
+        // One stretched in the same gesture keeps what the gesture gave it.
+        assert_eq!(props(&after, "inside").2, 400.0);
+
+        // Resized together, an instance takes its own new box, not the
+        // main's: turned a quarter, a stretch across makes it taller.
+        let after = resize_by(&doc, &["main", "turned"], Anchor::Right, vec2(450.0, 0.0));
+        assert_eq!(props(&after, "main").2, 400.0);
+        let (_, _, width, height, _) = props(&after, "turned");
+        assert_eq!((width, height), (200.0, 200.0));
+    }
+
+    /// Whether anything in `node` is drawn stretched or squeezed.
+    fn has_scale(node: &moshionly_core::SceneNode) -> bool {
+        let [a, b, c, d, ..] = node.transform.0;
+        (a.hypot(b) - 1.0).abs() > 1e-9
+            || (c.hypot(d) - 1.0).abs() > 1e-9
+            || node.children().iter().any(has_scale)
     }
 
     #[test]

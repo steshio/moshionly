@@ -421,6 +421,47 @@ fn a_main_or_its_instance_pasted_into_the_main_goes_beside_it() {
     assert_eq!(parent_of(&harness, &pasted[0]), Some(card.clone()));
 }
 
+/// Types `text` into the first field named `label` and presses Enter.
+fn type_into(harness: &mut Harness<'_, Shell>, label: &str, text: &str) {
+    let field = harness
+        .get_all_by_label(label)
+        .next()
+        .unwrap_or_else(|| panic!("no field named {label}"));
+    field.click_accesskit();
+    harness.run();
+    harness
+        .get_all_by_label(label)
+        .next()
+        .unwrap()
+        .type_text(text);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+}
+
+#[test]
+fn instances_follow_a_main_resized_in_the_inspector() {
+    let mut harness = harness();
+    let card = card_component(&mut harness);
+    let instance = insert_instance(&mut harness);
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(card.clone());
+    harness.run();
+    type_into(&mut harness, "Width", "800");
+    assert_eq!(frame(&harness, &card), (240.0, 340.0, 800.0, 400.0));
+    // The instance was the main's size: it still is, where it was.
+    assert_eq!(frame(&harness, &instance), (880.0, 340.0, 800.0, 400.0));
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Resize")
+    );
+    harness.state_mut().editor_mut().undo().unwrap();
+    assert_eq!(frame(&harness, &instance), (880.0, 340.0, 600.0, 400.0));
+}
+
 #[test]
 fn the_time_offset_is_typed_as_one_undo_step() {
     let mut harness = harness();
