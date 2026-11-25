@@ -29,6 +29,8 @@ pub fn layer_icon(ty: NodeType) -> &'static str {
         NodeType::Path => icons::PEN_NIB,
         NodeType::Text => icons::TEXT_T,
         NodeType::Image => icons::IMAGE,
+        NodeType::Component => icons::CUBE,
+        NodeType::Instance => icons::COPY,
         _ => action_icon(ty),
     }
 }

@@ -44,7 +44,9 @@ pub enum ImportError {
     #[error("the design has two nodes with the id \"{0}\"")]
     DuplicateId(NodeId),
     /// A node sits inside a node that cannot hold layers, or inside itself.
-    #[error("{child} cannot be inside {parent}: layers go in an artboard, a group or a mask_group")]
+    #[error(
+        "{child} cannot be inside {parent}: layers go in an artboard, a group, a mask_group or a component"
+    )]
     BadParent {
         /// The node.
         child: String,
@@ -66,7 +68,9 @@ pub enum ImportError {
     #[error("there is no node with the id \"{0}\"")]
     UnknownNode(NodeId),
     /// The place to import to cannot hold layers.
-    #[error("{0} cannot hold layers; import into an artboard, a group or a mask_group")]
+    #[error(
+        "{0} cannot hold layers; import into an artboard, a group, a mask_group or a component"
+    )]
     BadDestination(String),
     /// A replacement needs one top-level layer to take the place of the old one.
     #[error(

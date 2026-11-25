@@ -18,13 +18,14 @@ use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::index::{self, IndexError};
 use crate::model::{
-    AnimationGroup, Artboard, BlurAnimation, BlurPreset, CornerRadius, CornerRadiusAnimation,
-    CounterAnimation, Direction, EllipseLayer, FadePreset, Family, FillAnimation, Group, GrowIn,
-    GrowOut, ImageFit, ImageLayer, InstantAnimation, LayerProps, MaskGroup, MoveAnimation, Node,
-    NodeData, NodeType, Offset, OpacityAnimation, Paint, PathData, PathLayer, RectLayer,
-    ResizeAnchor, ResizeAnimation, RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation,
-    ShadowChange, ShrinkIn, ShrinkOut, SizeChange, SlidePreset, SpinPreset, StarLayer,
-    StrokeAnimation, StrokeChange, TextAnimation, TextLayer, Timing,
+    AnimationGroup, Artboard, BlurAnimation, BlurPreset, Component, CornerRadius,
+    CornerRadiusAnimation, CounterAnimation, Direction, EllipseLayer, FadePreset, Family,
+    FillAnimation, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance, InstantAnimation,
+    LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, Offset, OpacityAnimation,
+    Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation, RevealPreset,
+    RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn, ShrinkOut,
+    SizeChange, SlidePreset, SpinPreset, StarLayer, StrokeAnimation, StrokeChange, TextAnimation,
+    TextLayer, Timing,
 };
 use crate::validate::animation_applies_to;
 
@@ -134,12 +135,19 @@ pub const ARTBOARD_GAP: f64 = 100.0;
 /// until a real image is chosen.
 pub const PLACEHOLDER_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=";
 
+/// The component a new instance from [`default_layer`] points at until a
+/// real one is chosen. No node has this id, so such an instance is refused
+/// until `component` is set; [`add_instance`] makes a ready one.
+pub const PLACEHOLDER_COMPONENT: &str = "COMPONENT_ID";
+
 /// Fill of a new shape: a neutral grey.
 const SHAPE_FILL: Color = Color::rgb(0xD9, 0xD9, 0xD9);
 
 /// A layer of the given type with sensible starting properties: shapes are
 /// 100 by 100 and grey, text says "Text" in black, an artboard is 1080 by
-/// 1080 and white, a path is a triangle, an image shows a transparent pixel.
+/// 1080 and white, a path is a triangle, an image shows a transparent pixel,
+/// a component is an empty box, and an instance points at
+/// [`PLACEHOLDER_COMPONENT`].
 ///
 /// `None` when `ty` is not a layer type.
 pub fn default_layer(ty: NodeType) -> Option<NodeData> {
@@ -187,6 +195,13 @@ pub fn default_layer(ty: NodeType) -> Option<NodeData> {
             fit: ImageFit::default(),
             stroke: None,
             corner_radius: CornerRadius::default(),
+        }
+        .into(),
+        NodeType::Component => Component::default().into(),
+        NodeType::Instance => Instance {
+            layer: LayerProps::default(),
+            component: NodeId::from(PLACEHOLDER_COMPONENT),
+            time_offset: 0.0,
         }
         .into(),
         _ => return None,
@@ -490,7 +505,7 @@ fn check_holds(parent: &Node, child: NodeType, child_label: String) -> Result<()
         _ if child == NodeType::Artboard => (false, "an artboard is a root and has no parent"),
         Family::Layer => (
             parent.node_type().holds_layers(),
-            "layers go in an artboard, a group or a mask_group",
+            "layers go in an artboard, a group, a mask_group or a component",
         ),
         Family::Animation => (
             parent.node_type().holds_animations(),
@@ -1170,23 +1185,32 @@ mod tests {
     #[test]
     fn every_layer_type_has_a_valid_default() {
         let mut document = sample();
+        let mut component = None;
         for ty in NodeType::ALL
             .iter()
             .filter(|ty| ty.family() == Family::Layer)
         {
-            let data = default_layer(*ty).unwrap();
+            let mut data = default_layer(*ty).unwrap();
             assert_eq!(data.node_type(), *ty);
-            let edits = if *ty == NodeType::Artboard {
-                add_artboard(&document, "Next", 640.0, 360.0).unwrap().1
+            // An instance needs a real component: the one added before it.
+            if let (NodeData::Instance(instance), Some(component)) = (&mut data, &component) {
+                assert_eq!(instance.component, id(PLACEHOLDER_COMPONENT));
+                instance.component = NodeId::clone(component);
+            }
+            let (new, edits) = if *ty == NodeType::Artboard {
+                add_artboard(&document, "Next", 640.0, 360.0).unwrap()
             } else {
-                add_layer(&document, &id("ab"), data).unwrap().1
+                add_layer(&document, &id("ab"), data).unwrap()
             };
+            if *ty == NodeType::Component {
+                component = Some(new);
+            }
             document = applied(&document, &edits);
         }
         assert!(default_layer(NodeType::FadeIn).is_none());
         // Each new layer went in front of the one before.
         let layers = document.children(&id("ab"), Family::Layer);
-        assert_eq!(layers.len(), 2 + 8);
+        assert_eq!(layers.len(), 2 + 10);
         assert_eq!(layers[..2], [id("card"), id("loose")]);
     }
 

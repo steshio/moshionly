@@ -29,6 +29,10 @@
 //! - an object that says its `type` (a gradient, an easing) replaces what is
 //!   there as a whole, because its other fields depend on the type;
 //! - arrays are replaced as a whole.
+//!
+//! `id` and `type` are fixed, with one exception: a `group` and a
+//! `component` have the same fields, so a patch can turn one into the
+//! other by setting `type`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,7 +42,7 @@ use serde_json::{Map, Value};
 
 use crate::document::Document;
 use crate::id::NodeId;
-use crate::model::{Family, Node};
+use crate::model::{Family, Node, NodeType};
 use crate::validate::{self, Problem, ProblemKind};
 
 /// One change to a document.
@@ -61,7 +65,8 @@ pub enum Edit {
     },
     /// Changes fields of a node with a JSON merge patch. Moving or reordering
     /// a node is an update of `parent` and `index`. `id` and `type` cannot
-    /// be changed.
+    /// be changed, except that a `group` and a `component`, which have the
+    /// same fields, can turn into each other.
     Update {
         /// The node to change.
         id: NodeId,
@@ -262,12 +267,23 @@ struct Batch {
     /// Whether any node changed parent, which can move a whole subtree to
     /// another artboard.
     reparented: Option<usize>,
+    /// The last edit that added, changed or removed a component or an
+    /// instance, after which the component rules are checked again.
+    components: Option<usize>,
 }
 
 impl Batch {
     fn touch(&mut self, id: &NodeId, before: Option<&Node>, edit: usize) {
         self.journal.record(id, before);
         self.touched_by.insert(id.clone(), edit);
+    }
+
+    /// Notes that `node` is involved in an edit, which matters to the
+    /// component rules when it is a component or an instance.
+    fn note(&mut self, node: &Node, edit: usize) {
+        if matches!(node.node_type(), NodeType::Component | NodeType::Instance) {
+            self.components = Some(edit);
+        }
     }
 }
 
@@ -291,6 +307,7 @@ impl Document {
         for node in nodes {
             validate::check_placement(&document, node)?;
         }
+        validate::check_components(&document)?;
         Ok(document)
     }
 
@@ -377,6 +394,7 @@ impl Document {
                     ));
                 }
                 batch.touch(&node.id, None, index);
+                batch.note(node, index);
                 self.insert_raw(node.clone());
             }
             Edit::Update { id, patch } => {
@@ -387,6 +405,8 @@ impl Document {
                     if updated.parent != current.parent {
                         batch.reparented = Some(index);
                     }
+                    batch.note(current, index);
+                    batch.note(&updated, index);
                     batch.touch(id, Some(current), index);
                     self.remove_raw(id);
                     self.insert_raw(updated);
@@ -398,6 +418,7 @@ impl Document {
                 }
                 for doomed in self.removed_with(id) {
                     if let Some(node) = self.remove_raw(&doomed) {
+                        batch.note(&node, index);
                         batch.touch(&doomed, Some(&node), index);
                     }
                 }
@@ -447,6 +468,20 @@ impl Document {
                     validate::check_placement(self, node).map_err(|problem| (index, problem))?;
                 }
             }
+        }
+        // The component rules span the tree: removing a component leaves
+        // its instances without one, and moving a group can put an
+        // instance inside its own component.
+        if let Some(index) = batch.components.max(batch.reparented) {
+            validate::check_components(self).map_err(|problem| {
+                let blamed = problem
+                    .node
+                    .as_ref()
+                    .and_then(|node| batch.touched_by.get(node))
+                    .copied()
+                    .unwrap_or(index);
+                (blamed, problem)
+            })?;
         }
         Ok(())
     }
@@ -528,6 +563,18 @@ fn sort_parents_first(nodes: &mut [&Node]) {
     });
 }
 
+/// Whether a patch may change a node of type `from` to the type `to`: a
+/// group and a component have the same fields and can turn into each
+/// other, which is how a group becomes a component in place.
+fn interchangeable(from: NodeType, to: Option<&Value>) -> bool {
+    let both = [NodeType::Group, NodeType::Component];
+    both.contains(&from)
+        && to
+            .and_then(Value::as_str)
+            .and_then(NodeType::parse)
+            .is_some_and(|to| both.contains(&to))
+}
+
 /// The node that results from applying `patch` to `node`.
 fn patched(node: &Node, patch: &Map<String, Value>) -> Result<Node, Problem> {
     let label = node.label();
@@ -544,7 +591,9 @@ fn patched(node: &Node, patch: &Map<String, Value>) -> Result<Node, Problem> {
         _ => Ok(()),
     };
     fixed("id", node.id.as_str())?;
-    fixed("type", node.node_type().as_str())?;
+    if !interchangeable(node.node_type(), patch.get("type")) {
+        fixed("type", node.node_type().as_str())?;
+    }
 
     let mut fields = fields_of(node);
     merge_patch(&mut fields, patch);
@@ -983,7 +1032,7 @@ mod tests {
             ),
             (
                 add(json!({ "id": "n", "parent": "r1", "index": "a0", "type": "rect" })),
-                "an artboard, a group or a mask_group",
+                "an artboard, a group, a mask_group or a component",
             ),
             (
                 add(json!({ "id": "n", "index": "a0", "type": "rect" })),
@@ -1109,7 +1158,10 @@ mod tests {
             (animation("fade_in", "fade"), "which is an animation"),
             (animation("fade_in", "far"), "must be in the same artboard"),
             (animation("fade_in", "ab"), "put the layers in a group"),
-            (animation("corner_radius", "label"), "group, rect or image"),
+            (
+                animation("corner_radius", "label"),
+                "group, rect, image or component",
+            ),
             (
                 animation("text_in", "r1"),
                 "only works on these layer types: text",

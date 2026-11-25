@@ -206,6 +206,26 @@ A bitmap image from a file or a data URI.
 | `stroke` | [stroke](#stroke) | none | Outline of the box. |
 | `corner_radius` | [corner_radius](#corner_radius) | `0` | Rounding of the corners in pixels. |
 
+#### `component`
+
+A main component: a group whose look, layers and their animations every instance of it shows; edit it and every instance changes.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `fill` | [paint](#paint) | none | Background drawn behind the children. |
+| `stroke` | [stroke](#stroke) | none | Outline of the box, drawn over the children. |
+| `corner_radius` | [corner_radius](#corner_radius) | `0` | Rounding of the box corners in pixels. |
+| `clip` | boolean | `false` | Whether children are cut off at the (rounded) box. |
+
+#### `instance`
+
+A copy of a main component: shows its look, layers and animations, time_offset milliseconds later; holds no layers of its own.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `component` | id | required | Id of the main component this instance shows: a `component` layer anywhere in the document, in any artboard. |
+| `time_offset` | number | `0` | How much later than the component this instance plays the component's animations, in milliseconds; negative plays them earlier. Give each copy a little more to stagger them. |
+
 ### Fields of every animation
 
 Every animation that runs over time has these. `show`, `hide` and `animation_group` list their own fields below.
@@ -523,9 +543,9 @@ A folder that organises animations on the timeline; it does not change playback.
 | `scale` | every layer except `artboard` |
 | `opacity` | every layer except `artboard` |
 | `resize` | every layer except `artboard` |
-| `fill` | `artboard`, `group`, `rect`, `ellipse`, `star`, `path`, `text` |
-| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image` |
-| `corner_radius` | `group`, `rect`, `image` |
+| `fill` | `artboard`, `group`, `rect`, `ellipse`, `star`, `path`, `text`, `component` |
+| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component` |
+| `corner_radius` | `group`, `rect`, `image`, `component` |
 | `blur` | every layer except `artboard` |
 | `shadow` | every layer except `artboard` |
 | `show` | every layer except `artboard` |

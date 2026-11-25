@@ -195,7 +195,7 @@ fn parent_schema(ty: NodeType) -> Value {
         }),
         (_, Family::Layer) => json!({
             "$ref": "#/$defs/NodeId",
-            "description": "Id of the artboard, group or mask_group this layer is in."
+            "description": "Id of the artboard, group, mask_group or component this layer is in."
         }),
         (_, Family::Animation) => json!({
             "$ref": "#/$defs/NodeId",
@@ -549,6 +549,8 @@ fn alias(field: &str) -> Option<&'static str> {
         "z" | "z_index" | "order" => "index",
         "parent_id" => "parent",
         "src" | "url" | "path" | "image" => "source",
+        "main" | "master" | "main_component" | "component_id" => "component",
+        "offset" | "time_shift" | "stagger" => "time_offset",
         _ => return None,
     })
 }

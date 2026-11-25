@@ -20,8 +20,8 @@ pub use animation::{
     TextOrder, TextSplit, Timing,
 };
 pub use layer::{
-    Artboard, EllipseLayer, Group, ImageFit, ImageLayer, LayerProps, MaskGroup, PathLayer,
-    RectLayer, StarLayer, TextLayer,
+    Artboard, Component, EllipseLayer, Group, ImageFit, ImageLayer, Instance, LayerProps,
+    MaskGroup, PathLayer, RectLayer, StarLayer, TextLayer,
 };
 pub use node::{Family, Node, NodeData, NodeType};
 pub use paint::{

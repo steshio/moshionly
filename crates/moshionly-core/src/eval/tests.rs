@@ -1520,3 +1520,5 @@ fn counters_and_text_animations_work_on_the_same_layer() {
         [piece("30", 1.0), piece("days", 0.5)]
     );
 }
+
+mod components;

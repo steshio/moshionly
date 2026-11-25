@@ -11,6 +11,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod components;
+
+pub(crate) use components::check_components;
+
 use crate::document::Document;
 use crate::easing::Easing;
 use crate::id::NodeId;
@@ -30,7 +34,8 @@ pub enum ProblemKind {
     DuplicateId,
     /// An edit names a node that does not exist.
     UnknownNode,
-    /// An update tries to change `id` or `type`, which are fixed.
+    /// An update tries to change `id` or `type`, which are fixed (a group
+    /// and a component can only turn into each other).
     Immutable,
     /// The JSON is not a node of its type, or a patch does not leave one: an
     /// unknown type or field, a value of the wrong shape, a required field
@@ -47,6 +52,14 @@ pub enum ProblemKind {
     /// `target` is unknown, not a layer, of a type the animation does not
     /// work on, or in another artboard.
     Target,
+    /// An instance's `component` is unknown or names a layer that is not a
+    /// component.
+    Component,
+    /// A component would show itself: it contains an instance of itself,
+    /// directly or through other components.
+    ComponentLoop,
+    /// A component is inside another component.
+    NestedComponent,
 }
 
 /// A rule that a node breaks, with a message that says how to fix it.
@@ -82,10 +95,11 @@ impl Problem {
 /// Whether an animation of type `animation` can target a layer of type `layer`.
 ///
 /// - An artboard takes only `fill`, which animates its background.
-/// - `fill` needs a layer with a fill: everything but `mask_group` and `image`.
-/// - `stroke` needs a layer with a stroke: everything but `mask_group` and
-///   `artboard`.
-/// - `corner_radius` works on `rect`, `group` and `image`.
+/// - `fill` needs a layer with a fill: everything but `mask_group`, `image`
+///   and `instance`.
+/// - `stroke` needs a layer with a stroke: everything but `mask_group`,
+///   `instance` and `artboard`.
+/// - `corner_radius` works on `rect`, `group`, `image` and `component`.
 /// - `text_in`, `text_out` and `counter` work on `text`.
 /// - Everything else works on every layer except an artboard.
 ///
@@ -98,10 +112,10 @@ pub fn animation_applies_to(animation: NodeType, layer: NodeType) -> bool {
     }
     match animation {
         T::AnimationGroup => false,
-        T::Fill => !matches!(layer, T::MaskGroup | T::Image),
+        T::Fill => !matches!(layer, T::MaskGroup | T::Image | T::Instance),
         _ if layer == T::Artboard => false,
-        T::Stroke => layer != T::MaskGroup,
-        T::CornerRadius => matches!(layer, T::Rect | T::Group | T::Image),
+        T::Stroke => !matches!(layer, T::MaskGroup | T::Instance),
+        T::CornerRadius => matches!(layer, T::Rect | T::Group | T::Image | T::Component),
         T::TextIn | T::TextOut | T::Counter => layer == T::Text,
         _ => true,
     }
@@ -217,6 +231,12 @@ pub(crate) fn check_values(node: &Node) -> Result<(), Problem> {
             check.stroke(image.stroke.as_ref())?;
             check.radius("corner_radius", Some(image.corner_radius))?;
         }
+        NodeData::Component(component) => {
+            check.paint("fill", component.fill.as_ref())?;
+            check.stroke(component.stroke.as_ref())?;
+            check.radius("corner_radius", Some(component.corner_radius))?;
+        }
+        NodeData::Instance(instance) => check.finite("time_offset", instance.time_offset)?,
         NodeData::Move(animation) => {
             for (field, offset) in [("from", animation.from), ("to", animation.to)] {
                 if let Some(offset) = offset {
@@ -581,11 +601,16 @@ impl Values<'_> {
     }
 }
 
-/// Checks where one node sits in its document: parent, index and target.
+/// Checks where one node sits in its document: parent, index, target and,
+/// for an instance, its component.
+///
+/// The rules that span several nodes at once (no component inside another,
+/// no component that shows itself) are checked by [`check_components`].
 pub(crate) fn check_placement(document: &Document, node: &Node) -> Result<(), Problem> {
     check_parent(document, node)?;
     check_index(document, node)?;
-    check_target(document, node)
+    check_target(document, node)?;
+    components::check_reference(document, node)
 }
 
 fn check_parent(document: &Document, node: &Node) -> Result<(), Problem> {
@@ -595,7 +620,7 @@ fn check_parent(document: &Document, node: &Node) -> Result<(), Problem> {
     };
     let family = node.family();
     let holders = match family {
-        Family::Layer => "an artboard, a group or a mask_group",
+        Family::Layer => "an artboard, a group, a mask_group or a component",
         Family::Animation => "an artboard or an animation_group",
     };
     let is_artboard = node.node_type() == NodeType::Artboard;
@@ -801,7 +826,7 @@ impl Document {
             check_values(node)?;
             check_placement(self, node)?;
         }
-        Ok(())
+        check_components(self)
     }
 }
 
@@ -834,6 +859,9 @@ mod tests {
             }
             if *ty == NodeType::Image {
                 fields["source"] = json!("photo.png");
+            }
+            if *ty == NodeType::Instance {
+                fields["component"] = json!("m1");
             }
             let node = node(fields);
             check_values(&node).unwrap_or_else(|problem| panic!("{ty}: {problem}"));
@@ -1033,6 +1061,13 @@ mod tests {
         assert!(!animation_applies_to(T::Fill, T::MaskGroup));
         assert!(animation_applies_to(T::Stroke, T::Image));
         assert!(animation_applies_to(T::CornerRadius, T::Group));
+        assert!(animation_applies_to(T::CornerRadius, T::Component));
+        assert!(animation_applies_to(T::Fill, T::Component));
+        assert!(!animation_applies_to(T::Fill, T::Instance));
+        assert!(!animation_applies_to(T::Stroke, T::Instance));
+        assert!(!animation_applies_to(T::CornerRadius, T::Instance));
+        assert!(animation_applies_to(T::FadeIn, T::Instance));
+        assert!(animation_applies_to(T::Resize, T::Instance));
         assert!(!animation_applies_to(T::CornerRadius, T::Ellipse));
         assert!(animation_applies_to(T::TextIn, T::Text));
         assert!(!animation_applies_to(T::Counter, T::Rect));
@@ -1040,7 +1075,10 @@ mod tests {
         assert!(!animation_applies_to(T::AnimationGroup, T::Rect));
         assert!(!animation_applies_to(T::Rect, T::Rect));
         assert!(!animation_applies_to(T::Move, T::FadeIn));
-        assert_eq!(targets_of(T::CornerRadius), "group, rect or image");
+        assert_eq!(
+            targets_of(T::CornerRadius),
+            "group, rect, image or component"
+        );
         assert_eq!(targets_of(T::Counter), "text");
     }
 }
