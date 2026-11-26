@@ -230,9 +230,16 @@ fn folded(shared: &Shared, heard: f64) -> f64 {
     } else {
         shared.loop_ms
     };
-    match length {
+    let moment = match length {
         Some(length) if length > 0.0 => heard.rem_euclid(length),
         _ => heard,
+    };
+    // The end of an old, longer loop is past the scene's end now; the device
+    // has already started the track over, so tell its start rather than a
+    // moment the playback would read as a jump.
+    match shared.loop_ms {
+        Some(length) if heard < 0.0 && length > 0.0 && moment >= length => 0.0,
+        _ => moment,
     }
 }
 
@@ -705,6 +712,44 @@ mod tests {
         let shared = lock(&out.shared);
         let told = folded(&shared, heard_at(&shared, start + buffer * 10).unwrap());
         assert!((told - 900.0).abs() < 1e-9, "{told}");
+    }
+
+    #[test]
+    fn a_shorter_loop_never_tells_a_moment_past_its_end() {
+        // A two-second looping scene with 200 ms of delay in the output, made
+        // a second long just after the track started over, while the end of
+        // the old loop is still on its way to the speakers.
+        let rate = f64::from(SAMPLE_RATE);
+        let ramp: Arc<[f32]> = (0..2 * SAMPLE_RATE)
+            .flat_map(|frame| [(f64::from(frame) / rate) as f32, 0.0])
+            .collect();
+        let latency = Duration::from_millis(200);
+        let buffer = Duration::from_secs_f64(512.0 / rate);
+        let mut out = DeviceAudio::new();
+        let start = Instant::now();
+        {
+            let mut shared = lock(&out.shared);
+            shared.track = Some(Arc::clone(&ramp));
+            shared.playing = true;
+            shared.loop_ms = Some(2000.0);
+            shared.since = Some(start);
+        }
+        let change = (2.13 / buffer.as_secs_f64()) as u32;
+        for index in 0..change + 40 {
+            let now = start + buffer * index;
+            if index == change {
+                out.set_loop(Some(1000.0));
+            }
+            let mut shared = lock(&out.shared);
+            left(&mut shared, 512, now, latency);
+            if index >= change {
+                let told = folded(&shared, heard_at(&shared, now + buffer / 2).unwrap());
+                assert!(
+                    (0.0..1000.0).contains(&told),
+                    "told {told} ms, past the new loop's end"
+                );
+            }
+        }
     }
 
     #[test]
