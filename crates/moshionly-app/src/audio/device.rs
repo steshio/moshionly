@@ -22,7 +22,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
+use cpal::{
+    FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
+    SupportedStreamConfigRange,
+};
 
 use super::{AudioOut, CHANNELS, SAMPLE_RATE, Track};
 
@@ -252,23 +255,34 @@ fn open(shared: &Arc<Mutex<Shared>>) -> Result<cpal::Stream, String> {
     Ok(stream)
 }
 
-/// Stereo floats at 48 kHz when the device offers them, so nothing needs
-/// converting; otherwise the device's own choice.
+/// How sound is sent to `device`: see [`choose_config`].
 fn pick_config(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
-    if let Ok(configs) = device.supported_output_configs() {
-        let wanted = configs
-            .filter(|range| {
-                usize::from(range.channels()) == CHANNELS
-                    && range.sample_format() == SampleFormat::F32
-            })
-            .find_map(|range| range.try_with_sample_rate(SAMPLE_RATE));
-        if let Some(config) = wanted {
-            return Ok(config);
-        }
-    }
-    device
+    let default = device
         .default_output_config()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let offered = device
+        .supported_output_configs()
+        .map(Iterator::collect)
+        .unwrap_or_else(|_| Vec::new());
+    Ok(choose_config(offered, default))
+}
+
+/// Stereo floats at the rate the device runs at, `default`'s, when it
+/// offers them; otherwise the device's own choice, `default`. Asking for
+/// any other rate would switch the device itself (on a Mac, for every app,
+/// with the window waiting while it switches); [`fill`] converts the
+/// 48 kHz track to the device's rate instead.
+fn choose_config(
+    offered: Vec<SupportedStreamConfigRange>,
+    default: SupportedStreamConfig,
+) -> SupportedStreamConfig {
+    offered
+        .into_iter()
+        .filter(|range| {
+            usize::from(range.channels()) == CHANNELS && range.sample_format() == SampleFormat::F32
+        })
+        .find_map(|range| range.try_with_sample_rate(default.sample_rate()))
+        .unwrap_or(default)
 }
 
 /// An output stream of samples of type `T` that plays the shared track.
@@ -569,6 +583,47 @@ mod tests {
         lock(&out.shared).laps_ms = 2000.0;
         out.seek(500.0);
         assert_eq!(lock(&out.shared).laps_ms, 0.0);
+    }
+
+    #[test]
+    fn the_device_is_asked_for_the_rate_it_already_runs_at() {
+        use cpal::SupportedBufferSize::Unknown;
+        let range = |channels, format| {
+            SupportedStreamConfigRange::new(channels, 44_100, 96_000, Unknown, format)
+        };
+        // A device running at 44.1 kHz that could also run at 48 kHz: asking
+        // for 48 kHz would switch it, for every app on a Mac.
+        let default = SupportedStreamConfig::new(2, 44_100, Unknown, SampleFormat::I32);
+        let offered = vec![
+            range(1, SampleFormat::F32),
+            range(2, SampleFormat::I32),
+            range(2, SampleFormat::F32),
+        ];
+        let chosen = choose_config(offered, default.clone());
+        assert_eq!(
+            (
+                chosen.channels(),
+                chosen.sample_rate(),
+                chosen.sample_format()
+            ),
+            (2, 44_100, SampleFormat::F32)
+        );
+        // Without stereo floats at that rate, the device's own choice.
+        let mono = vec![range(1, SampleFormat::F32)];
+        assert_eq!(choose_config(mono, default.clone()), default);
+        assert_eq!(choose_config(Vec::new(), default.clone()), default);
+    }
+
+    #[test]
+    fn a_device_at_another_rate_hears_the_track_at_its_pace() {
+        // A device at 96 kHz plays two frames for every frame of the
+        // track, read in between; round a loop of 3 frames too.
+        let ms = 1000.0 / f64::from(SAMPLE_RATE);
+        let mut shared = playing(vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 0.0]);
+        shared.step = 0.5;
+        shared.loop_ms = Some(3.0 * ms);
+        let heard = left(&mut shared, 8, Instant::now(), Duration::ZERO);
+        assert_eq!(heard, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 0.0, 0.5]);
     }
 
     #[test]
