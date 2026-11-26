@@ -160,6 +160,9 @@ fn add_menu(
                         let item = MenuItem::new(type_label(*ty)).icon(action_icon(*ty));
                         if ui.add(item).clicked() {
                             chosen = Some(*ty);
+                            // Closed here too, for a choice made without a
+                            // pointer.
+                            ui.close();
                         }
                     }
                 });

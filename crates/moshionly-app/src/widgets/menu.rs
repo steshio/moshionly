@@ -27,6 +27,7 @@ pub fn popup_frame(ui: &Ui) -> Frame {
 #[must_use = "add it to a Ui"]
 pub struct MenuItem<'a> {
     label: &'a str,
+    accessible_name: Option<&'a str>,
     icon: Option<&'a str>,
     shortcut: Option<&'a str>,
     checked: Option<bool>,
@@ -40,6 +41,7 @@ impl<'a> MenuItem<'a> {
     pub fn new(label: &'a str) -> Self {
         Self {
             label,
+            accessible_name: None,
             icon: None,
             shortcut: None,
             checked: None,
@@ -52,6 +54,13 @@ impl<'a> MenuItem<'a> {
     /// An icon in the leading slot.
     pub fn icon(mut self, icon: &'a str) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// What screen readers call the item when its label alone says too
+    /// little, such as "Add glow" for "Glow" in a menu of effects to add.
+    pub fn accessible_name(mut self, name: &'a str) -> Self {
+        self.accessible_name = Some(name);
         self
     }
 
@@ -108,7 +117,8 @@ impl Widget for MenuItem<'_> {
             + theme.space.lg;
         let width = ui.available_width().max(natural);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, enabled, self.label));
+        let name = self.accessible_name.unwrap_or(self.label);
+        response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, enabled, name));
 
         if ui.is_rect_visible(rect) {
             let active = enabled && (response.hovered() || self.highlighted);
