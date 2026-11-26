@@ -18,7 +18,8 @@ pub(crate) static EXPORT: ToolDef = ToolDef {
     title: "Export",
     description: "Renders an artboard to a file: an mp4, webm or prores video, an animated gif, \
         a png of one moment, a png_sequence folder of frames, or lottie JSON. Files go in the \
-        project's exports folder and never replace an existing file; the result gives the path. \
+        project's exports folder and never replace an existing file; the result gives the path, \
+        and warnings when something was left out, such as sound that could not be read. \
         get_overview lists the formats this host can write. Export only when the person asks for \
         a file.",
     read_only: false,
@@ -158,6 +159,10 @@ fn run(context: &Context<'_>, args: &Args) -> Result<ToolOutput, ToolError> {
         "artboard": artboard,
         "scale": number(options.scale),
     });
+    // Sound that could not be added, missing images and fonts.
+    if !exported.warnings.is_empty() {
+        result["warnings"] = json!(exported.warnings);
+    }
     let duration = duration_of(&document, &artboard).unwrap_or(0.0);
     let has_sound = !sounds(&document, &artboard, 0.0, duration).is_empty();
     if has_sound && options.sound && !holds_sound(format) {
@@ -333,6 +338,8 @@ mod tests {
     #[derive(Default)]
     struct StubExporter {
         seen: Mutex<Vec<(ExportFormat, crate::ExportOptions)>>,
+        /// What every export says was left out.
+        warnings: Vec<String>,
     }
 
     impl Exporter for StubExporter {
@@ -361,6 +368,7 @@ mod tests {
                 path: request.path.to_owned(),
                 bytes: 6,
                 frames: 120,
+                warnings: self.warnings.clone(),
             })
         }
     }
@@ -447,6 +455,7 @@ mod tests {
                 path: request.path.to_owned(),
                 bytes: 0,
                 frames: 1,
+                warnings: Vec::new(),
             })
         }
     }
@@ -539,6 +548,36 @@ mod tests {
         let seen = exporter.seen.lock().unwrap();
         let sound: Vec<bool> = seen.iter().map(|(_, options)| options.sound).collect();
         assert_eq!(sound, [true, true, true, false]);
+    }
+
+    #[test]
+    fn what_the_export_left_out_is_said() {
+        let dir = TempDir::new("export-warnings");
+        let left_out = "the sound of \"assets/music.mp3\" could not be read (there is no file \
+                        at assets/music.mp3); it was left out";
+        let exporter = Arc::new(StubExporter {
+            warnings: vec![left_out.to_owned()],
+            ..StubExporter::default()
+        });
+        let session = Session::with_path(demo_document(), dir.path().join("project.moshi"));
+        let warned = Tools::new(
+            SessionHandle::new(session),
+            Host::new().with_exporter(exporter),
+        );
+        let result = call(
+            &warned,
+            "export",
+            json!({ "artboard": "scene", "format": "mp4" }),
+        );
+        assert_eq!(result["warnings"], json!([left_out]));
+        // Nothing left out, nothing said.
+        let (tools, _) = tools(Some(&dir), ToolsConfig::default());
+        let result = call(
+            &tools,
+            "export",
+            json!({ "artboard": "scene", "format": "mp4" }),
+        );
+        assert!(result.get("warnings").is_none(), "{result}");
     }
 
     #[test]

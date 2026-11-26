@@ -353,6 +353,7 @@ impl Exporter for AppExporter {
             path: exported.path,
             bytes: exported.bytes,
             frames: saturate(exported.frames),
+            warnings: exported.warnings,
         })
     }
 }

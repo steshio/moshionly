@@ -226,6 +226,9 @@ pub struct Exported {
     pub bytes: u64,
     /// Number of frames in it.
     pub frames: u32,
+    /// What was left out or drawn differently, in words for the person:
+    /// sound that could not be added, a missing image or font.
+    pub warnings: Vec<String>,
 }
 
 /// Writes artboards to files. The editor implements this with its exporter.
