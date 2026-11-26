@@ -38,6 +38,7 @@ app: snap timeline bars to 10 ms
 | To add | Start in |
 |---|---|
 | A layer type | `moshionly-core` node definitions, then the scene builder, then `moshionly-render` |
+| A field that names another node | `moshionly-core` validation, then every helper that copies nodes (`build::clone_subtree`, `import`), which must remap it |
 | An action or preset | `moshionly-core` animation definitions and its evaluation rule |
 | An easing | `moshionly-core` easing module |
 | An export format | a new module in `moshionly-export` |

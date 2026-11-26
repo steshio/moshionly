@@ -306,11 +306,13 @@ fn a_copy_inside_a_frame_duplicated_in_moshionly_is_left_alone() {
         .apply(&session, &ImportTarget::ReplaceMatching)
         .unwrap();
     let frame = imported(&session, "figma:abc:1:1");
-    let (edits, copies) = moshionly_core::build::duplicate(&session.document(), &[frame]).unwrap();
+    let (edits, copies) =
+        moshionly_core::build::duplicate(&session.document(), std::slice::from_ref(&frame))
+            .unwrap();
     session
         .apply(Origin::User, "Duplicate the frame", &edits)
         .unwrap();
-    let copy = copies.values().next().unwrap().clone();
+    let copy = copies[&frame].clone();
     let before = session.document().artboards().len();
 
     // In Figma the box now sits on the canvas, selected before its frame.

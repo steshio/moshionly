@@ -20,8 +20,8 @@ pub(crate) static QUERY_NODES: ToolDef = ToolDef {
         filter by artboard, parent, type or name, and name only the fields you need. A result \
         that would be too long is cut short and says how to get the rest. Typical calls: \
         {\"artboard\":\"<id>\",\"family\":\"layer\"} for the layers of an artboard, \
-        {\"target\":\"<layer id>\"} for what animates a layer, {\"name\":\"title\"} to find a \
-        layer by name.",
+        {\"target\":\"<layer id>\"} for what animates a layer, {\"component\":\"<id>\"} for \
+        the instances of a component, {\"name\":\"title\"} to find a layer by name.",
     read_only: true,
     destructive: false,
     schema,
@@ -37,6 +37,10 @@ const COMPUTED: &[(&str, &str)] = &[
     (
         "animation_count",
         "number of animations that target the layer",
+    ),
+    (
+        "instance_count",
+        "number of instances that show the component",
     ),
 ];
 
@@ -77,6 +81,10 @@ fn schema() -> Value {
                 "type": "string",
                 "description": "Only animations that change this layer (its id)."
             },
+            "component": {
+                "type": "string",
+                "description": "Only instances that show this component (its id). To list the components themselves, use type [\"component\"]."
+            },
             "time_from": {
                 "type": "number",
                 "description": "Only animations still running at or after this time, in milliseconds. Use with time_to to ask what happens in a stretch of time; give both the same value for one moment."
@@ -93,7 +101,7 @@ fn schema() -> Value {
             "fields": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "The fields to return for each node, besides id and type, which always come. Any field of the node's type (see get_schema), or one of the computed fields: family, artboard, box (the layer's box at rest in artboard coordinates), child_count, animation_count. [\"*\"] returns every field that is not at its default. Default: name, parent, x, y, width, height for layers and name, target, start, end for animations."
+                "description": "The fields to return for each node, besides id and type, which always come. Any field of the node's type (see get_schema), or one of the computed fields: family, artboard, box (the layer's box at rest in artboard coordinates), child_count, animation_count, instance_count (for a component). [\"*\"] returns every field that is not at its default. Default: name, parent, x, y, width, height for layers and name, target, start, end for animations."
             },
             "depth": {
                 "type": "integer",
@@ -125,6 +133,7 @@ struct Filter {
     types: Option<Vec<NodeType>>,
     name: Option<(String, bool)>,
     target: Option<NodeId>,
+    component: Option<NodeId>,
     time: Option<(f64, f64)>,
     ids: Option<HashSet<String>>,
 }
@@ -141,6 +150,10 @@ impl Filter {
         };
         let target = match args.string("target")? {
             Some(id) => Some(common::layer(document, &id, "target")?.id.clone()),
+            None => None,
+        };
+        let component = match args.string("component")? {
+            Some(id) => Some(common::layer(document, &id, "component")?.id.clone()),
             None => None,
         };
         let family = args
@@ -188,6 +201,7 @@ impl Filter {
             types,
             name,
             target,
+            component,
             time,
             ids,
         })
@@ -230,6 +244,9 @@ impl Filter {
             }
         }
         if self.target.is_some() && node.target() != self.target.as_ref() {
+            return false;
+        }
+        if self.component.is_some() && node.component() != self.component.as_ref() {
             return false;
         }
         if let Some((from, to)) = self.time {
@@ -403,6 +420,9 @@ fn computed(document: &Document, node: &Node, name: &str) -> Option<Value> {
         }
         "animation_count" if node.is_layer() => {
             json!(document.animations_targeting(&node.id).len())
+        }
+        "instance_count" if node.node_type() == NodeType::Component => {
+            json!(document.instances_of(&node.id).len())
         }
         _ => return None,
     })

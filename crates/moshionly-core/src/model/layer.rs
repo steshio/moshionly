@@ -8,6 +8,7 @@ use super::path::PathData;
 use super::text::{AutoSize, Font, TextAlign, TextCase, VerticalAlign};
 use crate::defaults;
 use crate::geometry::{Affine, Point, Rect};
+use crate::id::NodeId;
 
 /// The properties every layer has. They describe the layer at rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -415,6 +416,101 @@ pub struct ImageLayer {
     /// Rounding of the corners in pixels. Default 0.
     #[serde(default, skip_serializing_if = "defaults::is_default")]
     pub corner_radius: CornerRadius,
+}
+
+/// A main component: a box of layers that instances show copies of.
+///
+/// It is drawn where it is, exactly like a [`Group`], and has the same
+/// fields. What it draws itself (fill, stroke, corner radius, clip) and its
+/// children, with the animations that target layers inside it, are what
+/// every [`Instance`] of it shows. Its own placement and effects (position,
+/// size, rotation, scale, opacity, blend mode, blur, shadow) and the
+/// animations that target the component itself belong to where it is
+/// placed, not to the component.
+///
+/// A component cannot contain another component, at any depth; instances
+/// of other components inside it are fine.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Component {
+    /// The shared layer properties.
+    #[serde(flatten)]
+    pub layer: LayerProps,
+    /// Background drawn behind the children. Default: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Paint>,
+    /// Outline of the box, drawn over the children. Default: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<Stroke>,
+    /// Rounding of the box corners in pixels. Default 0.
+    #[serde(default, skip_serializing_if = "defaults::is_default")]
+    pub corner_radius: CornerRadius,
+    /// Whether children are cut off at the (rounded) box. Default false.
+    #[serde(default, skip_serializing_if = "defaults::is_default")]
+    pub clip: bool,
+}
+
+impl From<Group> for Component {
+    fn from(group: Group) -> Self {
+        let Group {
+            layer,
+            fill,
+            stroke,
+            corner_radius,
+            clip,
+        } = group;
+        Self {
+            layer,
+            fill,
+            stroke,
+            corner_radius,
+            clip,
+        }
+    }
+}
+
+impl From<Component> for Group {
+    fn from(component: Component) -> Self {
+        let Component {
+            layer,
+            fill,
+            stroke,
+            corner_radius,
+            clip,
+        } = component;
+        Self {
+            layer,
+            fill,
+            stroke,
+            corner_radius,
+            clip,
+        }
+    }
+}
+
+/// An instance: a layer that shows a copy of a main [`Component`].
+///
+/// At time `t` it shows the component's look and children as the component
+/// looks at `t - time_offset`, with every animation that targets a layer
+/// inside the component. When its box differs from the component's, that
+/// content is scaled to fill it; a resize animation on the instance changes
+/// its box the way it changes a group's, not the content's scale. Its own
+/// placement and effects, and the animations that target the instance, are
+/// its own. It holds no layers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Instance {
+    /// The shared layer properties.
+    #[serde(flatten)]
+    pub layer: LayerProps,
+    /// Id of the main component this instance shows: a `component` layer
+    /// anywhere in the document, in any artboard.
+    pub component: NodeId,
+    /// How much later than the component this instance plays the
+    /// component's animations, in milliseconds; negative plays them
+    /// earlier. Give each copy a little more to stagger them. Default 0.
+    #[serde(default, skip_serializing_if = "defaults::is_default")]
+    pub time_offset: f64,
 }
 
 /// How an image fills its box.

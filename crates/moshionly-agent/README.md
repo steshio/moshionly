@@ -9,16 +9,18 @@ It depends on `moshionly-core` only. Rendering, export and the list of fonts bel
 | Tool | What it does |
 |---|---|
 | `get_overview` | File name, artboards with size and duration, layer and animation counts, fonts in use, what the host can do |
-| `query_nodes` | Find nodes by family, type, name, parent, artboard, target, time range or ids; choose the fields; nest children; capped results that say how to narrow |
-| `get_node` | One node in full, with its box in artboard coordinates and the animations on it |
+| `query_nodes` | Find nodes by family, type, name, parent, artboard, target, component, time range or ids; choose the fields; nest children; capped results that say how to narrow |
+| `get_node` | One node in full, with its box in artboard coordinates, the animations on it, and its links to components: the component an instance shows, a component's instances, the component a layer is part of |
 | `get_schema` | The node types, or the fields, defaults, value types and a ready-made operation for one type |
-| `apply_edits` | An all-or-nothing batch of `add`, `update`, `remove`, `move`, `clone` and `set_duration`, with temporary ids, as one undo step |
+| `apply_edits` | An all-or-nothing batch of `add`, `update`, `remove`, `move`, `clone`, `set_duration`, `make_component` and `detach`, with temporary ids, as one undo step |
 | `screenshot` | An artboard or a layer at rest or at chosen moments, as PNG images |
 | `evaluate` | Property values of layers at chosen times, to check motion as numbers |
 | `list_fonts` | The font families the host can draw, and those the file uses |
 | `import_image` | Copies an image into the project's `assets` folder and returns the `source` to use |
 | `export` | Writes an artboard to a file in the project's `exports` folder through the host's exporter |
 | `undo_last_agent_change` | Undoes the last agent change, never the person's own work |
+
+Components work through `apply_edits` like everything else: `make_component` turns a group into a component in place or wraps layers in a new one, `add` with `{"type":"instance","component":…}` places a copy (the component may be a `temp_id` from the same call, and the copy takes the component's size and look unless they are given), `detach` turns an instance into a group that looks the same, and `remove` on a component detaches its instances first and says so. Both warn when a group cannot look quite the same: an instance resized out of proportion keeps stroke widths and font sizes in its group, and one with a negative `time_offset` that starts while its component's animations are under way has them squeezed after 0 ms. `clone` with a `time_offset` also delays copied instances, which staggers copies of one animated component.
 
 Every edit goes through `Document::apply` and the undo history, labelled with who made it (`Origin::User`, `Agent` or `Import`). Errors come back as results a model can act on: the operation, the field, and what to do instead. `guide::GUIDE` is the advice the model gets about working in a file (look first, units, how animations combine, durations and easing, checking with screenshots, keeping the person's work).
 

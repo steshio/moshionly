@@ -6,9 +6,17 @@
 //! [`Document::apply`]), so that the change is validated and can be undone
 //! like any other.
 
+mod component;
+
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
+
+pub(crate) use component::detach_instances_of;
+pub use component::{
+    DetachLoss, add_instance, detach, detach_losses, instances_follow_mains, make_component,
+    without_instances,
+};
 
 use crate::color::Color;
 use crate::document::Document;
@@ -18,13 +26,14 @@ use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::index::{self, IndexError};
 use crate::model::{
-    AnimationGroup, Artboard, BlurAnimation, BlurPreset, CornerRadius, CornerRadiusAnimation,
-    CounterAnimation, Direction, EllipseLayer, FadePreset, Family, FillAnimation, Group, GrowIn,
-    GrowOut, ImageFit, ImageLayer, InstantAnimation, LayerProps, MaskGroup, MoveAnimation, Node,
-    NodeData, NodeType, Offset, OpacityAnimation, Paint, PathData, PathLayer, RectLayer,
-    ResizeAnchor, ResizeAnimation, RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation,
-    ShadowChange, ShrinkIn, ShrinkOut, SizeChange, SlidePreset, SpinPreset, StarLayer,
-    StrokeAnimation, StrokeChange, TextAnimation, TextLayer, Timing,
+    AnimationGroup, Artboard, BlurAnimation, BlurPreset, Component, CornerRadius,
+    CornerRadiusAnimation, CounterAnimation, Direction, EllipseLayer, FadePreset, Family,
+    FillAnimation, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance, InstantAnimation,
+    LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, Offset, OpacityAnimation,
+    Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation, RevealPreset,
+    RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn, ShrinkOut,
+    SizeChange, SlidePreset, SpinPreset, StarLayer, StrokeAnimation, StrokeChange, TextAnimation,
+    TextLayer, Timing,
 };
 use crate::validate::animation_applies_to;
 
@@ -84,6 +93,31 @@ pub enum BuildError {
     /// The type is not one the helper can make.
     #[error("{0} is not a {1} type")]
     WrongType(NodeType, &'static str),
+    /// The operation needs a component and got something else.
+    #[error("{0} is not a component")]
+    NotAComponent(String),
+    /// The operation needs an instance and got something else.
+    #[error("{0} is not an instance, so there is nothing to detach")]
+    NotAnInstance(String),
+    /// The layer is a component already.
+    #[error("{0} is a component already")]
+    AlreadyAComponent(String),
+    /// The result would have a component inside another component.
+    #[error(
+        "{0}, and a component cannot be inside another component; put an instance of it there instead"
+    )]
+    NestedComponent(String),
+    /// An instance would end up inside the component it shows, directly or
+    /// through other components.
+    #[error(
+        "an instance of {component} cannot go in {place}: that is inside {component}, or inside a component that {component} shows, so it would show itself forever"
+    )]
+    ComponentLoop {
+        /// The component the instance would show.
+        component: String,
+        /// Where the instance was to go.
+        place: String,
+    },
     /// No fractional index could be made.
     #[error(transparent)]
     Index(#[from] IndexError),
@@ -125,6 +159,8 @@ pub enum GroupKind {
     Group,
     /// A `mask_group`: the backmost of the grouped layers masks the others.
     Mask,
+    /// A `component`: a group whose look and layers instances can show.
+    Component,
 }
 
 /// Space left between artboards that are laid out next to each other.
@@ -134,12 +170,19 @@ pub const ARTBOARD_GAP: f64 = 100.0;
 /// until a real image is chosen.
 pub const PLACEHOLDER_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=";
 
+/// The component a new instance from [`default_layer`] points at until a
+/// real one is chosen. No node has this id, so such an instance is refused
+/// until `component` is set; [`add_instance`] makes a ready one.
+pub const PLACEHOLDER_COMPONENT: &str = "COMPONENT_ID";
+
 /// Fill of a new shape: a neutral grey.
 const SHAPE_FILL: Color = Color::rgb(0xD9, 0xD9, 0xD9);
 
 /// A layer of the given type with sensible starting properties: shapes are
 /// 100 by 100 and grey, text says "Text" in black, an artboard is 1080 by
-/// 1080 and white, a path is a triangle, an image shows a transparent pixel.
+/// 1080 and white, a path is a triangle, an image shows a transparent pixel,
+/// a component is an empty box, and an instance points at
+/// [`PLACEHOLDER_COMPONENT`].
 ///
 /// `None` when `ty` is not a layer type.
 pub fn default_layer(ty: NodeType) -> Option<NodeData> {
@@ -187,6 +230,13 @@ pub fn default_layer(ty: NodeType) -> Option<NodeData> {
             fit: ImageFit::default(),
             stroke: None,
             corner_radius: CornerRadius::default(),
+        }
+        .into(),
+        NodeType::Component => Component::default().into(),
+        NodeType::Instance => Instance {
+            layer: LayerProps::default(),
+            component: NodeId::from(PLACEHOLDER_COMPONENT),
+            time_offset: 0.0,
         }
         .into(),
         _ => return None,
@@ -490,7 +540,7 @@ fn check_holds(parent: &Node, child: NodeType, child_label: String) -> Result<()
         _ if child == NodeType::Artboard => (false, "an artboard is a root and has no parent"),
         Family::Layer => (
             parent.node_type().holds_layers(),
-            "layers go in an artboard, a group or a mask_group",
+            "layers go in an artboard, a group, a mask_group or a component",
         ),
         Family::Animation => (
             parent.node_type().holds_animations(),
@@ -812,6 +862,7 @@ pub fn group(
     let (name, data): (&str, NodeData) = match kind {
         GroupKind::Group => ("Group", Group::default().into()),
         GroupKind::Mask => ("Mask group", MaskGroup::default().into()),
+        GroupKind::Component => ("Component", Component::default().into()),
     };
     let mut node = Node::new(data)
         .with_parent(parent)
@@ -930,9 +981,26 @@ pub fn ungroup(document: &Document, id: &NodeId) -> Result<Vec<Edit>, BuildError
 
 /// Edits that remove nodes, leaving out the ones that go anyway because a
 /// listed node contains them or is their target.
+///
+/// A component that goes, listed or inside a listed node, first has its
+/// instances detached (see [`detach`]), so that they keep their look as
+/// plain groups. It all happens in the one batch.
 pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
+    remove_with_losses(document, ids).0
+}
+
+/// [`remove`], with what detaching cannot keep of the look of each
+/// instance of `document` it detaches, in the order they are detached
+/// (see [`detach_losses`]): nothing for those that look the same.
+/// Detaching an instance can copy instances of other components that go
+/// out of its component, which are detached too; they are part of the
+/// group that takes its place, so what is lost there counts toward it.
+pub fn remove_with_losses(
+    document: &Document,
+    ids: &[NodeId],
+) -> (Vec<Edit>, Vec<(NodeId, Vec<DetachLoss>)>) {
     let listed: HashSet<&NodeId> = ids.iter().collect();
-    top_level(document, ids)
+    let removed: Vec<&NodeId> = top_level(document, ids)
         .into_iter()
         .filter(|id| document.contains(id))
         .filter(|id| {
@@ -948,8 +1016,10 @@ pub fn remove(document: &Document, ids: &[NodeId]) -> Vec<Edit> {
                             .any(|ancestor| listed.contains(&ancestor.id))
                 })
         })
-        .map(Edit::remove)
-        .collect()
+        .collect();
+    let (mut edits, losses) = component::detach_orphans(document, &removed);
+    edits.extend(removed.into_iter().map(Edit::remove));
+    (edits, losses)
 }
 
 /// A copy of `node` under a fresh id, recorded in `ids`.
@@ -961,6 +1031,10 @@ fn copy_of(node: &Node, ids: &mut HashMap<NodeId, NodeId>) -> Node {
 
 /// Edits that copy a layer with everything in it and every animation that
 /// targets the layer or something in it.
+///
+/// A component that is copied becomes a new component, and the instances
+/// copied with it show the new one; an instance copied without its
+/// component shows the same component as before.
 ///
 /// The copy of `root` goes under `parent` at `place` (for an artboard both
 /// are ignored: the copy is placed to the right of the existing artboards).
@@ -1037,6 +1111,12 @@ pub fn clone_subtree(
         if let Some(target) = copy.target().and_then(|target| ids.get(target)) {
             copy.data.set_target(target.clone());
         }
+        // A copied component is a new component, and the instances copied
+        // with it show the copy. Instances of components that were not
+        // copied keep showing the same one.
+        if let Some(component) = copy.component().and_then(|component| ids.get(component)) {
+            copy.data.set_component(component.clone());
+        }
     }
     Ok((copies.into_iter().map(Edit::add).collect(), ids))
 }
@@ -1048,6 +1128,8 @@ pub fn clone_subtree(
 /// is copied whole, to the right of the others. An animation is copied onto
 /// the next timeline row, aimed at the same layer; a folder is copied with
 /// its animations. Nodes inside another listed node are copied once, with it.
+/// The copies of instances show the copy of their component when it is
+/// duplicated along with them, and the same component otherwise.
 ///
 /// Returns the edits with a map from every copied node's id to the id of
 /// its copy.
@@ -1077,6 +1159,16 @@ pub fn duplicate(
     }
     if edits.is_empty() && ids.is_empty() {
         return Err(BuildError::Empty);
+    }
+    // A component duplicated in the same step as its instances is a new
+    // component, and the copies of those instances show it, as when they
+    // are copied in one group.
+    for edit in &mut edits {
+        if let Edit::Add { node } = edit
+            && let Some(main) = node.component().and_then(|main| map.get(main)).cloned()
+        {
+            node.data.set_component(main);
+        }
     }
     Ok((edits, map))
 }
@@ -1170,23 +1262,32 @@ mod tests {
     #[test]
     fn every_layer_type_has_a_valid_default() {
         let mut document = sample();
+        let mut component = None;
         for ty in NodeType::ALL
             .iter()
             .filter(|ty| ty.family() == Family::Layer)
         {
-            let data = default_layer(*ty).unwrap();
+            let mut data = default_layer(*ty).unwrap();
             assert_eq!(data.node_type(), *ty);
-            let edits = if *ty == NodeType::Artboard {
-                add_artboard(&document, "Next", 640.0, 360.0).unwrap().1
+            // An instance needs a real component: the one added before it.
+            if let (NodeData::Instance(instance), Some(component)) = (&mut data, &component) {
+                assert_eq!(instance.component, id(PLACEHOLDER_COMPONENT));
+                instance.component = NodeId::clone(component);
+            }
+            let (new, edits) = if *ty == NodeType::Artboard {
+                add_artboard(&document, "Next", 640.0, 360.0).unwrap()
             } else {
-                add_layer(&document, &id("ab"), data).unwrap().1
+                add_layer(&document, &id("ab"), data).unwrap()
             };
+            if *ty == NodeType::Component {
+                component = Some(new);
+            }
             document = applied(&document, &edits);
         }
         assert!(default_layer(NodeType::FadeIn).is_none());
         // Each new layer went in front of the one before.
         let layers = document.children(&id("ab"), Family::Layer);
-        assert_eq!(layers.len(), 2 + 8);
+        assert_eq!(layers.len(), 2 + 10);
         assert_eq!(layers[..2], [id("card"), id("loose")]);
     }
 

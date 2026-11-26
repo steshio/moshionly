@@ -23,6 +23,7 @@ There is nothing to keyframe and nothing breaks when you change the design later
 ## What it is built to do
 
 - **Canvas and layers**: artboards, rectangles, ellipses, stars, pen paths, text, images, groups and masks.
+- **Components**: make a reusable piece once, place copies of it anywhere, and edit the main one to change every copy, animations included. Each copy can play the motion a little later, for staggered effects.
 - **Styling**: solid and gradient fills, strokes, corner radius, shadow, blur, blend modes.
 - **Actions**: move, scale, rotate, opacity, resize, colour and more, plus ready-made presets (fade, slide, grow, shrink, spin, blur, reveal) and text animations by letter, word or line.
 - **Easing with one slider**: smooth, natural, slow down, accelerate, overshoot, elastic, bounce, or your own curve.
@@ -202,7 +203,8 @@ Next:
 
 - [ ] Run the Figma plugin inside Figma and polish the round trip
 - [ ] Publish the signed `.dmg` with each release, and open `.moshi` files by double-clicking them
-- [ ] Components, video and audio layers, shader effects
+- [x] Components: reusable pieces whose copies follow the main one, animations included
+- [ ] Video and audio layers, shader effects
 - [ ] Linux and Windows builds
 
 ## Contributing

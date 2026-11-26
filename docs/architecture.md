@@ -31,7 +31,7 @@ A document is a flat list of nodes. The tree is assembled from `parent`.
 ```json
 {
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -48,7 +48,8 @@ Rules:
 
 - `id` is a 12 character URL-safe random string, unique in the document.
 - Every node belongs to one of two families: **layers** and **animations**. The `type` decides the family.
-- Artboards are the roots (`parent: null`). A layer's parent is an artboard, a `group` or a `mask_group`. An animation's parent is an artboard or an `animation_group` in the same artboard, and its `target` is a layer (or the artboard) in that artboard.
+- Artboards are the roots (`parent: null`). A layer's parent is an artboard, a `group`, a `mask_group` or a `component`. An animation's parent is an artboard or an `animation_group` in the same artboard, and its `target` is a layer (or the artboard) in that artboard.
+- Nodes refer to each other in exactly three ways: `parent`, an animation's `target`, and an instance's `component`, which names a `component` layer in any artboard. A component is never inside another component, and never shows itself (it holds no instance of itself, directly or through other components). Code that copies nodes remaps all three.
 - `index` is a fractional index string. Siblings of the same family sort by `index` using plain string comparison. For layers, a larger index is drawn later, so it is in front. For animations the order is only the row order in the timeline.
 - Lengths are in pixels. Angles are in degrees, clockwise positive. Times are in milliseconds from the start of the artboard. Opacity is 0 to 100. Colours are `#RRGGBB` or `#RRGGBBAA`.
 - A layer's `x`, `y` is the position of its top-left corner in its parent's coordinate space. Rotation and scale happen around the centre of the layer's box.
@@ -56,9 +57,11 @@ Rules:
 
 ### Layers
 
-`artboard`, `group`, `mask_group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`.
+`artboard`, `group`, `mask_group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component`, `instance`.
 
 A `mask_group` uses its first child (lowest index) as an alpha mask for the rest. `group` can clip its children to its box.
+
+A `component` is a main component: it has the fields of a `group` and is drawn like one where it is. An `instance` shows it again: what the component draws itself (fill, stroke, corner radius, clip) and its layers, with the animations that target those layers, as the component looks `time_offset` milliseconds earlier, scaled to the instance's box. The component's own placement, effects and animations belong to where it is placed; the instance has its own. Instances hold no layers and have no per-instance changes yet. A `group` and a `component` can turn into each other by an update of `type`, which is how a group becomes a component in place.
 
 Shared layer properties: `name`, `x`, `y`, `width`, `height`, `rotation`, `scale`, `opacity`, `hidden`, `locked`, `blend_mode`, `blur`, `shadow`, `source_id`. Shapes add `fill`, `stroke` and, where it applies, `corner_radius`. A paint is a colour string or a linear or radial gradient object. `source_id` records where an imported layer came from (for example `figma:<file key>:<node id>`) so a design can be re-imported without losing its animations.
 
@@ -104,13 +107,15 @@ enum Edit {
 }
 ```
 
-`Document::apply(&[Edit]) -> Result<Vec<Edit>, EditError>` validates the whole batch, applies it atomically and returns the inverse batch. Moving or reordering a node is an `Update` of `parent` and `index`. `History` keeps undo and redo stacks of inverse batches. Interactive drags apply edits continuously and are merged into one undo step when the gesture ends.
+`Document::apply(&[Edit]) -> Result<Vec<Edit>, EditError>` validates the whole batch, applies it atomically and returns the inverse batch. Moving or reordering a node is an `Update` of `parent` and `index`. `id` and `type` are fixed, except that a `group` and a `component` can switch. The rules that span several nodes (the component rules above) are checked over the whole document at the end of a batch that touches a component or an instance or moves a node, so removing a component that instances still show is refused; `build::remove` detaches those instances first, into groups that look the same, in the same batch. Detaching cannot keep the look exactly in two cases, which `build::detach_losses` names: an instance resized out of proportion, and a negative `time_offset` while the component's animations are under way. `History` keeps undo and redo stacks of inverse batches. Interactive drags apply edits continuously and are merged into one undo step when the gesture ends.
 
 ## Evaluation and the scene
 
 `evaluate(&Document, artboard_id, time_ms, &dyn TextMeasurer) -> Scene`
 
 The `Scene` is a plain data tree with every value resolved for that instant: transforms, opacity, clip and mask, paints, shape geometry, text broken into drawable units, images and effects. It has no dependency on a graphics library and can be serialised. The renderer, the Lottie exporter and hit testing all read it.
+
+An instance is evaluated in place: its component's subtree is evaluated with the animations of the component's artboard at the instance's time minus its `time_offset` (not limited to 0, so an instance whose offset has not passed shows the component before its animations start), scaled to the instance's resting box (a `resize` animation on the instance changes its box like a group's, not the content's scale), and every scene node of it carries the instance's id, so hit testing, bounds and selection treat it as one layer. Nested instances are evaluated the same way, with a depth limit as a guard.
 
 Text needs fonts to be measured, and fonts belong to the renderer. Core therefore asks a `TextMeasurer` for line and glyph-cluster boxes when it needs to split text for per-letter, per-word or per-line animation.
 
@@ -126,7 +131,7 @@ Export steps through an artboard at `1000 / fps` millisecond intervals, renders 
 
 Every format runs as the same `ExportJob`: `plan()` checks the settings without writing anything, `run()` reports progress and stops when its `CancelToken` is cancelled, and the file is written under a temporary name and renamed into place only when it is complete. The editor's Export dialog, the agents' `export` tool and `moshionly export` all use it.
 
-Lottie export converts the scene model, not pixels. Layers become Lottie layers, text becomes outlines made with the renderer's own fonts, and animations become keyframes: linear and Bézier-shaped easings exactly, others fitted with a few curve pieces and checked against core's values. Anything Lottie cannot show exactly is reported as a warning that names the layer. `crates/moshionly-export/README.md` has the details.
+Lottie export converts the scene model, not pixels. It works on a copy of the document in which every instance is detached (`build::without_instances`), since Lottie has no instances. Layers become Lottie layers, text becomes outlines made with the renderer's own fonts, and animations become keyframes: linear and Bézier-shaped easings exactly, others fitted with a few curve pieces and checked against core's values. Anything Lottie cannot show exactly is reported as a warning that names the layer. `crates/moshionly-export/README.md` has the details.
 
 ## Agents
 
@@ -138,7 +143,7 @@ Lottie export converts the scene model, not pixels. Layers become Lottie layers,
 | `query_nodes` | Find nodes by type, name, parent or target and return chosen fields |
 | `get_node` | One node in full, with its box on the artboard and the animations that target it |
 | `get_schema` | The JSON Schema for a node type, with defaults |
-| `apply_edits` | An atomic batch of add, update, remove, move, clone and set-duration operations |
+| `apply_edits` | An atomic batch of add, update, remove, move, clone, set-duration, make-component and detach operations |
 | `screenshot` | Render an artboard or layer at a time, as a small PNG |
 | `evaluate` | The values of chosen properties of chosen layers at chosen times, as numbers |
 | `list_fonts` | The font families the renderer can use |
@@ -166,6 +171,8 @@ Screenshots, fonts and exports are supplied by the host through the agent crate'
 The open document lives in one `SessionHandle` from `moshionly-agent`, which holds the `Document` and its `History`. The editor, the built-in chat and the MCP server all work through that one handle, so an agent's edit appears on the canvas at once and the person can undo it. Around it the editor keeps view state: selection, current artboard, playhead, tool, zoom. The editor's rules (what a click selects, how a drag becomes edits, how an action is added) are plain functions tested without a window.
 
 Artboards are drawn by evaluating and rendering on worker threads and showing the result as a texture; while playing, the canvas may draw less sharp to keep up and returns to full sharpness when stopped. Exports run on their own thread with a progress bar and Cancel. A design sent from Figma, or pasted from the plugin's Copy button, is added at once as one undo step, with a toast saying what arrived: layers that came from the same Figma layers before are replaced and keep their animations, and the rest are added. Once six sent designs, or 32 MB of them, were added in the last minute, the rest wait (the one that crosses 32 MB is still added whole).
+
+Components work like the rest of the editor, through core's build helpers. Create component (⌥⌘K) turns the selection into a main component; Insert instance, or a row of the Components tab beside Layers (click, or drag it onto the canvas), places an instance, which is drawn by core and selected, moved and resized as one layer. Editing the main redraws every artboard that shows it, and resizing it resizes the instances that were its size in the same undo step (`build::instances_follow_mains`, which the agents' `update` uses too). Detach instance (⌥⌘B) turns an instance into a plain group, and deleting a main detaches its instances first and says how many.
 
 The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 

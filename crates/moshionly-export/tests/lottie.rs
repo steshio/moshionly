@@ -441,6 +441,72 @@ fn groups_clips_and_masks_keep_their_structure() {
     }
 }
 
+#[test]
+fn instances_bring_their_components_content_and_animations() {
+    let nodes = r##",{"id":"main","parent":"board","index":"a0","type":"component","name":"Main",
+            "x":10,"y":10,"width":200,"height":100}
+        ,{"id":"dot","parent":"main","index":"a0","type":"rect","name":"Dot",
+            "width":50,"height":50,"fill":"#FF0000"}
+        ,{"id":"copy","parent":"board","index":"a1","type":"instance","name":"Copy",
+            "component":"main","x":500,"y":10,"width":200,"height":100,"time_offset":500}
+        ,{"id":"wide","parent":"board","index":"a2","type":"instance","name":"Wide",
+            "component":"main","x":10,"y":300,"width":400,"height":100}
+        ,{"id":"go","parent":"board","index":"a0","type":"move","target":"dot",
+            "start":0,"end":1000,"to":{"x":100},"easing":{"type":"linear"}}"##;
+    let (lottie, exported) = export_document(document(2000.0, nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    assert!(
+        said.contains("\"Wide\" is an instance resized out of proportion"),
+        "{said}"
+    );
+    assert_eq!(exported.warnings.len(), 1, "{said}");
+
+    // The component, and each instance as a group of its own copies.
+    let layers = all_layers(&lottie);
+    let dots: Vec<&Value> = layers
+        .iter()
+        .copied()
+        .filter(|layer| layer["nm"] == "Dot")
+        .collect();
+    assert_eq!(dots.len(), 3);
+    let dot_in = |group: &str| {
+        let index = &any_layer(&lottie, group)["ind"];
+        *dots
+            .iter()
+            .find(|dot| dot["parent"] == *index)
+            .unwrap_or_else(|| panic!("no dot in {group}"))
+    };
+    let fps = lottie["fr"].as_f64().unwrap();
+    let moved = |dot: &Value, ms: f64| position(dot, ms / 1000.0 * fps)[0] - position(dot, 0.0)[0];
+    let (main, copy) = (dot_in("Main"), dot_in("Copy"));
+    assert!((moved(main, 1000.0) - 100.0).abs() < 0.5);
+    // The copy plays 500 ms later.
+    assert!(moved(copy, 500.0).abs() < 0.5);
+    assert!((moved(copy, 1000.0) - 50.0).abs() < 0.5);
+    assert!((moved(copy, 1500.0) - 100.0).abs() < 0.5);
+}
+
+#[test]
+fn an_instance_that_starts_part_way_through_its_animations_is_warned_about() {
+    // "Early" starts 500 ms into the move; by the time "Late" starts, 1500
+    // ms in, the move is over.
+    let nodes = r##",{"id":"main","parent":"board","index":"a0","type":"component","name":"Main",
+            "x":10,"y":10,"width":200,"height":100}
+        ,{"id":"dot","parent":"main","index":"a0","type":"rect","name":"Dot",
+            "width":50,"height":50,"fill":"#FF0000"}
+        ,{"id":"early","parent":"board","index":"a1","type":"instance","name":"Early",
+            "component":"main","x":500,"y":10,"width":200,"height":100,"time_offset":-500}
+        ,{"id":"late","parent":"board","index":"a2","type":"instance","name":"Late",
+            "component":"main","x":10,"y":300,"width":200,"height":100,"time_offset":-1500}
+        ,{"id":"go","parent":"board","index":"a0","type":"move","target":"dot",
+            "start":0,"end":1000,"to":{"x":100},"easing":{"type":"linear"}}"##;
+    let (_, exported) = export_document(document(2000.0, nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    assert!(said.contains("\"Early\" is an instance"), "{said}");
+    assert!(said.contains("squeezed"), "{said}");
+    assert_eq!(exported.warnings.len(), 1, "{said}");
+}
+
 /// The layer named `name` anywhere in the file: at the top or in a
 /// precomposition.
 fn any_layer<'a>(lottie: &'a Value, name: &str) -> &'a Value {

@@ -4,6 +4,7 @@
 //! the person did; the edits are made after each section is drawn.
 
 use egui::Ui;
+use moshionly_core::build::instances_follow_mains;
 use moshionly_core::model::{
     BlendMode, Gradient, GradientStop, LayerProps, LinearGradient, NodeData, Paint, RadialGradient,
     Shadow, Stroke, StrokePosition,
@@ -11,7 +12,7 @@ use moshionly_core::model::{
 use moshionly_core::{Color, Edit, Node, NodeType, schema};
 use serde_json::{Value, json};
 
-use super::{Bind, numeric, text};
+use super::{Bind, component, numeric, text};
 use crate::{
     editor::{
         inspect::{
@@ -103,6 +104,7 @@ fn value_of<T: serde::Serialize>(value: &T) -> Value {
 }
 
 pub(super) fn design_tab(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
+    component::component_section(ui, bind, inspected);
     if inspected.all_of(NodeType::Artboard) {
         artboard_section(ui, bind, inspected);
     }
@@ -409,14 +411,22 @@ fn layout_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
                     let ok = working.apply(&edits).is_ok();
                     (edits, working, ok)
                 });
-                bind.field(&response, "Resize", || match inside {
-                    Some((settle, working, true)) => [
-                        settle,
-                        resize_all(&framed, value, height, keep),
-                        stretch_contents(&working, &framed, value, height, keep),
-                    ]
-                    .concat(),
-                    _ => settled(resize_all(&framed, value, height, keep)),
+                // Instances the size of a resized main when the edit began
+                // follow it.
+                let before = bind.began();
+                bind.field(&response, "Resize", || {
+                    let mut edits = match inside {
+                        Some((settle, working, true)) => [
+                            settle,
+                            resize_all(&framed, value, height, keep),
+                            stretch_contents(&working, &framed, value, height, keep),
+                        ]
+                        .concat(),
+                        _ => settled(resize_all(&framed, value, height, keep)),
+                    };
+                    let follow = instances_follow_mains(&before, &edits);
+                    edits.extend(follow);
+                    edits
                 });
             }
             Field::Rotation => bind.field(&response, "Rotate", || {

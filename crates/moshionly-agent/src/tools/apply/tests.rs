@@ -866,3 +866,5 @@ fn an_artboard_is_cloned_to_the_right_with_its_timeline() {
     );
     assert_eq!(error["field"], "parent");
 }
+
+mod components;

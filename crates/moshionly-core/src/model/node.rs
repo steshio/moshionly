@@ -14,8 +14,8 @@ use super::animation::{
     Timing,
 };
 use super::layer::{
-    Artboard, EllipseLayer, Group, ImageLayer, LayerProps, MaskGroup, PathLayer, RectLayer,
-    StarLayer, TextLayer,
+    Artboard, Component, EllipseLayer, Group, ImageLayer, Instance, LayerProps, MaskGroup,
+    PathLayer, RectLayer, StarLayer, TextLayer,
 };
 use super::paint::{CornerRadius, Paint, Stroke};
 use crate::defaults;
@@ -71,6 +71,10 @@ pub enum NodeData {
     Text(TextLayer),
     /// A bitmap image.
     Image(ImageLayer),
+    /// A main component, whose look and content instances show.
+    Component(Component),
+    /// A copy of a main component.
+    Instance(Instance),
 
     /// Shifts a layer from its resting position.
     Move(MoveAnimation),
@@ -215,6 +219,8 @@ node_types! {
     Path, "path", layer, "A pen-drawn shape made of straight and curved segments.";
     Text, "text", layer, "A block of text in one font and style.";
     Image, "image", layer, "A bitmap image from a file or a data URI.";
+    Component, "component", layer, "A main component: a group whose look, layers and their animations every instance of it shows; edit it and every instance changes.";
+    Instance, "instance", layer, "A copy of a main component: shows its look, layers and animations, time_offset milliseconds later; holds no layers of its own.";
 
     Move, "move", property, "Shifts a layer by an offset from its resting position. Additive: several moves add up.";
     Rotate, "rotate", property, "Turns a layer by an angle added to its resting rotation. Additive: several rotations add up.";
@@ -270,7 +276,7 @@ impl NodeType {
     pub fn holds_layers(self) -> bool {
         matches!(
             self,
-            NodeType::Artboard | NodeType::Group | NodeType::MaskGroup
+            NodeType::Artboard | NodeType::Group | NodeType::MaskGroup | NodeType::Component
         )
     }
 
@@ -309,6 +315,8 @@ impl NodeData {
             NodeData::Path(_) => NodeType::Path,
             NodeData::Text(_) => NodeType::Text,
             NodeData::Image(_) => NodeType::Image,
+            NodeData::Component(_) => NodeType::Component,
+            NodeData::Instance(_) => NodeType::Instance,
             NodeData::Move(_) => NodeType::Move,
             NodeData::Rotate(_) => NodeType::Rotate,
             NodeData::Scale(_) => NodeType::Scale,
@@ -359,6 +367,8 @@ impl NodeData {
             NodeData::Path(n) => Some(&n.layer),
             NodeData::Text(n) => Some(&n.layer),
             NodeData::Image(n) => Some(&n.layer),
+            NodeData::Component(n) => Some(&n.layer),
+            NodeData::Instance(n) => Some(&n.layer),
             _ => None,
         }
     }
@@ -375,6 +385,8 @@ impl NodeData {
             NodeData::Path(n) => Some(&mut n.layer),
             NodeData::Text(n) => Some(&mut n.layer),
             NodeData::Image(n) => Some(&mut n.layer),
+            NodeData::Component(n) => Some(&mut n.layer),
+            NodeData::Instance(n) => Some(&mut n.layer),
             _ => None,
         }
     }
@@ -389,6 +401,7 @@ impl NodeData {
             NodeData::Star(n) => n.fill.as_ref(),
             NodeData::Path(n) => n.fill.as_ref(),
             NodeData::Text(n) => n.fill.as_ref(),
+            NodeData::Component(n) => n.fill.as_ref(),
             _ => None,
         }
     }
@@ -403,6 +416,7 @@ impl NodeData {
             NodeData::Path(n) => n.stroke.as_ref(),
             NodeData::Text(n) => n.stroke.as_ref(),
             NodeData::Image(n) => n.stroke.as_ref(),
+            NodeData::Component(n) => n.stroke.as_ref(),
             _ => None,
         }
     }
@@ -413,6 +427,7 @@ impl NodeData {
             NodeData::Group(n) => Some(n.corner_radius),
             NodeData::Rect(n) => Some(n.corner_radius),
             NodeData::Image(n) => Some(n.corner_radius),
+            NodeData::Component(n) => Some(n.corner_radius),
             _ => None,
         }
     }
@@ -496,6 +511,25 @@ impl NodeData {
         }
     }
 
+    /// The main component an instance shows. `None` for every other node.
+    ///
+    /// Next to `parent` and `target`, this is the third way a node refers
+    /// to another.
+    pub fn component(&self) -> Option<&NodeId> {
+        match self {
+            NodeData::Instance(instance) => Some(&instance.component),
+            _ => None,
+        }
+    }
+
+    /// Points an instance at another component. Does nothing for other
+    /// nodes.
+    pub fn set_component(&mut self, component: NodeId) {
+        if let NodeData::Instance(instance) = self {
+            instance.component = component;
+        }
+    }
+
     /// Start and end of an animation in milliseconds. Instants start and end
     /// at the same moment. `None` for layers and animation groups.
     pub fn span(&self) -> Option<(f64, f64)> {
@@ -547,6 +581,8 @@ node_data_from! {
     PathLayer => Path,
     TextLayer => Text,
     ImageLayer => Image,
+    Component => Component,
+    Instance => Instance,
     MoveAnimation => Move,
     RotateAnimation => Rotate,
     ScaleAnimation => Scale,
@@ -627,6 +663,11 @@ impl Node {
     /// The layer an animation changes. `None` for layers and animation groups.
     pub fn target(&self) -> Option<&NodeId> {
         self.data.target()
+    }
+
+    /// The main component an instance shows. `None` for every other node.
+    pub fn component(&self) -> Option<&NodeId> {
+        self.data.component()
     }
 
     /// The name given to the node, which may be empty.
@@ -777,6 +818,9 @@ mod tests {
                     "line_height": 100, "letter_spacing": -2, "align": "center", "vertical_align": "bottom",
                     "auto_size": "fixed", "case": "upper", "fill": "#000000" }),
             json!({ "type": "image", "source": "assets/photo.png", "fit": "contain", "corner_radius": 12 }),
+            json!({ "type": "component", "name": "Button", "clip": true, "corner_radius": 8, "fill": "#0D99FF",
+                    "stroke": { "width": 1 } }),
+            json!({ "type": "instance", "component": "m1", "time_offset": -150, "width": 240 }),
         ];
         for mut layer in layers {
             let fields = layer.as_object_mut().unwrap();
@@ -813,6 +857,11 @@ mod tests {
         assert!(base(json!({ "type": "rect", "x": "left" })).contains("invalid type"));
         assert!(base(json!({ "type": "rect", "fill": "blue" })).contains("not a colour"));
         assert!(base(json!({ "type": "image" })).contains("missing field `source`"));
+        assert!(base(json!({ "type": "instance" })).contains("missing field `component`"));
+        assert!(
+            base(json!({ "type": "instance", "component": "m1", "fill": "#FFFFFF" }))
+                .contains("fill")
+        );
         assert!(base(json!({})).contains("missing field `type`"));
     }
 
@@ -825,7 +874,12 @@ mod tests {
         }
         assert_eq!(NodeType::parse("nope"), None);
         assert!(NodeType::Group.holds_layers());
+        assert!(NodeType::Component.holds_layers());
         assert!(!NodeType::Rect.holds_layers());
+        assert!(
+            !NodeType::Instance.holds_layers(),
+            "an instance shows its main's layers"
+        );
     }
 
     #[test]
@@ -1040,6 +1094,6 @@ mod tests {
             !NodeType::TextIn.is_entrance(),
             "text animations are their own kind"
         );
-        assert_eq!(NodeType::ALL.len(), 39);
+        assert_eq!(NodeType::ALL.len(), 41);
     }
 }

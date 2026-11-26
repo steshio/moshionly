@@ -16,10 +16,12 @@ pub(super) struct BarLook {
     pub hovered: bool,
     /// The bar's layer is hidden or locked: drawn faded.
     pub faded: bool,
+    /// The bar only shows something and cannot be resized: no grips.
+    pub fixed: bool,
 }
 
 /// Paints one action bar: a rounded tile in its tone with the action's name
-/// and a grip mark at each end.
+/// and, unless it is fixed, a grip mark at each end.
 pub(super) fn paint_bar(
     ui: &Ui,
     painter: &Painter,
@@ -54,7 +56,7 @@ pub(super) fn paint_bar(
 
     // Grip marks, where there is room for them.
     let grip_inset = 5.0;
-    let grips = rect.width() >= 28.0;
+    let grips = rect.width() >= 28.0 && !look.fixed;
     if grips {
         let grip_ink = fade(if look.selected {
             t.on_solid.gamma_multiply(0.7)

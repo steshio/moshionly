@@ -1,7 +1,9 @@
 //! Things worth telling the model about a node it just placed, although
 //! nothing is wrong with the file: a shape nobody will see, an animation
-//! that runs past the end of the timeline.
+//! that runs past the end of the timeline, a detached instance that does
+//! not look quite the same.
 
+use moshionly_core::build::DetachLoss;
 use moshionly_core::eval::duration_of;
 use moshionly_core::{NodeData, NodeId, NodeType};
 
@@ -72,4 +74,11 @@ pub(super) fn animation(batch: &mut Batch, id: &NodeId) {
         );
         batch.warnings.push(message);
     }
+}
+
+/// Why the group a detached instance became does not look quite the same,
+/// in one clause.
+pub(super) fn losses(losses: &[DetachLoss]) -> String {
+    let reasons: Vec<String> = losses.iter().map(ToString::to_string).collect();
+    reasons.join(", and ")
 }

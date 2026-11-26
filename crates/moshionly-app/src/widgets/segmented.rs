@@ -103,7 +103,7 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str
 
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(total, height), Sense::hover());
     let mut x = rect.left();
-    for (index, ((option, _), galley)) in options.iter().zip(galleys).enumerate() {
+    for (index, ((option, label), galley)) in options.iter().zip(galleys).enumerate() {
         let width = galley.size().x;
         let cell = Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(width, height));
         let cell_response = ui.interact(
@@ -112,6 +112,8 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str
             Sense::click(),
         );
         let selected = *value == *option;
+        cell_response
+            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, *label));
         let ink = if selected || cell_response.hovered() {
             c.text
         } else {

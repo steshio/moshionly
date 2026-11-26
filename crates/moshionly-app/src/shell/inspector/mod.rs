@@ -8,13 +8,16 @@
 
 mod action;
 mod animate;
+mod component;
 mod design;
 mod easing;
 mod text;
 mod values;
 
+use std::sync::Arc;
+
 use egui::{RichText, ScrollArea, Ui};
-use moshionly_core::Edit;
+use moshionly_core::{Document, Edit};
 
 use crate::{
     editor::{
@@ -51,6 +54,9 @@ pub struct InspectorState {
     /// A field's change is being recorded as one undo step, for the
     /// layers selected when it began.
     editing: Option<Vec<moshionly_core::NodeId>>,
+    /// The document when that change began: each of its steps is worked
+    /// out from there, such as which instances follow a resized main.
+    began: Option<Arc<Document>>,
     /// The font families the renderer can draw, looked up once.
     families: Vec<moshionly_render::FontFamily>,
     /// Milliseconds between actions added to several layers at once, and
@@ -72,6 +78,7 @@ impl Default for InspectorState {
             keep_proportions: false,
             open: Sections::default(),
             editing: None,
+            began: None,
             families: Vec::new(),
             stagger: 100.0,
         }
@@ -81,6 +88,7 @@ impl Default for InspectorState {
 /// Which sections of the inspector are open.
 #[derive(Clone, Copy, Debug)]
 struct Sections {
+    component: bool,
     artboard: bool,
     layout: bool,
     appearance: bool,
@@ -99,6 +107,7 @@ struct Sections {
 impl Default for Sections {
     fn default() -> Self {
         Self {
+            component: true,
             artboard: true,
             layout: true,
             appearance: true,
@@ -123,6 +132,9 @@ pub(super) struct InspectorOutput {
     pub error: Option<String>,
     /// The person asked to choose another image for the selected images.
     pub replace_image: bool,
+    /// Commands asked for with the inspector's buttons, such as going to
+    /// the main component of the selected instance.
+    pub commands: Vec<crate::commands::CommandId>,
 }
 
 /// The inspector's view of the editor for one frame.
@@ -147,12 +159,20 @@ impl Bind<'_> {
             if self.state.editing.is_none() {
                 self.editor.begin_gesture(summary);
                 self.state.editing = Some(self.editor.selection.ids().to_vec());
+                self.state.began = Some(Arc::clone(self.editor.document()));
             }
             self.apply(summary, &edits());
         }
         if finished && self.state.editing.take().is_some() {
+            self.state.began = None;
             self.editor.commit_gesture();
         }
+    }
+
+    /// The document as it was when the change being recorded began, or
+    /// as it is when none is.
+    fn began(&self) -> Arc<Document> {
+        Arc::clone(self.state.began.as_ref().unwrap_or(self.editor.document()))
     }
 
     /// Applies what a numeric field did, as one undo step.
@@ -220,8 +240,10 @@ fn end_stale_edit(state: &mut InspectorState, editor: &mut Editor, canvas_gestur
     };
     if !editor.in_gesture() || canvas_gesture {
         state.editing = None;
+        state.began = None;
     } else if began.as_slice() != editor.selection.ids() {
         state.editing = None;
+        state.began = None;
         editor.commit_gesture();
     }
 }
@@ -252,7 +274,7 @@ pub(super) fn inspector(
     ui.add_space(theme.space.md);
     divider(ui);
 
-    let document = std::sync::Arc::clone(editor.document());
+    let document = Arc::clone(editor.document());
     let ids = editor.selection.ids().to_vec();
     let Some(first) = ids.first().and_then(|id| document.get(id)) else {
         empty_state(
@@ -317,6 +339,7 @@ mod tests {
         editor.selection.select(id("loose"));
         editor.begin_gesture("Change opacity");
         state.editing = Some(editor.selection.ids().to_vec());
+        state.began = Some(Arc::clone(editor.document()));
         editor
             .apply("Change opacity", &[Edit::set("loose", "opacity", 50.0)])
             .unwrap();
@@ -326,7 +349,7 @@ mod tests {
         // Another selection: the step is closed and forgotten.
         editor.selection.select(id("card"));
         end_stale_edit(&mut state, &mut editor, false);
-        assert!(state.editing.is_none());
+        assert!(state.editing.is_none() && state.began.is_none());
         assert!(!editor.in_gesture());
         assert_eq!(editor.undo_label().as_deref(), Some("Undo Change opacity"));
     }
@@ -338,8 +361,9 @@ mod tests {
         editor.selection.select(id("loose"));
         // An undo closed the step.
         state.editing = Some(editor.selection.ids().to_vec());
+        state.began = Some(Arc::clone(editor.document()));
         end_stale_edit(&mut state, &mut editor, false);
-        assert!(state.editing.is_none());
+        assert!(state.editing.is_none() && state.began.is_none());
         // A drag on the canvas opened a step of its own: it is left alone.
         state.editing = Some(vec![id("card")]);
         editor.begin_gesture("Move");

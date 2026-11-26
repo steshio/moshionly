@@ -35,16 +35,19 @@ pub enum Tone {
     Amber,
     /// Pink-red.
     Rose,
+    /// Purple: main components and their instances.
+    Violet,
 }
 
 impl Tone {
     /// Every tone, in display order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Neutral,
         Self::Accent,
         Self::Teal,
         Self::Amber,
         Self::Rose,
+        Self::Violet,
     ];
 }
 
@@ -131,7 +134,7 @@ pub struct Palette {
     pub checker_dark: Color32,
 
     /// The tone table, indexed by [`Tone`] in declaration order.
-    pub tones: [ToneColors; 5],
+    pub tones: [ToneColors; 6],
 }
 
 impl Palette {
@@ -396,6 +399,13 @@ pub(super) const LIGHT_PALETTE: Palette = Palette {
             text: rgb(0xBC316A),
             on_solid: rgb(0xFFFFFF),
         },
+        ToneColors {
+            solid: rgb(0x9747FF),
+            soft: rgb(0xF3EBFF),
+            outline: rgb(0xD3B5FF),
+            text: rgb(0x7B2BE0),
+            on_solid: rgb(0xFFFFFF),
+        },
     ],
 };
 
@@ -470,6 +480,13 @@ pub(super) const DARK_PALETTE: Palette = Palette {
             outline: rgb(0x8C4263),
             text: rgb(0xF5A9C8),
             on_solid: rgb(0x2E0B1B),
+        },
+        ToneColors {
+            solid: rgb(0xA66BFF),
+            soft: rgb(0x3B2C55),
+            outline: rgb(0x6C4CA6),
+            text: rgb(0xCDB2FF),
+            on_solid: rgb(0x1C0B33),
         },
     ],
 };

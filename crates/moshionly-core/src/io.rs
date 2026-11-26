@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "moshionly",
-//!   "version": 1,
+//!   "version": 2,
 //!   "name": "Launch teaser",
 //!   "nodes": [
 //!     {"id":"ab12","parent":null,"index":"a0","type":"artboard","name":"Scene 1"},
@@ -37,7 +37,11 @@ use crate::validate::Problem;
 pub const FORMAT: &str = "moshionly";
 
 /// The format version this build reads and writes.
-pub const VERSION: u32 = 1;
+///
+/// Version 2 added the `component` and `instance` layer types. Files of
+/// version 1 read as they are; an older build asked to open a version 2
+/// file says to update Moshionly instead of failing on an unknown type.
+pub const VERSION: u32 = 2;
 
 /// The file extension of project files, without the dot.
 pub const EXTENSION: &str = "moshi";
@@ -127,9 +131,12 @@ type Migration = fn(&mut Map<String, Value>) -> Result<(), String>;
 /// rewrites the raw JSON, so it keeps working however the Rust types change
 /// afterwards.
 fn migration_from(version: u32) -> Option<Migration> {
-    // Version 1 is the first version: nothing to upgrade from yet.
-    let _ = version;
-    None
+    match version {
+        // Version 2 only added node types, so a version 1 file is a valid
+        // version 2 file as it is.
+        1 => Some(|_| Ok(())),
+        _ => None,
+    }
 }
 
 /// Brings a file's JSON from version `from` up to `to`, one step at a time.
@@ -523,7 +530,7 @@ mod tests {
     /// The example from the architecture document.
     const EXAMPLE: &str = r##"{
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -536,7 +543,7 @@ mod tests {
 }"##;
 
     fn file(nodes: Value) -> Value {
-        json!({ "format": "moshionly", "version": 1, "name": "Test", "nodes": nodes })
+        json!({ "format": "moshionly", "version": VERSION, "name": "Test", "nodes": nodes })
     }
 
     #[test]
@@ -549,7 +556,7 @@ mod tests {
             text,
             r##"{
   "format": "moshionly",
-  "version": 1,
+  "version": 2,
   "name": "Launch teaser",
   "nodes": [
     {"id":"ab12","parent":null,"index":"a0","type":"artboard","name":"Scene 1","width":1080,"height":1080,"fill":"#FFFFFF"},
@@ -590,7 +597,7 @@ mod tests {
         let text = to_string(&empty);
         assert_eq!(
             text,
-            "{\n  \"format\": \"moshionly\",\n  \"version\": 1,\n  \"name\": \"Nothing \\\"yet\\\"\",\n  \"nodes\": []\n}\n"
+            "{\n  \"format\": \"moshionly\",\n  \"version\": 2,\n  \"name\": \"Nothing \\\"yet\\\"\",\n  \"nodes\": []\n}\n"
         );
         assert_eq!(parse(&text).unwrap(), empty);
     }
@@ -639,6 +646,15 @@ mod tests {
         let older =
             from_value(json!({ "format": "moshionly", "version": 0, "nodes": [] })).unwrap_err();
         assert!(matches!(older, LoadError::Migration { found: 0, .. }));
+    }
+
+    #[test]
+    fn version_one_files_load_and_save_as_version_two() {
+        let old = EXAMPLE.replace("\"version\": 2", "\"version\": 1");
+        let document = parse(&old).unwrap();
+        assert_eq!(document, parse(EXAMPLE).unwrap());
+        assert!(to_string(&document).contains("\n  \"version\": 2,\n"));
+        assert_eq!(to_value(&document)["version"], json!(2));
     }
 
     #[test]

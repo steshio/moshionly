@@ -99,6 +99,47 @@ impl Document {
         animations
     }
 
+    /// Every instance that shows the component `component`, in tree order.
+    ///
+    /// Only instances that name it directly are listed, not the ones that
+    /// show it through other components.
+    pub fn instances_of(&self, component: &NodeId) -> Vec<&Node> {
+        self.nodes()
+            .filter(|node| node.component() == Some(component))
+            .collect()
+    }
+
+    /// The main component a layer is part of: its nearest ancestor that is
+    /// a `component`. `None` for a layer outside every component, and for a
+    /// component itself unless it sits (against the rules) inside another.
+    pub fn enclosing_component(&self, id: &NodeId) -> Option<&Node> {
+        self.ancestors(id)
+            .find(|ancestor| ancestor.node_type() == NodeType::Component)
+    }
+
+    /// Whether the component `component` shows the component `other`: it
+    /// holds an instance of `other`, or of a component that shows `other`,
+    /// and so on. A component does not show itself unless the document
+    /// breaks the rules.
+    pub fn component_shows(&self, component: &NodeId, other: &NodeId) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![component];
+        while let Some(next) = pending.pop() {
+            if !seen.insert(next) {
+                continue;
+            }
+            for (_, layer) in self.walk(next, Family::Layer) {
+                if let Some(shown) = layer.component() {
+                    if shown == other {
+                        return true;
+                    }
+                    pending.push(shown);
+                }
+            }
+        }
+        false
+    }
+
     /// Every node with exactly this name, in tree order.
     pub fn find_by_name(&self, name: &str) -> Vec<&Node> {
         self.nodes().filter(|node| node.name() == name).collect()

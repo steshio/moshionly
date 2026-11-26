@@ -145,6 +145,10 @@ commands! {
     BringForward: Edit, "Bring forward", None, cmd(Key::CloseBracket);
     SendBackward: Edit, "Send backward", None, cmd(Key::OpenBracket);
     SendToBack: Edit, "Send to back", Some(icons::STACK_SIMPLE), cmd_alt(Key::OpenBracket);
+    CreateComponent: Edit, "Create component", Some(icons::DIAMONDS_FOUR), cmd_alt(Key::K);
+    InsertInstance: Edit, "Insert instance", Some(icons::DIAMOND), None;
+    GoToMainComponent: Edit, "Go to main component", Some(icons::ARROW_SQUARE_OUT), None;
+    DetachInstance: Edit, "Detach instance", Some(icons::LINK_SIMPLE_BREAK), cmd_alt(Key::B);
 
     ZoomIn: View, "Zoom in", Some(icons::MAGNIFYING_GLASS_PLUS), cmd(Key::Plus);
     ZoomOut: View, "Zoom out", Some(icons::MAGNIFYING_GLASS_MINUS), cmd(Key::Minus);

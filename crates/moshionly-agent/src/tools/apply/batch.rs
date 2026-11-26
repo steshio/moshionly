@@ -52,12 +52,19 @@ pub(super) struct Batch {
     pub created: Vec<Value>,
     /// Number of nodes changed by `update`.
     pub updated: usize,
+    /// Number of instances resized along with their component by `update`.
+    pub followed: usize,
     /// Number of nodes put somewhere else by `move`.
     pub moved: usize,
     /// Number of nodes that went, counting what went along.
     pub removed: usize,
     /// Number of artboards whose duration was set.
     pub durations: usize,
+    /// Number of components made.
+    pub components: usize,
+    /// Number of instances detached, by detach and by removing their
+    /// component.
+    pub detached: usize,
     /// Things the model should know although nothing failed.
     pub warnings: Vec<String>,
 }
@@ -73,9 +80,12 @@ impl Batch {
             temp: HashMap::new(),
             created: Vec::new(),
             updated: 0,
+            followed: 0,
             moved: 0,
             removed: 0,
             durations: 0,
+            components: 0,
+            detached: 0,
             warnings: Vec::new(),
         }
     }
@@ -315,6 +325,10 @@ impl Batch {
         let mut added = [0usize; 2];
         let mut copied = [0usize; 2];
         for entry in &self.created {
+            // Made from what was there; counted on their own below.
+            if entry.get("component").is_some() || entry.get("detached_from").is_some() {
+                continue;
+            }
             let family = entry["type"]
                 .as_str()
                 .and_then(NodeType::parse)
@@ -345,6 +359,12 @@ impl Batch {
         if self.updated > 0 {
             parts.push(format!("change {}", count(self.updated, "node", "nodes")));
         }
+        if self.followed > 0 {
+            parts.push(format!(
+                "resize {} to match",
+                count(self.followed, "instance", "instances")
+            ));
+        }
         if self.moved > 0 {
             parts.push(format!("move {}", count(self.moved, "node", "nodes")));
         }
@@ -353,6 +373,18 @@ impl Batch {
         }
         if self.durations > 0 {
             parts.push("set the duration".to_owned());
+        }
+        if self.components > 0 {
+            parts.push(format!(
+                "make {}",
+                count(self.components, "component", "components")
+            ));
+        }
+        if self.detached > 0 {
+            parts.push(format!(
+                "detach {}",
+                count(self.detached, "instance", "instances")
+            ));
         }
         let mut summary = match parts.as_slice() {
             [] => "Change nothing".to_owned(),

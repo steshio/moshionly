@@ -316,7 +316,7 @@ mod tests {
             json!({ "type": "corner_radius" }),
         );
         assert!(
-            text.contains("\nWorks on these layer types: group, rect, image.\n"),
+            text.contains("\nWorks on these layer types: group, rect, image, component.\n"),
             "{text}"
         );
     }

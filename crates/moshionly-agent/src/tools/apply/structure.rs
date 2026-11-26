@@ -1,6 +1,6 @@
 //! The operations that rearrange the tree: `move` and `clone`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use moshionly_core::build::{self, Place};
 use moshionly_core::{Edit, Family, Node, NodeData, NodeId, NodeType};
@@ -132,7 +132,8 @@ pub(super) fn clone(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
         clone_animation(batch, args, &id)?
     };
     if time_offset != 0.0 {
-        shift_animations(args, &mut edits, time_offset)?;
+        let copied: HashSet<&NodeId> = copies.values().collect();
+        shift_animations(args, &mut edits, time_offset, &copied)?;
     }
     let Some(top) = edits.first().map(|edit| edit.node_id().clone()) else {
         return Err(ToolError::Rejected("There was nothing to copy.".to_owned()));
@@ -313,8 +314,14 @@ fn read_offset(args: &Args) -> Result<(f64, f64), ToolError> {
 }
 
 /// Moves every copied animation `by` milliseconds later (earlier when
-/// negative).
-fn shift_animations(args: &Args, edits: &mut [Edit], by: f64) -> Result<(), ToolError> {
+/// negative), and so what every copied instance plays: `copied` holds the
+/// ids of the copies.
+fn shift_animations(
+    args: &Args,
+    edits: &mut [Edit],
+    by: f64,
+    copied: &HashSet<&NodeId>,
+) -> Result<(), ToolError> {
     for edit in edits.iter_mut() {
         let Edit::Add { node } = edit else { continue };
         let what = match node.name() {
@@ -322,6 +329,15 @@ fn shift_animations(args: &Args, edits: &mut [Edit], by: f64) -> Result<(), Tool
             name => format!("{} ({name})", node.node_type()),
         };
         let start = match &mut node.data {
+            // A copied instance plays its component's animations later too,
+            // unless that component was copied along: its animations moved
+            // already.
+            NodeData::Instance(instance) => {
+                if !copied.contains(&instance.component) {
+                    instance.time_offset += by;
+                }
+                continue;
+            }
             NodeData::Show(instant) | NodeData::Hide(instant) => {
                 instant.start += by;
                 if let Some(end) = &mut instant.end {

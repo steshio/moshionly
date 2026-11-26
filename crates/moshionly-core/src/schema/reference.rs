@@ -392,7 +392,7 @@ mod tests {
                 .contains("| `align` | `\"left\"`, `\"center\"` or `\"right\"` | `\"left\"` |")
         );
         assert!(reference.contains("| `blend_mode` | [blend_mode](#blend_mode) | `\"normal\"` |"));
-        assert!(reference.contains("| `corner_radius` | `group`, `rect`, `image` |"));
+        assert!(reference.contains("| `corner_radius` | `group`, `rect`, `image`, `component` |"));
         assert!(
             reference
                 .contains("With `\"type\": \"linear_gradient\"`: Colours change along a line.")

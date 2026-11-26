@@ -274,10 +274,27 @@ impl<'a> Timeline<'a> {
                     }
                     if let Some(span) = group.span() {
                         let bar_rect = layout.bar_rect(index, span.0, span.1);
-                        let sense = if group.locked {
-                            Sense::hover()
-                        } else {
+                        // The summary stands for the group's actions, not
+                        // for bars that only show something.
+                        let all: Vec<Key> = group
+                            .bars
+                            .iter()
+                            .filter(|bar| !bar.fixed)
+                            .map(|bar| bar.key.clone())
+                            .collect();
+                        // What a drag of the summary moves, and so what
+                        // snaps: the group's actions, without those bars.
+                        let moving = group
+                            .bars
+                            .iter()
+                            .filter(|bar| !bar.fixed)
+                            .map(|bar| (bar.start, bar.end))
+                            .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)));
+                        let editable = !group.locked && !all.is_empty();
+                        let sense = if editable {
                             Sense::click_and_drag()
+                        } else {
+                            Sense::hover()
                         };
                         let response = interact_in(
                             ui,
@@ -286,12 +303,12 @@ impl<'a> Timeline<'a> {
                             id.with(("summary", group.key.as_str())),
                             sense,
                         );
-                        let all: Vec<Key> = group.bars.iter().map(|bar| bar.key.clone()).collect();
                         let look = BarLook {
-                            selected: all.iter().all(|key| selection.contains(key)),
-                            hovered: response.as_ref().is_some_and(|r| r.hovered())
-                                && !group.locked,
+                            selected: !all.is_empty()
+                                && all.iter().all(|key| selection.contains(key)),
+                            hovered: response.as_ref().is_some_and(|r| r.hovered()) && editable,
                             faded: group.hidden || group.locked,
+                            fixed: false,
                         };
                         bars::paint_summary(ui, &tracks_painter, bar_rect, look);
                         // The summary stands for all the layer's actions:
@@ -301,10 +318,10 @@ impl<'a> Timeline<'a> {
                             if (response.clicked() || grabbed) && selection != all.as_slice() {
                                 events.push(TimelineEvent::SelectionChanged { bars: all.clone() });
                             }
-                            if grabbed {
+                            if grabbed && let Some(moving) = moving {
                                 state.drag = Some(Drag::Bars {
-                                    span,
-                                    grab_time: press_origin.map_or(span.0, |p| s.time(p.x)),
+                                    span: moving,
+                                    grab_time: press_origin.map_or(moving.0, |p| s.time(p.x)),
                                     originals: originals_of(groups, &all),
                                 });
                             }
@@ -316,7 +333,8 @@ impl<'a> Timeline<'a> {
                     let group = &groups[g];
                     let bar = &group.bars[b];
                     let bar_rect = layout.bar_rect(index, bar.start, bar.end);
-                    if !group.locked {
+                    let editable = !group.locked && !bar.fixed;
+                    if editable {
                         placed.push((bar.key.clone(), bar_rect));
                     }
                     if !on_screen {
@@ -326,10 +344,12 @@ impl<'a> Timeline<'a> {
                     if selected {
                         body_painter.rect_filled(row_rect, 0.0, c.accent_soft);
                     }
-                    let sense = if group.locked {
-                        Sense::hover()
-                    } else {
+                    let sense = if editable {
                         Sense::click_and_drag()
+                    } else if bar.fixed {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
                     };
                     let response = interact_in(
                         ui,
@@ -340,15 +360,16 @@ impl<'a> Timeline<'a> {
                     );
                     let look = BarLook {
                         selected,
-                        hovered: response.as_ref().is_some_and(|r| r.hovered()) && !group.locked,
+                        hovered: response.as_ref().is_some_and(|r| r.hovered()) && editable,
                         faded: group.hidden || group.locked,
+                        fixed: bar.fixed,
                     };
                     bars::paint_bar(ui, &tracks_painter, bar_rect, &bar.label, bar.tone, look);
 
                     // The ends: grabbing one resizes the bar. A marker of
                     // an instant has no length to change: all of it moves.
                     for edge in [Edge::Start, Edge::End] {
-                        if group.locked || bar.instant {
+                        if !editable || bar.instant {
                             break;
                         }
                         let zone = edge_zone(bar_rect, edge, theme.size.bar_edge_grab);
@@ -388,6 +409,16 @@ impl<'a> Timeline<'a> {
                     // The body: a click selects, a drag moves the selection.
                     let label_clicked = bar_label(ui, &layout, index, bar, selected);
                     let clicked = response.as_ref().is_some_and(|r| r.clicked()) || label_clicked;
+                    if bar.fixed {
+                        // Nothing of its own to select or change: it is
+                        // about its group's layer.
+                        if clicked {
+                            events.push(TimelineEvent::GroupClicked {
+                                key: group.key.clone(),
+                            });
+                        }
+                        continue;
+                    }
                     if clicked && !group.locked {
                         events.push(TimelineEvent::SelectionChanged {
                             bars: selection_after_click(selection, &bar.key, toggle),
@@ -637,13 +668,14 @@ fn times_of(groups: &[Group], key: &Key) -> Option<(f64, f64)> {
 }
 
 /// The bars named by `keys` with their current times, leaving out those in
-/// locked layers: what a drag of the selection moves.
+/// locked layers and those that only show something: what a drag of the
+/// selection moves.
 fn originals_of(groups: &[Group], keys: &[Key]) -> Vec<Original> {
     groups
         .iter()
         .filter(|group| !group.locked)
         .flat_map(|group| &group.bars)
-        .filter(|bar| keys.contains(&bar.key))
+        .filter(|bar| !bar.fixed && keys.contains(&bar.key))
         .map(|bar| (bar.key.clone(), bar.start, bar.end))
         .collect()
 }
@@ -1061,6 +1093,22 @@ mod tests {
         );
         assert_eq!(times_of(&groups, &Key::new("b1")), Some((200.0, 300.0)));
         assert_eq!(times_of(&groups, &Key::new("zz")), None);
+    }
+
+    #[test]
+    fn bars_that_only_show_something_stay_out_of_a_drag() {
+        use super::super::model::tests::{bar, group};
+        let plays = model::Bar {
+            fixed: true,
+            ..bar("plays", 300.0, 900.0)
+        };
+        let groups = vec![group("a", vec![plays, bar("a1", 0.0, 100.0)])];
+        assert_eq!(
+            originals_of(&groups, &keys(&["plays", "a1"])),
+            [(Key::new("a1"), 0.0, 100.0)]
+        );
+        // Other bars still line up with it.
+        assert_eq!(bar_edges(&groups, |key| *key == "a1"), [300.0, 900.0]);
     }
 
     #[test]

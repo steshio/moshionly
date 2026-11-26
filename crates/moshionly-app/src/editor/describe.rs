@@ -16,6 +16,8 @@ pub fn type_label(ty: NodeType) -> &'static str {
         T::Path => "Path",
         T::Text => "Text",
         T::Image => "Image",
+        T::Component => "Component",
+        T::Instance => "Instance",
         T::Move => "Move",
         T::Rotate => "Rotate",
         T::Scale => "Scale",

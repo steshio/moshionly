@@ -26,6 +26,8 @@
 //! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
 //!   typing text on the canvas.
 //! - [`clipboard`]: copying and pasting layers as Moshionly's JSON.
+//! - [`components`]: main components, where new instances of them go, and
+//!   what deleting a main does to its instances.
 //! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
@@ -35,6 +37,7 @@
 pub mod actions;
 pub mod assets;
 pub mod clipboard;
+pub mod components;
 pub mod create;
 pub mod describe;
 pub mod drag;
@@ -51,7 +54,7 @@ pub mod transform;
 pub mod tree;
 pub mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -231,11 +234,23 @@ impl Editor {
         let previous = std::mem::replace(&mut self.document, document);
         self.revision = revision;
         // Artboards whose content did not change keep their version, so
-        // their pictures are not drawn again.
+        // their pictures are not drawn again. Instances count as content:
+        // a change to a component they show changes them too.
         let mut versions = HashMap::new();
+        let mut components = HashMap::new();
         for artboard in self.document.artboards() {
             let version = match self.versions.get(artboard) {
-                Some(version) if same_artboard(&previous, &self.document, artboard) => *version,
+                Some(version)
+                    if same_artboard(&previous, &self.document, artboard)
+                        && same_shown_components(
+                            &previous,
+                            &self.document,
+                            artboard,
+                            &mut components,
+                        ) =>
+                {
+                    *version
+                }
                 _ => revision,
             };
             versions.insert(artboard.clone(), version);
@@ -464,6 +479,78 @@ fn same_artboard(a: &Document, b: &Document, artboard: &NodeId) -> bool {
         })
 }
 
+/// Whether every component that instances inside `root` show, directly or
+/// through other components, looks the same in two documents. `known`
+/// remembers the components already compared, across calls.
+fn same_shown_components(
+    a: &Document,
+    b: &Document,
+    root: &NodeId,
+    known: &mut HashMap<NodeId, bool>,
+) -> bool {
+    let mut pending: Vec<NodeId> = b
+        .walk(root, moshionly_core::Family::Layer)
+        .filter_map(|(_, node)| node.component().cloned())
+        .collect();
+    let mut seen = HashSet::new();
+    while let Some(component) = pending.pop() {
+        if !seen.insert(component.clone()) {
+            continue;
+        }
+        let same = *known
+            .entry(component.clone())
+            .or_insert_with(|| same_component(a, b, &component));
+        if !same {
+            return false;
+        }
+        pending.extend(
+            b.walk(&component, moshionly_core::Family::Layer)
+                .filter_map(|(_, node)| node.component().cloned()),
+        );
+    }
+    true
+}
+
+/// Whether a component looks the same in two documents: the component
+/// itself, the layers in it, and the animations of its artboard that
+/// target those layers, in the same order.
+fn same_component(a: &Document, b: &Document, component: &NodeId) -> bool {
+    use moshionly_core::Family;
+    let (Some(left), Some(right)) = (a.get(component), b.get(component)) else {
+        return false;
+    };
+    if left != right {
+        return false;
+    }
+    let (Some(home), Some(other)) = (a.artboard_of(component), b.artboard_of(component)) else {
+        return false;
+    };
+    if home.id != other.id {
+        return false;
+    }
+    let layers = |document: &Document| -> Vec<NodeId> {
+        document
+            .walk(component, Family::Layer)
+            .map(|(_, node)| node.id.clone())
+            .collect()
+    };
+    let inside = layers(b);
+    if layers(a) != inside
+        || !inside
+            .iter()
+            .all(|id| a.get(id).is_some_and(|node| b.get(id) == Some(node)))
+    {
+        return false;
+    }
+    let targets: HashSet<&NodeId> = inside.iter().collect();
+    let animates_inside =
+        |node: &&moshionly_core::Node| node.target().is_some_and(|target| targets.contains(target));
+    let left = a.walk(&home.id, Family::Animation).map(|(_, node)| node);
+    let right = b.walk(&home.id, Family::Animation).map(|(_, node)| node);
+    left.filter(animates_inside)
+        .eq(right.filter(animates_inside))
+}
+
 /// "Undo Move" from "Undo" and a step summarised as "Move".
 fn step_label(verb: &str, step: Option<&Step>) -> String {
     match step.map(|step| step.summary.trim()) {
@@ -570,6 +657,57 @@ mod tests {
         editor.apply("Add rectangle", &edits).unwrap();
         assert_eq!(editor.artboard_version(&first), editor.revision());
         assert!(editor.artboard_version(&second) < editor.revision());
+    }
+
+    #[test]
+    fn artboards_showing_a_changed_component_are_drawn_again() {
+        let document = moshionly_core::io::parse(
+            r##"{"format":"moshionly","version":2,"name":"Test","nodes":[
+            {"id":"home","parent":null,"index":"a0","type":"artboard","width":500,"height":500},
+            {"id":"main","parent":"home","index":"a0","type":"component","width":100,"height":100},
+            {"id":"dot","parent":"main","index":"a0","type":"ellipse","width":20,"height":20},
+            {"id":"loose","parent":"home","index":"a1","type":"rect"},
+            {"id":"away","parent":null,"index":"a1","type":"artboard","x":600,"width":500,"height":500},
+            {"id":"copy","parent":"away","index":"a0","type":"instance","component":"main"},
+            {"id":"plain","parent":null,"index":"a2","type":"artboard","x":1200,"width":500,"height":500}
+            ]}"##,
+        )
+        .unwrap();
+        let session = SessionHandle::new(Session::new(document));
+        let mut editor = Editor::new(
+            session,
+            Renderer::new(FontLibrary::bundled(), AssetLoader::default()),
+        );
+        let [home, away, plain] = ["home", "away", "plain"].map(NodeId::from);
+        let version = |editor: &Editor, id: &NodeId| editor.artboard_version(id);
+        // Versions are kept from the first change on.
+        editor
+            .apply("Move", &[Edit::set("loose", "x", 20.0)])
+            .unwrap();
+        let before = (version(&editor, &away), version(&editor, &plain));
+
+        // A layer beside the component changes: the copy looks the same.
+        editor
+            .apply("Move", &[Edit::set("loose", "x", 40.0)])
+            .unwrap();
+        assert_eq!(version(&editor, &home), editor.revision());
+        assert_eq!((version(&editor, &away), version(&editor, &plain)), before);
+
+        // A layer inside it changes: the copy changes too.
+        editor
+            .apply("Recolour", &[Edit::set("dot", "fill", "#FF0000")])
+            .unwrap();
+        assert_eq!(version(&editor, &away), editor.revision());
+        assert_eq!(version(&editor, &plain), before.1);
+
+        // So does an animation of a layer inside it.
+        let fade =
+            build::default_animation(moshionly_core::NodeType::FadeIn, &NodeId::from("dot"), 0.0)
+                .unwrap();
+        let (_, edits) = build::add_animation(editor.document(), fade, None).unwrap();
+        editor.apply("Add fade", &edits).unwrap();
+        assert_eq!(version(&editor, &away), editor.revision());
+        assert_eq!(version(&editor, &plain), before.1);
     }
 
     #[test]

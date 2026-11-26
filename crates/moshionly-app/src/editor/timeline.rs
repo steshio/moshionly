@@ -5,9 +5,15 @@
 //! last. Within a group, actions keep their timeline row order. Folders
 //! (`animation_group`) come first, as groups of their own: their actions
 //! are listed in them, named with the layer each animates.
+//!
+//! An instance plays the animations of the layers inside its main
+//! component, which live on the main's own timeline. Its group starts with
+//! one bar that cannot be edited, saying which component it plays and
+//! when.
 
 use std::collections::{HashMap, HashSet};
 
+use moshionly_core::model::NodeData;
 use moshionly_core::{Document, Family, Node, NodeId, NodeType};
 
 use super::describe::{ActionFamily, action_family, display_name, type_label};
@@ -29,8 +35,16 @@ pub fn layer_icon(ty: NodeType) -> &'static str {
         NodeType::Path => icons::PEN_NIB,
         NodeType::Text => icons::TEXT_T,
         NodeType::Image => icons::IMAGE,
+        NodeType::Component => icons::DIAMONDS_FOUR,
+        NodeType::Instance => icons::DIAMOND,
         _ => action_icon(ty),
     }
+}
+
+/// The colour family a layer type is marked with in lists, if any: main
+/// components and their instances are violet, as in Figma.
+pub fn layer_tone(ty: NodeType) -> Option<Tone> {
+    matches!(ty, NodeType::Component | NodeType::Instance).then_some(Tone::Violet)
 }
 
 /// The icon of an animation type.
@@ -95,8 +109,93 @@ fn bar_of(document: &Document, node: &Node, with_layer: bool) -> Option<(NodeId,
         start,
         end: end.max(start),
         instant: action_family(ty) == Some(ActionFamily::Instant),
+        fixed: false,
     };
     Some((target.clone(), bar))
+}
+
+/// How deep instances inside components are followed to find what an
+/// instance plays. The rules forbid a component that shows itself; this
+/// only guards against a broken document.
+const MAX_DEPTH: usize = 16;
+
+/// When the animations a main component's instances play run, on the
+/// main's own timeline: from the earliest start to the latest end of the
+/// animations of the layers inside it, and of what instances inside it
+/// play. `None` when nothing inside it is animated.
+pub fn main_span(document: &Document, main: &NodeId) -> Option<(f64, f64)> {
+    span_within(document, main, 0)
+}
+
+fn span_within(document: &Document, main: &NodeId, depth: usize) -> Option<(f64, f64)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let artboard = document.artboard_of(main)?;
+    let inside: HashSet<&NodeId> = document
+        .walk(main, Family::Layer)
+        .map(|(_, node)| &node.id)
+        .collect();
+    let own = document
+        .walk(&artboard.id, Family::Animation)
+        .filter(|(_, node)| node.target().is_some_and(|target| inside.contains(target)))
+        .filter_map(|(_, node)| node.data.span());
+    let nested = document
+        .walk(main, Family::Layer)
+        .filter_map(|(_, node)| match &node.data {
+            NodeData::Instance(instance) => {
+                let (start, end) = span_within(document, &instance.component, depth + 1)?;
+                Some((start + instance.time_offset, end + instance.time_offset))
+            }
+            _ => None,
+        });
+    own.chain(nested)
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+}
+
+/// The label of the bar of an instance: "Plays Card · 300 ms later".
+pub fn plays_label(main: &str, time_offset: f64) -> String {
+    let offset = time_offset.round();
+    if offset > 0.0 {
+        format!("Plays {main} · {offset:.0} ms later")
+    } else if offset < 0.0 {
+        format!("Plays {main} · {:.0} ms earlier", -offset)
+    } else {
+        format!("Plays {main}")
+    }
+}
+
+/// The bar that says which main component an instance plays and when, or
+/// `None` when it plays no animation within the scene. `spans` remembers
+/// [`main_span`] for each main, as many instances often show one.
+fn plays_bar(
+    document: &Document,
+    node: &Node,
+    spans: &mut HashMap<NodeId, Option<(f64, f64)>>,
+) -> Option<Bar> {
+    let NodeData::Instance(instance) = &node.data else {
+        return None;
+    };
+    let main = document.get(&instance.component)?;
+    let (start, end) = (*spans
+        .entry(main.id.clone())
+        .or_insert_with(|| main_span(document, &main.id)))?;
+    let (start, end) = (start + instance.time_offset, end + instance.time_offset);
+    if end <= 0.0 && start < 0.0 {
+        // All played before the scene starts.
+        return None;
+    }
+    let start = start.max(0.0);
+    Some(Bar {
+        key: Key::new(format!("{}/plays", node.id)),
+        label: plays_label(&display_name(main), instance.time_offset),
+        icon: Some(icons::DIAMONDS_FOUR),
+        tone: Tone::Violet,
+        start,
+        end: end.max(start),
+        instant: false,
+        fixed: true,
+    })
 }
 
 /// The timeline groups of `artboard`: first its folders, each holding the
@@ -129,6 +228,13 @@ pub fn timeline_groups(
             });
         } else if let Some((target, bar)) = bar_of(document, node, false) {
             bars.entry(target).or_default().push(bar);
+        }
+    }
+    // Instances first say what they play.
+    let mut spans = HashMap::new();
+    for (_, node) in document.walk(artboard, Family::Layer) {
+        if let Some(bar) = plays_bar(document, node, &mut spans) {
+            bars.entry(node.id.clone()).or_default().insert(0, bar);
         }
     }
     // Layers front to back, as the layer list reads, then the artboard.
@@ -215,6 +321,41 @@ mod tests {
     }
 
     #[test]
+    fn an_instance_says_what_it_plays_and_when() {
+        let doc = io::parse(
+            r##"{"format":"moshionly","version":2,"name":"Test","nodes":[
+            {"id":"home","parent":null,"index":"a0","type":"artboard","name":"Home"},
+            {"id":"card","parent":"home","index":"a0","type":"component","name":"Card"},
+            {"id":"dot","parent":"card","index":"a0","type":"ellipse"},
+            {"id":"still","parent":"home","index":"a1","type":"component","name":"Still"},
+            {"id":"pop","parent":"home","index":"a0","type":"grow_in","target":"dot","start":200,"end":700},
+            {"id":"own","parent":"home","index":"a1","type":"fade_in","target":"card","start":0,"end":2000},
+            {"id":"away","parent":null,"index":"a1","type":"artboard","name":"Away","x":2000},
+            {"id":"late","parent":"away","index":"a0","type":"instance","component":"card","name":"Late","time_offset":300},
+            {"id":"early","parent":"away","index":"a1","type":"instance","component":"card","name":"Early","time_offset":-1000},
+            {"id":"calm","parent":"away","index":"a2","type":"instance","component":"still","name":"Calm"},
+            {"id":"fade","parent":"away","index":"a0","type":"fade_in","target":"late","start":0,"end":100}
+            ]}"##,
+        )
+        .unwrap();
+        // The animation of the card itself is not part of what it plays.
+        assert_eq!(main_span(&doc, &NodeId::from("card")), Some((200.0, 700.0)));
+        assert_eq!(main_span(&doc, &NodeId::from("still")), None);
+        let groups = timeline_groups(&doc, &NodeId::from("away"), &HashSet::new());
+        let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
+        // Played before the scene starts, or nothing to play: no bar.
+        assert_eq!(labels, ["Late"]);
+        let bars = &groups[0].bars;
+        assert_eq!(bars.len(), 2);
+        assert!(bars[0].fixed && !bars[1].fixed);
+        assert_eq!(bars[0].label, "Plays Card · 300 ms later");
+        assert_eq!(bars[0].tone, Tone::Violet);
+        assert_eq!((bars[0].start, bars[0].end), (500.0, 1000.0));
+        assert_eq!(plays_label("Card", -250.0), "Plays Card · 250 ms earlier");
+        assert_eq!(plays_label("Card", 0.0), "Plays Card");
+    }
+
+    #[test]
     fn collapsed_groups_are_marked() {
         let doc = document();
         let collapsed = HashSet::from([NodeId::from("back")]);
@@ -230,6 +371,13 @@ mod tests {
             assert!(!layer_icon(*ty).is_empty());
         }
         assert_eq!(action_tone(NodeType::Show), Tone::Neutral);
+        assert_eq!(layer_tone(NodeType::Component), Some(Tone::Violet));
+        assert_eq!(layer_tone(NodeType::Instance), Some(Tone::Violet));
+        assert_eq!(layer_tone(NodeType::Group), None);
+        assert_ne!(
+            layer_icon(NodeType::Component),
+            layer_icon(NodeType::Instance)
+        );
         assert_eq!(action_tone(NodeType::TextIn), Tone::Amber);
     }
 }

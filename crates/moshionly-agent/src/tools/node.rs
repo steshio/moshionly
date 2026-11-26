@@ -187,6 +187,37 @@ fn describe_layer(document: &Document, host: &Host, node: &Node, result: &mut Va
     if node.node_type() == NodeType::Artboard {
         result["timeline_rows"] = json!(document.walk(&node.id, Family::Animation).count());
     }
+    describe_component_links(document, node, result);
+}
+
+/// How a layer is tied to components: the component an instance shows, the
+/// instances of a component, and the component a layer is part of.
+fn describe_component_links(document: &Document, node: &Node, result: &mut Value) {
+    if let Some(main) = node.component().and_then(|id| document.get(id)) {
+        result["shows_component"] = brief(main);
+    }
+    if node.node_type() == NodeType::Component {
+        let instances = document.instances_of(&node.id);
+        result["instances"] = instances
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|instance| brief(instance))
+            .collect();
+        if instances.len() > LIST_LIMIT {
+            result["instances_note"] = json!(format!(
+                "The first {LIST_LIMIT} of {} instances. query_nodes with \"component\" lists \
+                 them all.",
+                instances.len()
+            ));
+        }
+    }
+    if let Some(main) = document.enclosing_component(&node.id) {
+        result["in_component"] = brief(main);
+        result["component_note"] = json!(
+            "This layer is part of a component: changing it, or animating it, changes every \
+             instance of the component too."
+        );
+    }
 }
 
 /// The box around a layer at rest, in artboard coordinates, and whether it

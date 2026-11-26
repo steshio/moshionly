@@ -21,6 +21,7 @@ pub struct ListRow<'a> {
     dimmed: bool,
     quiet: bool,
     strong: bool,
+    tint: Option<Color32>,
     height: Option<f32>,
     id_salt: Option<egui::IdSalt>,
 }
@@ -49,6 +50,7 @@ impl<'a> ListRow<'a> {
             dimmed: false,
             quiet: false,
             strong: false,
+            tint: None,
             height: None,
             id_salt: None,
         }
@@ -107,6 +109,14 @@ impl<'a> ListRow<'a> {
     /// Draws the label semibold, for top-level containers.
     pub fn strong(mut self, strong: bool) -> Self {
         self.strong = strong;
+        self
+    }
+
+    /// Draws the icon and label in this colour, for rows that stand for a
+    /// special kind of thing (main components and their instances). Hidden
+    /// rows stay faded.
+    pub fn tint(mut self, tint: Option<Color32>) -> Self {
+        self.tint = tint;
         self
     }
 
@@ -177,6 +187,8 @@ impl<'a> ListRow<'a> {
 
         let (ink, icon_ink) = if self.dimmed {
             (c.text_tertiary, c.text_tertiary)
+        } else if let Some(tint) = self.tint {
+            (tint, tint)
         } else if self.selected {
             (c.text, c.accent_text)
         } else if self.quiet {

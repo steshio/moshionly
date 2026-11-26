@@ -613,6 +613,32 @@ fn a_double_click_renames_a_row() {
 }
 
 #[test]
+fn switching_to_the_components_tab_ends_a_rename() {
+    let mut harness = harness();
+    let card = rect_of(&harness, "Card").center();
+    double_click(&mut harness, card);
+    harness.get_by_label("Layer name").type_text(" front");
+    harness.run();
+    let components = rect_of(&harness, "Components").center();
+    click(&mut harness, components);
+    // What was typed is kept, as when clicking anywhere else.
+    let document = harness.state().editor().document().clone();
+    assert_eq!(
+        document.get(&NodeId::from("card")).unwrap().name(),
+        "Card front"
+    );
+    // No name field is left open: Escape deselects again.
+    assert_eq!(selection(&harness), ["card"]);
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(selection(&harness).is_empty());
+    // Back on the layers, the field does not come back.
+    let layers = rect_of(&harness, "Layers").center();
+    click(&mut harness, layers);
+    assert!(harness.query_by_label("Layer name").is_none());
+}
+
+#[test]
 fn dragging_a_row_moves_the_layer_out_of_its_group() {
     let mut harness = harness();
     // Selecting the dot opens the card's row.

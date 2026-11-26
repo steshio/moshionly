@@ -45,13 +45,32 @@
 //! The scene lists the pieces as text units with their own transform,
 //! opacity and blur. A `counter` replaces the first number in the text,
 //! following the replacing rule with the written number as resting value.
+//!
+//! # Components
+//!
+//! An `instance` shows its main `component` as the component looks at the
+//! instance's time minus its `time_offset`: what the component draws itself
+//! (fill, stroke, corner radius, clip) and its layers, with every animation
+//! that targets a layer inside the component. Those animations live in the
+//! component's own artboard, which may be another one. Animations on the
+//! component itself belong to where it is placed and are left out.
+//! Before the offset has passed, the instance shows the component as it is
+//! before its animations start. When the instance's box differs from the
+//! component's, the content is scaled to fill it. A resize animation on the
+//! instance changes its box the way it changes a group's: the component's
+//! background, outline and clip follow the box, and the layers keep the
+//! scale that fits the instance's resting box. Every scene node drawn for
+//! an instance carries the instance's id, so the instance is one layer to
+//! hit testing and selection.
 
 mod preset;
 mod state;
 mod textfx;
 mod tween;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use state::{Channels, LayerState};
 
@@ -59,8 +78,8 @@ use crate::document::Document;
 use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::model::{
-    AutoSize, CornerRadius, Family, Gradient, Node, NodeData, NodeType, Paint, Shadow, Stroke,
-    TextLayer,
+    AutoSize, CornerRadius, Family, Gradient, Instance, Node, NodeData, NodeType, Paint, Shadow,
+    Stroke, TextLayer,
 };
 use crate::scene::{
     Clip, Content, Scene, SceneNode, ScenePaint, SceneStroke, TextContent, TextStyle,
@@ -296,6 +315,51 @@ fn clean_time(time_ms: f64) -> f64 {
     }
 }
 
+/// How many instances deep an instance may sit inside other components'
+/// instances before its content is left out. The rules forbid a component
+/// that shows itself, so this only guards against a broken document.
+const MAX_INSTANCE_DEPTH: usize = 32;
+
+/// The animations of each layer, by target, in the order they start.
+type Targets<'a> = HashMap<&'a NodeId, Vec<&'a Node>>;
+
+/// The animations of each artboard, gathered the first time an artboard is
+/// needed: the evaluated one, and those that hold components shown by
+/// instances.
+struct Timelines<'a> {
+    document: &'a Document,
+    /// `false` when evaluating at rest: no animation applies.
+    animate: bool,
+    built: RefCell<HashMap<&'a NodeId, Rc<Targets<'a>>>>,
+}
+
+impl<'a> Timelines<'a> {
+    fn of(&self, artboard: &'a NodeId) -> Rc<Targets<'a>> {
+        if let Some(targets) = self.built.borrow().get(artboard) {
+            return Rc::clone(targets);
+        }
+        let mut targets: Targets<'a> = HashMap::new();
+        if self.animate {
+            for (_, animation) in self.document.walk(artboard, Family::Animation) {
+                if let Some(target) = animation.target() {
+                    targets.entry(target).or_default().push(animation);
+                }
+            }
+            // The walk is in row order and the sort is stable, so equal
+            // starts keep their rows.
+            let start = |node: &Node| node.data.span().map_or(0.0, |(start, _)| start);
+            for list in targets.values_mut() {
+                list.sort_by(|a, b| start(a).total_cmp(&start(b)));
+            }
+        }
+        let targets = Rc::new(targets);
+        self.built
+            .borrow_mut()
+            .insert(artboard, Rc::clone(&targets));
+        targets
+    }
+}
+
 struct Evaluator<'a> {
     document: &'a Document,
     artboard: &'a Node,
@@ -303,7 +367,12 @@ struct Evaluator<'a> {
     measurer: &'a dyn TextMeasurer,
     /// The animations of every layer of the artboard, in the order they
     /// start. Empty when evaluating at rest.
-    animations: HashMap<&'a NodeId, Vec<&'a Node>>,
+    animations: Rc<Targets<'a>>,
+    /// Every artboard's animations, shared with the evaluators of the
+    /// instances inside this one.
+    timelines: Rc<Timelines<'a>>,
+    /// How many instances deep this evaluator draws: 0 for the artboard.
+    depth: usize,
 }
 
 impl<'a> Evaluator<'a> {
@@ -325,26 +394,19 @@ impl<'a> Evaluator<'a> {
                 None => EvalError::UnknownArtboard(artboard.clone()),
             });
         }
-        let mut animations: HashMap<&NodeId, Vec<&Node>> = HashMap::new();
-        if time.is_some() {
-            for (_, animation) in document.walk(artboard, Family::Animation) {
-                if let Some(target) = animation.target() {
-                    animations.entry(target).or_default().push(animation);
-                }
-            }
-            // The walk is in row order and the sort is stable, so equal
-            // starts keep their rows.
-            let start = |node: &Node| node.data.span().map_or(0.0, |(start, _)| start);
-            for list in animations.values_mut() {
-                list.sort_by(|a, b| start(a).total_cmp(&start(b)));
-            }
-        }
+        let timelines = Rc::new(Timelines {
+            document,
+            animate: time.is_some(),
+            built: RefCell::default(),
+        });
         Ok(Self {
             document,
             artboard: node,
             time: time.unwrap_or(0.0),
             measurer,
-            animations,
+            animations: timelines.of(&node.id),
+            timelines,
+            depth: 0,
         })
     }
 
@@ -387,37 +449,9 @@ impl<'a> Evaluator<'a> {
         }
         let mut mask = None;
         let content = match &node.data {
-            NodeData::Group(group) => {
-                let shape = |fill: Option<ScenePaint>, stroke: Option<SceneStroke>| {
-                    let content = Content::Rect {
-                        radii: fitted(state.radii, state.width, state.height),
-                        fill,
-                        stroke,
-                    };
-                    plain(&node.id, &state, content)
-                };
-                let mut children = Vec::new();
-                if let Some(fill) = paint(state.fill.as_ref(), state.width, state.height) {
-                    children.push(shape(Some(fill), None));
-                }
-                let inside = self.children(&node.id);
-                if group.clip {
-                    // The clip sits on a node of its own so that it cuts the
-                    // children but not the group's own shadow.
-                    let mut holder = plain(&node.id, &state, Content::Group { children: inside });
-                    holder.clip = Some(Clip {
-                        rect: Rect::new(0.0, 0.0, state.width, state.height),
-                        radii: fitted(state.radii, state.width, state.height),
-                    });
-                    children.push(holder);
-                } else {
-                    children.extend(inside);
-                }
-                if let Some(stroke) = stroke(state.stroke.as_ref(), state.width, state.height) {
-                    children.push(shape(None, Some(stroke)));
-                }
-                Content::Group { children }
-            }
+            NodeData::Group(group) => self.frame(node, group.clip, &state),
+            NodeData::Component(component) => self.frame(node, component.clip, &state),
+            NodeData::Instance(instance) => self.instance(node, instance, &state),
             NodeData::MaskGroup(_) => {
                 let mut layers = self.document.child_nodes(&node.id, Family::Layer);
                 // Without a mask, or with one that cannot be seen, nothing
@@ -477,6 +511,140 @@ impl<'a> Evaluator<'a> {
             mask,
             content,
         })
+    }
+
+    /// What a group or a component draws: its background, its children
+    /// (clipped to the box when `clip` is set) and its outline.
+    fn frame(&self, node: &Node, clip: bool, state: &LayerState) -> Content {
+        self.frame_around(node, clip, state, self.children(&node.id))
+    }
+
+    /// [`frame`](Self::frame) around `inside` in place of the node's
+    /// children.
+    fn frame_around(
+        &self,
+        node: &Node,
+        clip: bool,
+        state: &LayerState,
+        inside: Vec<SceneNode>,
+    ) -> Content {
+        let shape = |fill: Option<ScenePaint>, stroke: Option<SceneStroke>| {
+            let content = Content::Rect {
+                radii: fitted(state.radii, state.width, state.height),
+                fill,
+                stroke,
+            };
+            plain(&node.id, state, content)
+        };
+        let mut children = Vec::new();
+        if let Some(fill) = paint(state.fill.as_ref(), state.width, state.height) {
+            children.push(shape(Some(fill), None));
+        }
+        if clip {
+            // The clip sits on a node of its own so that it cuts the
+            // children but not the group's own shadow.
+            let mut holder = plain(&node.id, state, Content::Group { children: inside });
+            holder.clip = Some(Clip {
+                rect: Rect::new(0.0, 0.0, state.width, state.height),
+                radii: fitted(state.radii, state.width, state.height),
+            });
+            children.push(holder);
+        } else {
+            children.extend(inside);
+        }
+        if let Some(stroke) = stroke(state.stroke.as_ref(), state.width, state.height) {
+            children.push(shape(None, Some(stroke)));
+        }
+        Content::Group { children }
+    }
+
+    /// What an instance shows: its component's look over the instance's
+    /// current box and its layers scaled to the instance's resting box, at
+    /// the instance's time minus its offset, with every scene node carrying
+    /// the instance's id. Nothing when the component is missing or
+    /// instances nest too deep.
+    fn instance(&self, node: &Node, instance: &Instance, state: &LayerState) -> Content {
+        let nothing = Content::Group {
+            children: Vec::new(),
+        };
+        let Some(main) = self.document.get(&instance.component) else {
+            return nothing;
+        };
+        let (NodeData::Component(component), Some(artboard)) =
+            (&main.data, self.document.artboard_of(&main.id))
+        else {
+            return nothing;
+        };
+        if self.depth >= MAX_INSTANCE_DEPTH {
+            return nothing;
+        }
+        let inner = Evaluator {
+            document: self.document,
+            artboard,
+            // Not cleaned up to 0: before the offset has passed, the
+            // component shows as it is before its animations start.
+            time: self.time - instance.time_offset,
+            measurer: self.measurer,
+            animations: self.timelines.of(&artboard.id),
+            timelines: Rc::clone(&self.timelines),
+            depth: self.depth + 1,
+        };
+        // Animations on the component itself belong to where it is placed,
+        // so its own look is the one at rest.
+        let Some(mut look) = Channels::default().resolve(main, inner.time) else {
+            return nothing;
+        };
+        let ratio = |size: f64, main: f64| {
+            if main > 0.0 && (size / main).is_finite() {
+                size / main
+            } else {
+                1.0
+            }
+        };
+        // The content fits the instance's resting box. A resize animation
+        // on the instance changes its box the way it changes a group's:
+        // the background, outline and clip follow it, the layers do not.
+        let (sx, sy) = (
+            ratio(instance.layer.width, look.width),
+            ratio(instance.layer.height, look.height),
+        );
+        if sx == 0.0 || sy == 0.0 {
+            // A resting box with no width or no height squeezes the layers
+            // flat, as in the group detaching the instance makes, and the
+            // rest cannot be scaled back up from it: the background,
+            // outline and clip take the instance's current box as it is.
+            // With no size at all, the layers, outline and corners shrink
+            // to nothing.
+            let mut layers = Vec::new();
+            if sx == 0.0 && sy == 0.0 {
+                if let Some(stroke) = &mut look.stroke {
+                    stroke.width = 0.0;
+                }
+                look.radii = [0.0; 4];
+            } else {
+                let children = inner.children(&main.id);
+                let mut squeezed = plain(&node.id, &look, Content::Group { children });
+                squeezed.transform = Affine::scale(sx, sy);
+                layers.push(squeezed);
+            }
+            look.width = state.width;
+            look.height = state.height;
+            let mut content = inner.frame_around(main, component.clip, &look, layers);
+            relabel(&mut content, &node.id);
+            return content;
+        }
+        look.width = state.width / sx;
+        look.height = state.height / sy;
+        let mut content = inner.frame(main, component.clip, &look);
+        relabel(&mut content, &node.id);
+        if sx == 1.0 && sy == 1.0 {
+            return content;
+        }
+        let mut holder = plain(&node.id, &look, content);
+        holder.transform = Affine::scale(sx, sy);
+        Content::Group {
+            children: vec![holder],
+        }
     }
 
     /// Lays out a text layer. This also settles the size of its box, which
@@ -552,6 +720,22 @@ fn plain(id: &NodeId, state: &LayerState, content: Content) -> SceneNode {
         clip: None,
         mask: None,
         content,
+    }
+}
+
+/// Gives every scene node in `content`, masks included, the id `id`.
+fn relabel(content: &mut Content, id: &NodeId) {
+    fn relabel_node(node: &mut SceneNode, id: &NodeId) {
+        node.id = id.clone();
+        if let Some(mask) = node.mask.as_deref_mut() {
+            relabel_node(mask, id);
+        }
+        relabel(&mut node.content, id);
+    }
+    if let Content::Group { children } = content {
+        for child in children {
+            relabel_node(child, id);
+        }
     }
 }
 

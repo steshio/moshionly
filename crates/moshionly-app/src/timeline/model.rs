@@ -24,6 +24,11 @@ pub struct Bar {
     /// Whether the action happens at one moment (show, hide): a marker at
     /// `start` with no length. It moves but has no ends to resize.
     pub instant: bool,
+    /// Whether the bar only shows something that is not an action of its
+    /// own, such as when an instance plays its main's animations. It
+    /// cannot be selected, moved or resized; a click on it reports its
+    /// group, as a click on the group's label does.
+    pub fixed: bool,
 }
 
 /// A layer and the actions that target it: a header row with a summary bar,
@@ -267,6 +272,7 @@ pub(super) mod tests {
             start,
             end,
             instant: false,
+            fixed: false,
         }
     }
 

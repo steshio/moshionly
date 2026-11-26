@@ -143,6 +143,10 @@ impl Toasts {
                     let width = galley.size().x + theme.space.lg * 2.0 + theme.size.icon + 8.0;
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+                    // Screen readers announce it.
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Status, true, &toast.text)
+                    });
                     paint::shadows(ui.painter(), rect, theme.radius.md, &theme.shadow.float);
                     paint::panel(
                         ui.painter(),

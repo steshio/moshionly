@@ -7,6 +7,7 @@
 
 mod canvas_panel;
 mod chat_panel;
+mod component_commands;
 mod connect;
 mod edit_commands;
 mod export_dialog;
@@ -35,6 +36,7 @@ pub use self::{
     connect::{AgentLight, IMPORT_WINDOW, MAX_IMPORT_BYTES_PER_WINDOW, MAX_IMPORTS_PER_WINDOW},
     files::{Answer, FileAction, carry_on},
     inspector::{InspectorState, InspectorTab},
+    layers_panel::LayersTab,
     layout::{CANVAS_MIN, PanelLimits, PanelSizes, ShellLayout},
     tool_bar::Tool,
 };
@@ -103,6 +105,10 @@ pub struct Shell {
     renaming: Option<(NodeId, String)>,
     /// The layers whose rows are being dragged in the list.
     list_drag: Option<Vec<NodeId>>,
+    /// What the layers panel lists.
+    layers_tab: LayersTab,
+    /// The main component whose row is being dragged to the canvas.
+    component_drag: Option<NodeId>,
     /// The timeline groups whose rows are folded away.
     collapsed_groups: HashSet<NodeId>,
     /// A drag on the timeline holds an undo step open.
@@ -239,6 +245,8 @@ impl Shell {
             reveal_row: None,
             renaming: None,
             list_drag: None,
+            layers_tab: LayersTab::default(),
+            component_drag: None,
             collapsed_groups: HashSet::new(),
             timeline_edit: false,
             timeline_layout: None,
@@ -382,6 +390,16 @@ impl Shell {
         &mut self.palette
     }
 
+    /// What the layers panel lists.
+    pub fn layers_tab(&self) -> LayersTab {
+        self.layers_tab
+    }
+
+    /// Makes the layers panel list the layers or the components.
+    pub fn set_layers_tab(&mut self, tab: LayersTab) {
+        self.layers_tab = tab;
+    }
+
     /// Shows a short message over the canvas.
     pub fn toast(&mut self, toast: Toast) {
         self.toasts.push(toast);
@@ -405,6 +423,7 @@ impl Shell {
             || self.pen.is_some()
             || self.renaming.is_some()
             || self.list_drag.is_some()
+            || self.component_drag.is_some()
             || self.connect_open
             || self.export.is_some();
 
@@ -485,6 +504,8 @@ impl Shell {
                     reveal: reveal.as_ref(),
                     renaming: &mut self.renaming,
                     dragging: &mut self.list_drag,
+                    tab: &mut self.layers_tab,
+                    component_drag: &mut self.component_drag,
                 },
             )
         });
@@ -492,6 +513,24 @@ impl Shell {
         requested.extend(layers.commands);
         if let Some(message) = layers.error {
             self.toasts.push(Toast::error(message));
+        }
+        if let Some((main, at)) = layers.place {
+            self.end_canvas_drag();
+            self.end_timeline_drag();
+            match at {
+                None => self.place_instance(&main, None),
+                // Let go over the canvas: placed there. Anywhere else, the
+                // drag was taken back.
+                Some(screen) => {
+                    if let Some(canvas) = self.canvas.filter(|canvas| canvas.contains(screen)) {
+                        let world = self.camera.screen_to_world(canvas, screen);
+                        self.place_instance(&main, Some(world));
+                    }
+                }
+            }
+        }
+        if let Some(main) = layers.show {
+            self.show_main(main);
         }
 
         let canvas_gesture = self.canvas_gesture();
@@ -505,6 +544,7 @@ impl Shell {
         if inspected.replace_image {
             self.replace_image_dialog();
         }
+        requested.extend(inspected.commands);
 
         self.advance_playback(&ctx);
         self.timeline_panel(ui, &layout);
@@ -928,6 +968,7 @@ impl Shell {
             self.commands.set_enabled(id, selected);
         }
         edit_commands::enable_edit_commands(&mut self.commands, &self.editor);
+        component_commands::enable_component_commands(&mut self.commands, &self.editor);
         // Selected actions can be deleted, copied and grouped on their own.
         if self.on_actions() {
             for id in [
@@ -1098,6 +1139,7 @@ impl Shell {
             CommandId::ConnectAgent => self.connect_open = true,
             CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
+            other if self.component_command(other) => {}
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),
             CommandId::OpenProject => self.request(FileAction::Open(None)),
@@ -1148,13 +1190,15 @@ impl Shell {
     }
 
     /// Removes the selected layers, with their actions and the timeline
-    /// folders that leaves empty.
+    /// folders that leaves empty. Instances of a main component that goes
+    /// are detached into plain groups, and a toast says so.
     pub(super) fn delete_selection(&mut self) {
         let ids = self.editor.selection.ids().to_vec();
         if ids.is_empty() {
             return;
         }
         let document = std::sync::Arc::clone(self.editor.document());
+        let detached = crate::editor::components::detach_message(&document, &ids);
         let edits = match with_emptied_folders(&document, build::remove(&document, &ids)) {
             Ok(edits) => edits,
             Err(error) => {
@@ -1169,6 +1213,9 @@ impl Shell {
         };
         if self.apply_or_toast(summary, &edits) {
             self.editor.selection.clear();
+            if let Some(message) = detached {
+                self.toasts.push(Toast::info(message));
+            }
         }
     }
 
@@ -1267,6 +1314,10 @@ fn ends_a_canvas_drag(id: CommandId) -> bool {
             | CommandId::BringForward
             | CommandId::SendBackward
             | CommandId::SendToBack
+            | CommandId::CreateComponent
+            | CommandId::InsertInstance
+            | CommandId::GoToMainComponent
+            | CommandId::DetachInstance
             | CommandId::NewProject
             | CommandId::OpenProject
             | CommandId::Save

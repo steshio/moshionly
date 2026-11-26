@@ -17,12 +17,12 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
-use crate::build::{BuildError, Place, free_canvas_spot, indices_at};
+use crate::build::{BuildError, Place, detach_instances_of, free_canvas_spot, indices_at};
 use crate::document::Document;
 use crate::edit::Edit;
 use crate::id::NodeId;
 use crate::index::{self, IndexError};
-use crate::model::{Artboard, Family, Group, LayerProps, Node, NodeData, NodeType};
+use crate::model::{Artboard, Component, Family, Group, LayerProps, Node, NodeData, NodeType};
 use crate::schema::read_node;
 use crate::validate::{self, Problem, animation_applies_to};
 
@@ -44,7 +44,9 @@ pub enum ImportError {
     #[error("the design has two nodes with the id \"{0}\"")]
     DuplicateId(NodeId),
     /// A node sits inside a node that cannot hold layers, or inside itself.
-    #[error("{child} cannot be inside {parent}: layers go in an artboard, a group or a mask_group")]
+    #[error(
+        "{child} cannot be inside {parent}: layers go in an artboard, a group, a mask_group or a component"
+    )]
     BadParent {
         /// The node.
         child: String,
@@ -66,7 +68,9 @@ pub enum ImportError {
     #[error("there is no node with the id \"{0}\"")]
     UnknownNode(NodeId),
     /// The place to import to cannot hold layers.
-    #[error("{0} cannot hold layers; import into an artboard, a group or a mask_group")]
+    #[error(
+        "{0} cannot hold layers; import into an artboard, a group, a mask_group or a component"
+    )]
     BadDestination(String),
     /// A replacement needs one top-level layer to take the place of the old one.
     #[error(
@@ -256,7 +260,7 @@ impl<'a> Design<'a> {
             let children = self.children_of(&node.id);
             let indices = index::keys_between(None, None, children.len())?;
             for (child, index) in children.iter().zip(indices) {
-                let mut copy = (*child).clone().with_id(ids[&child.id].clone());
+                let mut copy = with_components(child, ids).with_id(ids[&child.id].clone());
                 copy.parent = Some(ids[&node.id].clone());
                 copy.index = index;
                 copies.push(copy);
@@ -271,6 +275,17 @@ impl<'a> Design<'a> {
             .map(|id| ((*id).clone(), NodeId::generate()))
             .collect()
     }
+}
+
+/// A copy of a node of a design whose `component`, when it names a
+/// component of the design, names that component's new id instead. An
+/// instance of a component outside the design keeps its `component`.
+fn with_components(node: &Node, ids: &HashMap<NodeId, NodeId>) -> Node {
+    let mut copy = node.clone();
+    if let Some(component) = node.component().and_then(|component| ids.get(component)) {
+        copy.data.set_component(component.clone());
+    }
+    copy
 }
 
 /// An artboard of a design turned into a group, for use inside another
@@ -308,7 +323,9 @@ fn checked(nodes: Vec<Node>) -> Result<Vec<Edit>, ImportError> {
 /// Edits that add a foreign design to the document.
 ///
 /// Every node gets a fresh id and fresh indices; the order of the design is
-/// kept. `source_id` and all other properties are carried over as they are.
+/// kept. An instance of a component of the design shows the new copy of
+/// that component. `source_id` and all other properties are carried over
+/// as they are.
 pub fn insert(
     document: &Document,
     nodes: &[Node],
@@ -335,7 +352,8 @@ pub fn insert(
                 &[],
             )?;
             for (root, index) in design.roots.iter().zip(indices) {
-                let mut copy = as_group(root).with_id(ids[&root.id].clone());
+                let mut copy =
+                    as_group(&with_components(root, &ids)).with_id(ids[&root.id].clone());
                 copy.parent = Some(parent.clone());
                 copy.index = index;
                 roots.push(copy.id.clone());
@@ -369,7 +387,7 @@ pub fn insert(
                 .map(|board| board.x - left + board.width + crate::build::ARTBOARD_GAP)
                 .fold(0.0, f64::max);
             for (root, index) in design.roots.iter().zip(indices) {
-                let mut copy = (*root).clone().with_id(ids[&root.id].clone());
+                let mut copy = with_components(root, &ids).with_id(ids[&root.id].clone());
                 if let NodeData::Artboard(artboard) = &mut copy.data {
                     artboard.layer.x += free_x - left;
                     artboard.layer.y += free_y - top;
@@ -428,6 +446,12 @@ pub fn insert(
 /// animation on an old layer of a pair is pointed at the new layer. The
 /// other animations go: those on layers that have no counterpart any more,
 /// and those of a type that does not work on what their layer has become.
+///
+/// A component of the old design whose counterpart is a group stays a
+/// component: the group becomes one, and the instances outside the old
+/// design show it from then on. The instances of any other component of
+/// the old design are detached first (see
+/// [`detach`](crate::build::detach)), so they keep their look.
 pub fn replace_keeping_animations(
     document: &Document,
     existing: &NodeId,
@@ -452,8 +476,8 @@ pub fn replace_keeping_animations(
 
     // The new top layer takes over the place of the old one.
     let mut root = match replaces_artboard {
-        true => (*new_root).clone(),
-        false => as_group(new_root),
+        true => with_components(new_root, &ids),
+        false => as_group(&with_components(new_root, &ids)),
     }
     .with_id(ids[&new_root.id].clone());
     root.parent = old_root.parent.clone();
@@ -534,6 +558,9 @@ pub fn replace_keeping_animations(
             edits.push(Edit::update(&animation.id, patch));
         }
     }
+    let (before, after) = keep_components(document, &old_layers, &matched, &mut edits);
+    edits.splice(0..0, before);
+    edits.extend(after);
     edits.push(Edit::remove(existing));
     Ok(Replaced {
         edits,
@@ -542,6 +569,81 @@ pub fn replace_keeping_animations(
         matched,
         dropped,
     })
+}
+
+/// What happens to the components of a design that is replaced: those whose
+/// counterpart is a group make that group a component (changing its edit
+/// in `edits`), and the instances outside the old design follow it; the
+/// instances of the others are detached. Returns the edits that go before
+/// the replacement and those that go after it.
+fn keep_components(
+    document: &Document,
+    old_layers: &HashSet<&NodeId>,
+    matched: &HashMap<NodeId, NodeId>,
+    edits: &mut [Edit],
+) -> (Vec<Edit>, Vec<Edit>) {
+    let mut olds: Vec<&Node> = old_layers
+        .iter()
+        .filter_map(|id| document.get(id))
+        .filter(|node| node.node_type() == NodeType::Component)
+        .collect();
+    if olds.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    olds.sort_by(|a, b| a.id.cmp(&b.id));
+    let added: HashMap<NodeId, (Option<NodeId>, NodeType)> = edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Edit::Add { node } => Some((node.id.clone(), (node.parent.clone(), node.node_type()))),
+            _ => None,
+        })
+        .collect();
+    let mut successors: HashMap<&NodeId, NodeId> = olds
+        .iter()
+        .filter_map(|old| {
+            let new = matched.get(&old.id)?;
+            (added.get(new)?.1 == NodeType::Group).then(|| (&old.id, new.clone()))
+        })
+        .collect();
+    // A component cannot hold another: of two that the new design nests,
+    // only the outer one stays a component.
+    let chosen: HashSet<NodeId> = successors.values().cloned().collect();
+    successors.retain(|_, new| {
+        let mut parent = added.get(new).and_then(|(parent, _)| parent.as_ref());
+        while let Some(above) = parent {
+            if chosen.contains(above) {
+                return false;
+            }
+            parent = added.get(above).and_then(|(parent, _)| parent.as_ref());
+        }
+        true
+    });
+    for edit in edits.iter_mut() {
+        if let Edit::Add { node } = edit
+            && successors.values().any(|new| *new == node.id)
+            && let NodeData::Group(group) = &node.data
+        {
+            node.data = Component::from(group.clone()).into();
+        }
+    }
+    let gone: HashSet<NodeId> = old_layers.iter().map(|id| (*id).clone()).collect();
+    let mut follow = Vec::new();
+    let mut doomed = HashSet::new();
+    for old in olds {
+        match successors.get(&old.id) {
+            Some(new) => {
+                for instance in document.instances_of(&old.id) {
+                    if !gone.contains(&instance.id) {
+                        follow.push(Edit::set(&instance.id, "component", json!(new)));
+                    }
+                }
+            }
+            None => {
+                doomed.insert(old.id.clone());
+            }
+        }
+    }
+    (detach_instances_of(document, &doomed, &gone), follow)
 }
 
 #[cfg(test)]
@@ -863,6 +965,51 @@ mod tests {
         assert_eq!(
             replaced.matched[&first.ids[&id("1:5")]],
             replaced.ids[&id("9:5")]
+        );
+    }
+
+    #[test]
+    fn components_made_from_a_design_survive_a_new_version_of_it() {
+        let (document, first) = animated_card();
+        let old_root = first.roots[0].clone();
+        let icon = first.ids[&id("1:4")].clone();
+        let mut document = document;
+        let (_, edits) =
+            crate::build::make_component(&document, std::slice::from_ref(&icon)).unwrap();
+        document.apply(&edits).unwrap();
+        let (copy, edits) = crate::build::add_instance(
+            &document,
+            &icon,
+            &id("ab"),
+            &Place::Last,
+            crate::geometry::Point::ZERO,
+        )
+        .unwrap();
+        document.apply(&edits).unwrap();
+
+        // The icon is still there: it stays a component and the copy
+        // follows it.
+        let replaced = replace_keeping_animations(&document, &old_root, &design(card())).unwrap();
+        let result = applied(&document, &replaced.edits);
+        let new_icon = &replaced.ids[&id("1:4")];
+        assert_eq!(
+            result.get(new_icon).map(Node::node_type),
+            Some(NodeType::Component)
+        );
+        assert_eq!(result.get(&copy).and_then(Node::component), Some(new_icon));
+
+        // The icon is gone: the copy is detached and keeps its look.
+        let without_icon = design(json!([
+            { "id": "9:1", "type": "group", "name": "Card", "width": 300, "height": 200,
+              "source_id": "figma:f:1:1" }
+        ]));
+        let replaced = replace_keeping_animations(&document, &old_root, &without_icon).unwrap();
+        let result = applied(&document, &replaced.edits);
+        assert!(!result.contains(&copy));
+        assert!(
+            result
+                .nodes()
+                .all(|node| node.node_type() != NodeType::Instance)
         );
     }
 
