@@ -60,6 +60,38 @@ fn a_group_becomes_a_component_and_instances_of_it_are_added_by_temp_id() {
 }
 
 #[test]
+fn an_instance_takes_its_components_effects() {
+    let tools = demo_tools();
+    let result = apply(
+        &tools,
+        json!([
+            { "op": "update", "id": "card", "set": {
+                "glow": { "radius": 30 }, "noise": { "amount": 0.4, "animated": false },
+                "directional_blur": { "amount": 6, "angle": 45 } } },
+            { "op": "make_component", "id": "card" },
+            { "op": "add", "temp_id": "copy", "parent": "second",
+              "node": { "type": "instance", "component": "card", "noise": null } },
+        ]),
+    );
+    let document = document(&tools);
+    let copy = document
+        .get(&NodeId::from(created_id(&result, "copy").as_str()))
+        .unwrap();
+    let main = document
+        .get(&NodeId::from("card"))
+        .unwrap()
+        .layer()
+        .unwrap();
+    let layer = copy.layer().unwrap();
+    assert_eq!(layer.glow, main.glow);
+    assert_eq!(layer.directional_blur, main.directional_blur);
+    assert!(
+        main.noise.is_some() && layer.noise.is_none(),
+        "left out on purpose"
+    );
+}
+
+#[test]
 fn a_component_cloned_with_its_instance_is_delayed_once() {
     // A group holding the animated card as a component and an instance
     // of it, copied 500 ms later.

@@ -39,6 +39,12 @@ outside its clip. An audio item is a timeline row with the same fields and no ta
 with \"parent\" set to the artboard. Bring a file in with import_media, which gives its \
 duration; keep end - start within the duration minus trim_start. Sound goes into mp4, webm and \
 prores exports, and reading video and sound needs ffmpeg on the person's machine.
+- Effects are optional fields of any layer but an artboard: blur, shadow, glow (a soft halo \
+behind it: color, radius, spread), noise (film grain: amount 0 to 1, size of a grain, and \
+animated, which makes the grain change every frame unless false) and directional_blur (a smear \
+along one angle: amount, angle; 0 smears across, 90 down). Set one with update, for example \
+{\"glow\": {\"color\": \"#0D99FF\", \"radius\": 24}}; remove it with null. On a group they \
+apply to everything in it. Lottie exports leave noise and a glow's spread out.
 - The layers as they are stored are the design at rest. Motion is kept apart from it: an \
 animation is a node that says \"from start to end, change this property of that layer\" (its \
 target). There are no keyframes. Animations sit in rows on their artboard's timeline; an \
@@ -46,7 +52,8 @@ animation_group is a folder of rows.
 - Presets are whole entrances and exits in one node: fade_in, slide_in, grow_in, shrink_in, \
 spin_in, blur_in, reveal_in, their _out partners, and text_in and text_out for text letter by \
 letter or word by word. Prefer them. Property animations (move, rotate, scale, opacity, resize, \
-fill, stroke, corner_radius, blur, shadow) take one property from a value to another; counter \
+fill, stroke, corner_radius, blur, shadow, glow, noise, directional_blur) take one property from \
+a value to another (for the effects, from and to name only the parts that change); counter \
 counts a number in a text; show and hide switch a layer on or off at one moment.
 
 # How animations on one property combine
@@ -233,6 +240,9 @@ mod tests {
             "import_media",
             "trim_start",
             "ffmpeg",
+            "glow",
+            "noise",
+            "directional_blur",
             "Be brief",
         ] {
             assert!(GUIDE.contains(topic), "the guide does not mention {topic}");

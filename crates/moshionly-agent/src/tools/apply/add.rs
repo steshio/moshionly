@@ -285,8 +285,8 @@ fn read_target(
 }
 
 /// The component `node.component` names, written back as its real id. What
-/// the new instance leaves out of its name, size, opacity, blend mode, blur
-/// and shadow is taken from the component, so it looks like it.
+/// the new instance leaves out of its name, size, opacity, blend mode and
+/// effects is taken from the component, so it looks like it.
 fn read_component(
     batch: &Batch,
     node: &mut Map<String, Value>,
@@ -327,6 +327,9 @@ fn read_component(
             "blend_mode": layer.blend_mode,
             "blur": layer.blur,
             "shadow": layer.shadow,
+            "glow": layer.glow,
+            "noise": layer.noise,
+            "directional_blur": layer.directional_blur,
         })
     {
         for (name, value) in look {
