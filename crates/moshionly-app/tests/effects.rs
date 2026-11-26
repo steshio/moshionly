@@ -3,7 +3,7 @@
 //! section's add menu, changing and undoing it, editing several layers at
 //! once, and animating an effect from the Animate tab.
 
-use egui::{Key, Modifiers, vec2};
+use egui::{Key, Modifiers, Vec2, vec2};
 use egui_kittest::{
     Harness,
     kittest::{NodeT as _, Queryable as _},
@@ -32,11 +32,16 @@ const DEMO: &str = concat!(
 /// The editor on the demo project in a 1440 by 900 window, drawing on the
 /// test's thread with the bundled fonts.
 fn demo() -> Harness<'static, Shell> {
+    demo_in(vec2(1440.0, 900.0))
+}
+
+/// The editor on the demo project in a window of `size`.
+fn demo_in(size: Vec2) -> Harness<'static, Shell> {
     let session = SessionHandle::open(DEMO).expect("the demo opens");
     let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
     let shell = Shell::headless(Settings::default(), session, renderer);
     let mut harness = Harness::builder()
-        .with_size(vec2(1440.0, 900.0))
+        .with_size(size)
         .with_step_dt(1.0 / 60.0)
         .with_context_setup(theme::install)
         .build_ui_state(
@@ -190,6 +195,44 @@ fn each_effect_is_added_from_the_menu_changed_and_undone() {
     assert!(harness.query_by_label("Add effect").is_some());
     undo(&mut harness);
     assert_eq!(layer(&harness, "accent").glow, Some(Glow::default()));
+}
+
+#[test]
+fn removing_an_effect_wins_over_a_value_still_being_typed() {
+    // Tall enough to show every effect, since these clicks are pointer
+    // clicks.
+    let mut harness = demo_in(vec2(1440.0, 1600.0));
+    select(&mut harness, &["accent"]);
+    for (effect, name) in [
+        (Effect::Glow, "Glow radius"),
+        (Effect::Blur, "Layer blur"),
+        (Effect::Shadow, "Shadow blur"),
+        (Effect::Noise, "Noise size"),
+        (Effect::DirectionalBlur, "Directional blur amount"),
+    ] {
+        add_effect(&mut harness, &format!("Add {}", effect.lowercase()));
+        field(&harness, name).click_accesskit();
+        harness.run();
+        field(&harness, name).type_text("7");
+        harness.run();
+        // A pointer click presses and lets go in one frame, as a tap on a
+        // trackpad does: the typed value is kept in the same frame as the
+        // removal.
+        let remove = format!("Remove {}", effect.lowercase());
+        harness.get_by_label(&remove).click();
+        harness.run();
+        assert!(!effect.is_on(&layer(&harness, "accent")), "{effect:?}");
+        assert_eq!(undo_label(&harness), format!("Undo {remove}"));
+        // The typed value was its own step: undo brings the effect back
+        // as it was typed.
+        undo(&mut harness);
+        assert!(effect.is_on(&layer(&harness, "accent")), "{effect:?}");
+        assert_eq!(
+            undo_label(&harness),
+            format!("Undo Change {}", effect.lowercase())
+        );
+    }
+    assert_eq!(layer(&harness, "accent").glow.unwrap().radius, 7.0);
 }
 
 #[test]

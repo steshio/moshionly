@@ -992,6 +992,11 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
     );
     bind.state.open.effects = open;
     changes.extend(added.map(EffectChange::Add));
+    // A typed value is kept when its field loses focus, which can be on
+    // the very click that removes its effect. The value changes are worked
+    // out from the layers as they were at the start of the frame, so they
+    // go first and the removal last, or it would be written back.
+    changes.sort_by_key(|change| matches!(change, EffectChange::Remove(_)));
     for change in changes {
         match change {
             EffectChange::Add(effect) => {
