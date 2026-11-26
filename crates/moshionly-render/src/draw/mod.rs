@@ -6,6 +6,7 @@
 
 pub(crate) mod effects;
 pub(crate) mod geometry;
+mod glow;
 mod image;
 mod paint;
 pub(crate) mod stroke;

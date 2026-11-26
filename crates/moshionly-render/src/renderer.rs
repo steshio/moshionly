@@ -155,7 +155,7 @@ mod tests {
     fn renderer() -> Renderer {
         Renderer::new(FontLibrary::bundled(), AssetLoader::default())
     }
-    use moshionly_core::model::{BlendMode, GradientStop, ImageFit, Shadow};
+    use moshionly_core::model::{BlendMode, Glow, GradientStop, ImageFit, Shadow};
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
@@ -525,6 +525,50 @@ mod tests {
         let frame = draw(vec![both]);
         assert_eq!(alpha(&frame, 21), 0);
         assert!(alpha(&frame, 11) > 0, "the blurred edge inside the clip");
+    }
+
+    #[test]
+    fn glows_surround_the_shape_behind_it() {
+        let red = Color::rgb(255, 0, 0);
+        let mut glowing = square("g", 16.0, 6.0, 8.0, Color::WHITE);
+        glowing.glow = Some(Glow {
+            color: red,
+            radius: 0.0,
+            spread: 3.0,
+        });
+        let frame = draw(vec![glowing.clone()]);
+        let pixel = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap();
+        assert_eq!(
+            pixel(&frame, 20, 10),
+            [255, 255, 255, 255],
+            "the layer on top"
+        );
+        assert_eq!(
+            pixel(&frame, 14, 10),
+            [255, 0, 0, 255],
+            "grown by the spread"
+        );
+        assert_eq!(pixel(&frame, 20, 4), [255, 0, 0, 255]);
+        assert_eq!(pixel(&frame, 11, 10), [0, 0, 0, 0], "past the spread");
+
+        // A radius softens it, and the glow covers a shadow below it.
+        glowing.glow = Some(Glow {
+            color: red,
+            radius: 6.0,
+            spread: 0.0,
+        });
+        glowing.shadow = Some(Shadow {
+            color: Color::BLACK,
+            x: 0.0,
+            y: 0.0,
+            blur: 0.0,
+        });
+        let frame = draw(vec![glowing]);
+        assert_eq!(pixel(&frame, 20, 10), [255, 255, 255, 255]);
+        let near = pixel(&frame, 14, 10);
+        let far = pixel(&frame, 11, 10);
+        assert!(near[0] > far[0] && far[0] > 0, "{near:?} {far:?}");
+        assert_eq!((near[1], near[2]), (0, 0), "red, not mixed with the shadow");
     }
 
     #[test]
