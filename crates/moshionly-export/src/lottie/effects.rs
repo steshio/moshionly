@@ -313,14 +313,22 @@ impl Converter<'_> {
                      so it is a little larger.",
                 );
             }
-            if self.has_reveal(id) {
-                self.warnings.layer(
-                    node,
-                    "has a shadow and a reveal; Lottie players differ in whether the reveal \
-                     also cuts the shadow, as Moshionly does, so some show the shadow past the \
-                     edge that wipes.",
-                );
-            }
+        }
+        // A glow is a drop shadow in Lottie too, so it meets a reveal the
+        // same way.
+        if (glowing || shadowed) && self.has_reveal(id) {
+            let (has, cut, shown) = match (glowing, shadowed) {
+                (true, true) => ("a glow, a shadow", "the glow and the shadow", "them"),
+                (true, false) => ("a glow", "the glow", "the glow"),
+                _ => ("a shadow", "the shadow", "the shadow"),
+            };
+            self.warnings.layer(
+                node,
+                &format!(
+                    "has {has} and a reveal; Lottie players differ in whether the reveal also \
+                     cuts {cut}, as Moshionly does, so some show {shown} past the edge that wipes."
+                ),
+            );
         }
         if blurred {
             let timeline = self.timeline;

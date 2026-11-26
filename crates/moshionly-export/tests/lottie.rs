@@ -888,6 +888,22 @@ fn grain_is_named_on_every_kind_of_layer() {
 }
 
 #[test]
+fn a_glow_with_a_reveal_is_warned_about_like_a_shadow() {
+    let nodes = r##",{"id":"halo","parent":"board","index":"a0","type":"ellipse","name":"Halo",
+            "width":100,"height":100,"fill":"#0D99FF","glow":{"radius":20}}
+        ,{"id":"wipe","parent":"board","index":"a0","type":"reveal_in","target":"halo",
+            "start":0,"end":500,"direction":"down"}"##;
+    let (_, exported) = export_document(document(1000.0, nodes), Settings::default());
+    assert_eq!(
+        exported.warnings,
+        [
+            "\"Halo\" has a glow and a reveal; Lottie players differ in whether the reveal also \
+          cuts the glow, as Moshionly does, so some show the glow past the edge that wipes."
+        ]
+    );
+}
+
+#[test]
 fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
     let nodes = r##",{"id":"star","parent":"board","index":"a0","type":"star","name":"Badge",
             "width":200,"height":100,"stroke":{"paint":"#000000","width":4,"position":"inside"},

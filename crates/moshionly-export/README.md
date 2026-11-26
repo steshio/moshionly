@@ -262,7 +262,8 @@ Moshionly does.
 Skottie and the Android player read shadow softness as a blur radius and
 draw shadows somewhat softer; lottie-web's canvas renderer draws no
 effects, and fades the layers of a faded group one by one rather than
-together. Players differ in whether a reveal also cuts a layer's shadow.
+together. Players differ in whether a reveal also cuts a layer's shadow or
+glow.
 
 ### Warnings
 
@@ -279,9 +280,10 @@ sizes), an instance with a negative time offset whose component's
 animations are still running when it starts (the motion before that is
 squeezed into what is left of it), and of the effects: film grain (left
 out), a glow's spread (left out, so the glow is thinner), a glow together
-with a shadow (Lottie draws the shadow from the glow too), and a directional
-blur whose angle is not across or down (drawn across or down, whichever is
-nearer). One layer never stops the export.
+with a shadow (Lottie draws the shadow from the glow too), a glow or shadow
+with a reveal (some players do not cut them with the reveal), and a
+directional blur whose angle is not across or down (drawn across or down,
+whichever is nearer). One layer never stops the export.
 
 ## The command-line example
 
