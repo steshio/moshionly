@@ -766,6 +766,98 @@ fn shadows_and_blurs_become_effects() {
 }
 
 #[test]
+fn glows_and_directional_blurs_become_effects_and_grain_is_named() {
+    let nodes = r##",{"id":"card","parent":"board","index":"a0","type":"rect","name":"Card",
+            "width":200,"height":100,"fill":"#FFFFFF","blur":6,
+            "glow":{"color":"#FF000080","radius":12,"spread":4},
+            "shadow":{"color":"#00000040","y":16,"blur":40},
+            "directional_blur":{"amount":30,"angle":30},
+            "noise":{"amount":0.3}}
+        ,{"id":"bar","parent":"board","index":"a1","type":"rect","name":"Bar",
+            "x":300,"width":100,"height":100,"fill":"#0D99FF",
+            "directional_blur":{"amount":12,"angle":90}}
+        ,{"id":"halo","parent":"board","index":"a2","type":"ellipse","name":"Halo",
+            "x":600,"width":100,"height":100,"fill":"#0D99FF"}
+        ,{"id":"in","parent":"board","index":"a0","type":"glow","target":"halo",
+            "start":0,"end":500,"to":{"color":"#FFFFFF","radius":20}}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    let values = |effect: &Value| -> Vec<Value> {
+        effect["ef"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["v"]["k"].clone())
+            .collect()
+    };
+    let kinds = |layer: &Value| -> Vec<(i64, String)> {
+        layer["ef"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| {
+                let name = effect["nm"].as_str().unwrap().to_owned();
+                (effect["ty"].as_i64().unwrap(), name)
+            })
+            .collect()
+    };
+    let card = layer(&lottie["layers"], "Card");
+    assert_eq!(
+        kinds(card),
+        [
+            (25, "Glow".to_owned()),
+            (25, "Drop Shadow".to_owned()),
+            (29, "Gaussian Blur".to_owned()),
+            (29, "Directional Blur".to_owned())
+        ]
+    );
+    let effects = card["ef"].as_array().unwrap();
+    // The glow: half-transparent red, no distance, softness twice its radius.
+    let glow = values(&effects[0]);
+    assert_eq!(glow[0], serde_json::json!([1, 0, 0, 1]));
+    assert_eq!(
+        glow[1..],
+        [
+            Value::from(128),
+            Value::from(180),
+            Value::from(0),
+            Value::from(24)
+        ]
+    );
+    // The directional blur at 30 degrees is mostly across: dimension 2.
+    let smear = values(&effects[3]);
+    assert_eq!(
+        (smear[0].clone(), smear[1].clone()),
+        (Value::from(50), Value::from(2))
+    );
+    assert_eq!(values(&effects[2])[1], 1, "the plain blur goes both ways");
+    let bar = layer(&lottie["layers"], "Bar");
+    assert_eq!(
+        values(&bar["ef"][0])[1],
+        3,
+        "a blur at 90 degrees goes down"
+    );
+    // A glow that only an animation brings is there, fading in.
+    let halo = layer(&lottie["layers"], "Halo");
+    assert_eq!(kinds(halo), [(25, "Glow".to_owned())]);
+    assert!(
+        halo["ef"][0]["ef"][1]["v"]["a"] == 1,
+        "the opacity is animated"
+    );
+
+    let said = exported.warnings.join("\n");
+    for expected in [
+        "\"Card\" has film grain (noise), which Lottie cannot show; it is left out.",
+        "\"Card\" has a glow with a spread",
+        "\"Card\" has a glow and a shadow",
+        "\"Card\" has a directional blur at 30 degrees, but Lottie blurs only across or down; \
+         it is drawn across.",
+    ] {
+        assert!(said.contains(expected), "{expected}\n{said}");
+    }
+    assert_eq!(exported.warnings.len(), 4, "{said}");
+}
+
+#[test]
 fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
     let nodes = r##",{"id":"star","parent":"board","index":"a0","type":"star","name":"Badge",
             "width":200,"height":100,"stroke":{"paint":"#000000","width":4,"position":"inside"},
