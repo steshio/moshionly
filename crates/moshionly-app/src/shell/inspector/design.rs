@@ -1018,7 +1018,13 @@ fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) 
             }
             EffectChange::Number(effect, part, response, shown) => {
                 let value = effects::stored_part(effect, part, shown);
-                bind.field(&response, &format!("Change {}", effect.lowercase()), || {
+                let changed = response.response.changed();
+                // A blur of 0 is no blur: its block goes away at once, and
+                // its field is not there to say when a scrub ends. So the
+                // step ends on the frame the blur reaches 0.
+                let gone = changed && effect == Effect::Blur && value == 0.0;
+                let summary = format!("Change {}", effect.lowercase());
+                bind.continuous(changed, response.finished || gone, &summary, || {
                     effects::set_part(effect, &layers, part, json!(value))
                 });
             }

@@ -236,6 +236,34 @@ fn removing_an_effect_wins_over_a_value_still_being_typed() {
 }
 
 #[test]
+fn scrubbing_the_blur_to_nothing_ends_its_step() {
+    let mut harness = demo_in(vec2(1440.0, 1600.0));
+    select(&mut harness, &["accent"]);
+    add_effect(&mut harness, "Add glow");
+    add_effect(&mut harness, "Add blur");
+    // Scrub the blur down past 0. Its block goes away while the button is
+    // still down, so the field never sees the scrub end.
+    let from = field(&harness, "Layer blur").rect().center();
+    let to = from - vec2(40.0, 0.0);
+    harness.drag_at(from);
+    harness.run();
+    harness.hover_at(to);
+    harness.run();
+    harness.drop_at(to);
+    harness.run();
+    assert_eq!(layer(&harness, "accent").blur, 0.0);
+    assert_eq!(undo_label(&harness), "Undo Change blur");
+    assert!(!harness.state().editor().in_gesture());
+
+    // What comes next is a step of its own.
+    type_into(&mut harness, "Glow radius", "44");
+    assert_eq!(undo_label(&harness), "Undo Change glow");
+    undo(&mut harness);
+    assert_eq!(layer(&harness, "accent").glow, Some(Glow::default()));
+    assert_eq!(layer(&harness, "accent").blur, 0.0);
+}
+
+#[test]
 fn several_layers_keep_their_own_effects() {
     let mut harness = demo();
     // The strip has a red glow and grain that stays still; the dot a wide
