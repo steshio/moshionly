@@ -44,6 +44,7 @@ app: snap timeline bars to 10 ms
 | A field that is a time on the timeline (like a clip's `start` and `end`) | `moshionly-core`, then everything that moves times: detaching an instance (`build::detach`), the agents' `clone` with `time_offset`, and the warnings about running past the end of the timeline |
 | Reading another kind of media | usually nothing: `ffmpeg` reads it (`moshionly-export::media`); the app's file filters list the extensions |
 | An action or preset | `moshionly-core` animation definitions and its evaluation rule |
+| A layer effect (like `glow`) | `moshionly-core`: a value type in `model/effect.rs`, a field on `LayerProps`, its animation, its scene field; then `moshionly-render` `draw/effects.rs` (the filter and how far it reaches), a reference scene, and the Lottie mapping or warning in `moshionly-export` |
 | An easing | `moshionly-core` easing module |
 | An export format | a new module in `moshionly-export` |
 | An agent tool | `moshionly-agent` tools |

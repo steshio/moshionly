@@ -1104,11 +1104,12 @@ A layer at `opacity: 80` with an `opacity` animation from `0` (no `to`) between 
 What the values mean:
 
 - `scale` values multiply the layer's resting `scale`. `1` is the resting size.
-- `opacity`, sizes, colours, radii, blur and shadows are absolute values.
-- A `stroke` or `shadow` animation may name only some parts (`{ "width": 4 }`); the parts it does not name are treated like a missing value.
-- A layer without a stroke counts as having a stroke of width 0, and a layer without a shadow as having a fully transparent one, so both can be animated in.
+- `opacity`, sizes, colours, radii, blur and the effects are absolute values.
+- A `stroke`, `shadow`, `glow`, `noise` or `directional_blur` animation may name only some parts (`{ "width": 4 }`); the parts it does not name are treated like a missing value.
+- A layer without a stroke counts as having a stroke of width 0, a layer without a shadow as having a fully transparent one, without a glow as having the default glow fully transparent, without noise as having grain of amount 0, and without a directional blur as having one of amount 0 at angle 0, so all of them can be animated in.
+- Whether grain moves (`noise.animated`) is the layer's own and does not animate.
 
-An easing may carry a value past its target on the way (`overshoot`, `elastic`). Opacity, sizes, radii and blur are then limited to their valid range. Positions and rotation are not, and scale only stops at 0.
+An easing may carry a value past its target on the way (`overshoot`, `elastic`). Opacity, sizes, radii, blur and the effects' amounts, radii and spreads are then limited to their valid range. Positions and rotation are not, and scale only stops at 0.
 
 ### Show and hide
 
@@ -1235,6 +1236,20 @@ What an instance shows at a moment is what the component's own type draws (its f
 The rules: an instance's `component` must name a `component` layer; a component cannot be inside another component; and no component may show itself, by holding an instance of itself or of a component that shows it. Instances of other components inside a component are fine. Removing a component that instances still show is refused; the editor and the agents' `remove` first *detach* those instances, replacing each with a `group` that looks the same, with copies of the component's layers and of their animations (except that a group from an instance resized out of proportion keeps stroke widths and font sizes, and one from an instance with a negative `time_offset` squeezes the animations under way at 0 ms into what is left of them; the agents' tools warn when that happens). A `group` and a `component` have the same fields, so an update can turn one into the other by setting `type`.
 
 Version 2 of the format added `component` and `instance`, version 3 added `video` and `audio`, and version 4 the effects `glow`, `noise` and `directional_blur`. An older file is read as it is and saved as the current version.
+
+## Effects
+
+Every layer but an artboard can have these, each at most once:
+
+- `blur`: the whole layer out of focus.
+- `shadow`: a copy of the layer's shape behind it, offset, softened and coloured.
+- `glow`: a soft halo of colour around the layer's shape, behind it. `spread` grows the shape before `radius` softens it.
+- `noise`: film grain over the layer's own pixels. Each grain is a square of `size` pixels that is lightened or darkened by up to `amount`; the layer's transparency is kept, so the grain stays inside its shape. With `animated` (the default) the grain changes on every frame. The grain depends only on the layer's id and the moment, so the same frame always looks the same and exporting twice gives the same file.
+- `directional_blur`: a smear along one direction, like fast movement in a photo. `angle` is in degrees, clockwise: 0 smears left and right, 90 up and down.
+
+They are drawn in this order, from the inside out: the layer's content; its grain; its shadow and then its glow behind it; the blur; the directional blur; then its clip or mask, blend mode and opacity. On a group they apply to everything in it, drawn together; on a text layer, to the whole text. Lengths are in the layer's own pixels, so effects turn and scale with it.
+
+Lottie exports keep the shadow, the glow (without its spread), the blur and the directional blur (across or down only); grain is left out. Each is named in the export's warnings.
 
 ## Images
 
