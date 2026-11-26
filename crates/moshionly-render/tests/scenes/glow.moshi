@@ -1,0 +1,14 @@
+{
+  "format": "moshionly",
+  "version": 4,
+  "name": "Glow",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Glow","width":360,"height":140,"fill":"#14161C"},
+    {"id":"soft","parent":"board","index":"a0","type":"ellipse","name":"Soft","x":30,"y":30,"width":80,"height":80,"fill":"#FFFFFF",
+     "glow":{"color":"#0D99FF","radius":24}},
+    {"id":"spread","parent":"board","index":"a1","type":"rect","name":"Spread","x":150,"y":40,"width":60,"height":60,"corner_radius":8,"fill":"#FFD60A",
+     "glow":{"color":"#FF5E3ACC","radius":12,"spread":10}},
+    {"id":"both","parent":"board","index":"a2","type":"star","name":"Both","x":250,"y":30,"width":80,"height":80,"fill":"#A29BFE","rotation":15,
+     "shadow":{"color":"#000000CC","x":10,"y":10,"blur":8},"glow":{"color":"#55EFC4","radius":16,"spread":2}}
+  ]
+}

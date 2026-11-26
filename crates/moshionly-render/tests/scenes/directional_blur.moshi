@@ -1,0 +1,14 @@
+{
+  "format": "moshionly",
+  "version": 4,
+  "name": "Directional blur",
+  "nodes": [
+    {"id":"board","parent":null,"index":"a0","type":"artboard","name":"Directional blur","width":420,"height":140,"fill":"#FFFFFF"},
+    {"id":"across","parent":"board","index":"a0","type":"star","name":"Across","x":40,"y":30,"width":80,"height":80,"fill":"#6C5CE7",
+     "directional_blur":{"amount":20,"angle":0}},
+    {"id":"down","parent":"board","index":"a1","type":"star","name":"Down","x":170,"y":30,"width":80,"height":80,"fill":"#6C5CE7",
+     "directional_blur":{"amount":20,"angle":90}},
+    {"id":"slanted","parent":"board","index":"a2","type":"rect","name":"Slanted","x":300,"y":40,"width":60,"height":60,"fill":"#E17055","rotation":30,
+     "shadow":{"color":"#00000060","y":6,"blur":6},"directional_blur":{"amount":16,"angle":45}}
+  ]
+}
