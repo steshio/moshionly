@@ -155,7 +155,9 @@ mod tests {
     fn renderer() -> Renderer {
         Renderer::new(FontLibrary::bundled(), AssetLoader::default())
     }
-    use moshionly_core::model::{BlendMode, Glow, GradientStop, ImageFit, Noise, Shadow};
+    use moshionly_core::model::{
+        BlendMode, DirectionalBlur, Glow, GradientStop, ImageFit, Noise, Shadow,
+    };
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
@@ -648,6 +650,74 @@ mod tests {
             }
         }
         assert!(differ > 10, "cells differ from each other: {differ}");
+    }
+
+    #[test]
+    fn directional_blur_smears_along_its_angle() {
+        let smeared = |angle: f64| {
+            let mut node = square("d", 16.0, 6.0, 8.0, Color::BLACK);
+            node.directional_blur = Some(DirectionalBlur { amount: 8.0, angle });
+            draw(vec![node])
+        };
+        let alpha = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap()[3];
+        let across = smeared(0.0);
+        assert!(alpha(&across, 13, 10) > 20, "{}", alpha(&across, 13, 10));
+        assert!(alpha(&across, 26, 10) > 20, "{}", alpha(&across, 26, 10));
+        assert_eq!(alpha(&across, 20, 3), 0, "nothing above");
+        assert!(alpha(&across, 20, 10) < 255, "the middle thins out");
+        let down = smeared(90.0);
+        assert!(alpha(&down, 20, 3) > 20, "{}", alpha(&down, 20, 3));
+        assert!(alpha(&down, 20, 16) > 20, "{}", alpha(&down, 20, 16));
+        assert_eq!(alpha(&down, 13, 10), 0, "nothing beside");
+        // Opposite directions smear alike.
+        assert_eq!(
+            smeared(180.0).premultiplied(),
+            across.premultiplied(),
+            "180 degrees is 0"
+        );
+    }
+
+    #[test]
+    fn bounds_reach_as_far_as_the_effects() {
+        let renderer = renderer();
+        let scene = scene(None);
+        let bounds = |node: SceneNode| {
+            let mut scene = scene.clone();
+            scene.nodes = vec![node];
+            renderer.bounds_of(&scene, &NodeId::from("e")).unwrap()
+        };
+        let plain = square("e", 10.0, 0.0, 10.0, Color::BLACK);
+        assert_eq!(
+            bounds(plain.clone()).visual,
+            Some(Rect::new(10.0, 0.0, 10.0, 10.0))
+        );
+        let mut glowing = plain.clone();
+        glowing.glow = Some(Glow {
+            color: Color::WHITE,
+            radius: 4.0,
+            spread: 0.0,
+        });
+        assert_eq!(
+            bounds(glowing).visual,
+            Some(Rect::new(4.0, -6.0, 22.0, 22.0)),
+            "the blur the glow is made from, sigma 2, spreads 6"
+        );
+        let mut grainy = plain.clone();
+        grainy.noise = Some(Noise::default());
+        assert_eq!(
+            bounds(grainy).visual,
+            Some(Rect::new(10.0, 0.0, 10.0, 10.0))
+        );
+        let mut smeared = plain;
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 4.0,
+            angle: 0.0,
+        });
+        assert_eq!(
+            bounds(smeared).visual,
+            Some(Rect::new(4.0, 0.0, 22.0, 10.0)),
+            "along the angle only"
+        );
     }
 
     #[test]

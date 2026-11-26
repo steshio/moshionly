@@ -1,11 +1,16 @@
 //! A node's effects as Skia objects: its drop shadow, glow and blur as one
-//! image filter, and its blend mode. Its grain is a paint, in
-//! [`super::noise`].
+//! image filter, its directional blur, and its blend mode. Its grain is a
+//! paint, in [`super::noise`].
 //!
 //! Blur amounts in the scene are twice the standard deviation of the
 //! Gaussian, so Skia's sigma is half of them. Everything here is in the
 //! node's own coordinates; Skia applies filters under the canvas's
 //! transform, so a shadow turns and scales with its node.
+//!
+//! The directional blur is not part of the filter: the painter draws it by
+//! turning the canvas so that the direction is horizontal and blurring the
+//! layer across only (see [`directional`]). A blur sampled several times
+//! along the direction in SkSL looks the same but costs several times more.
 
 use moshionly_core::model::{BlendMode, Shadow};
 use moshionly_core::scene::SceneNode;
@@ -107,11 +112,36 @@ fn is_visible(shadow: &Shadow) -> bool {
     shadow.color.a > 0 && shadow.x.is_finite() && shadow.y.is_finite()
 }
 
-/// How far `node`'s shadow, glow and blur reach past what it draws, as a
-/// margin on each side: left, top, right, bottom. Three standard deviations
-/// hold all of a Gaussian that can be seen in 8 bits. Grain stays inside
-/// the node's alpha.
+/// How the painter draws `node`'s directional blur: Skia's sigma along the
+/// direction and the direction in degrees, or `None` when there is no blur
+/// to see.
+pub(crate) fn directional(node: &SceneNode) -> Option<(f32, f32)> {
+    let blur = node.directional_blur.as_ref()?;
+    let sigma = sigma(blur.amount)?;
+    blur.angle.is_finite().then_some((sigma, blur.angle as f32))
+}
+
+/// How far `node`'s effects reach past what it draws, as a margin on each
+/// side: left, top, right, bottom. Three standard deviations hold all of a
+/// Gaussian that can be seen in 8 bits.
 pub(crate) fn reach(node: &SceneNode) -> [f64; 4] {
+    let filtered = filter_reach(node);
+    let (across, down) = directional(node).map_or((0.0, 0.0), |(sigma, angle)| {
+        let spread = 3.0 * f64::from(sigma);
+        let angle = f64::from(angle).to_radians();
+        (spread * angle.cos().abs(), spread * angle.sin().abs())
+    });
+    [
+        filtered[0] + across,
+        filtered[1] + down,
+        filtered[2] + across,
+        filtered[3] + down,
+    ]
+}
+
+/// How far what [`filter`] adds reaches: the shadow and glow behind, then
+/// the blur over everything. Grain stays inside the node's alpha.
+pub(crate) fn filter_reach(node: &SceneNode) -> [f64; 4] {
     let spread_of = |blur: f64| sigma(blur).map_or(0.0, |sigma| 3.0 * f64::from(sigma));
     let mut margin = [0.0; 4];
     if let Some(shadow) = node.shadow.as_ref().filter(|shadow| shadow.color.a > 0) {
@@ -135,7 +165,7 @@ pub(crate) fn reach(node: &SceneNode) -> [f64; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moshionly_core::model::{Glow, Noise};
+    use moshionly_core::model::{DirectionalBlur, Glow, Noise};
     use moshionly_core::scene::{Content, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId};
 
@@ -216,12 +246,21 @@ mod tests {
         });
         assert!(filter(&glowing).is_none());
 
-        // Grain is drawn by the painter, not the filter, and stays inside
-        // the shape.
+        // Grain is drawn by the painter, not the filter.
         let mut grainy = node(0.0, None);
         grainy.noise = Some(Noise::default());
         assert!(filter(&grainy).is_none());
-        assert_eq!(reach(&grainy), [0.0; 4]);
+
+        // The directional blur is drawn by the painter, not the filter.
+        let mut smeared = node(0.0, None);
+        smeared.directional_blur = Some(DirectionalBlur::default());
+        assert!(filter(&smeared).is_none());
+        assert_eq!(directional(&smeared), Some((10.0, 0.0)));
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 0.0,
+            angle: 30.0,
+        });
+        assert_eq!(directional(&smeared), None);
     }
 
     #[test]
@@ -240,7 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn the_reach_covers_glows() {
+    fn the_reach_covers_glows_and_directional_blurs() {
+        let close = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-9);
         let mut glowing = node(0.0, None);
         glowing.glow = Some(Glow {
             color: Color::WHITE,
@@ -257,5 +297,29 @@ mod tests {
             blur: 4.0,
         });
         assert_eq!(reach(&glowing), [6.0, 6.0, 26.0, 6.0]);
+        // Grain stays inside the shape.
+        let mut grainy = node(0.0, None);
+        grainy.noise = Some(Noise::default());
+        assert_eq!(reach(&grainy), [0.0; 4]);
+
+        // A directional blur of 20 (sigma 10) reaches 30 along its angle.
+        let mut smeared = node(2.0, None);
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 20.0,
+            angle: 0.0,
+        });
+        assert!(close(reach(&smeared), [33.0, 3.0, 33.0, 3.0]));
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 20.0,
+            angle: 90.0,
+        });
+        assert!(close(reach(&smeared), [3.0, 33.0, 3.0, 33.0]));
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 20.0,
+            angle: -135.0,
+        });
+        let diagonal = 3.0 + 30.0 * std::f64::consts::FRAC_1_SQRT_2;
+        assert!(close(reach(&smeared), [diagonal; 4]));
+        assert_eq!(filter_reach(&smeared), [3.0; 4]);
     }
 }

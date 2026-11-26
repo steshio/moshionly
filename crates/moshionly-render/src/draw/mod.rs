@@ -108,7 +108,7 @@ impl<'a> Painter<'a> {
 
     /// Draws a node's content with its effects, in the order of
     /// `docs/architecture.md`, innermost first: content, grain, shadow and
-    /// glow, blur, mask and clip, blend mode, opacity.
+    /// glow, blur, directional blur, mask and clip, blend mode, opacity.
     /// Each effect that needs one gets an offscreen layer, and the layers
     /// nest the other way round.
     fn effects(&mut self, node: &SceneNode, opacity: f32) {
@@ -118,9 +118,11 @@ impl<'a> Painter<'a> {
             .noise
             .as_ref()
             .and_then(|grain| noise::paint(grain, &node.id, self.time_ms));
+        let directional = effects::directional(node);
         let blend = effects::blend_mode(node.blend_mode);
         let plain = filter.is_none()
             && grain.is_none()
+            && directional.is_none()
             && node.mask.is_none()
             && blend == sk::BlendMode::SrcOver;
         if plain && (opacity >= 1.0 || is_flat(node)) {
@@ -161,9 +163,37 @@ impl<'a> Painter<'a> {
             canvas.save_layer(&sk::canvas::SaveLayerRec::default().bounds(&visual));
         }
         // What the content draws bounds the layers of the filters.
-        let content = (filter.is_some() || grain.is_some())
+        let content = (filter.is_some() || grain.is_some() || directional.is_some())
             .then(|| geometry.content(node, Precision::Quick))
             .flatten();
+        if let Some((sigma, angle)) = directional {
+            // Turned so that the direction is across, the layer is blurred
+            // across only; what is drawn into it is turned back, so it
+            // lands where it belongs. The layer holds everything the
+            // filter below draws.
+            let centre = sk::Point::new((node.width / 2.0) as f32, (node.height / 2.0) as f32);
+            let held = content.as_ref().map(|content| {
+                let [left, top, right, bottom] = effects::filter_reach(node);
+                let around = Rect::new(
+                    content.x - left,
+                    content.y - top,
+                    content.width + left + right,
+                    content.height + top + bottom,
+                );
+                let back = sk::Matrix::rotate_deg_pivot(-angle, centre);
+                back.map_rect(layer_bounds(&around)).0
+            });
+            let mut paint = sk::Paint::default();
+            paint.set_image_filter(sk::image_filters::blur((sigma, 0.0), None, None, None));
+            canvas.save();
+            canvas.rotate(angle, Some(centre));
+            let mut layer = sk::canvas::SaveLayerRec::default().paint(&paint);
+            if let Some(held) = &held {
+                layer = layer.bounds(held);
+            }
+            canvas.save_layer(&layer);
+            canvas.rotate(-angle, Some(centre));
+        }
         if filter.is_some() || grain.is_some() {
             // The layer holds the content and its grain; the shadow, glow
             // and blur the filter adds may reach past it.
@@ -182,6 +212,11 @@ impl<'a> Painter<'a> {
             canvas.restore();
         } else {
             self.content(node, 1.0);
+        }
+        if directional.is_some() {
+            // The blurred layer, then the turn.
+            canvas.restore();
+            canvas.restore();
         }
         if let Some(mask) = &node.mask {
             // What the mask draws keeps what is under it in proportion to
