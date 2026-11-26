@@ -6,9 +6,11 @@
 //! is at `n / 48` milliseconds, so a clip starting at `t` milliseconds
 //! starts at sample `round(t × 48)` whatever stretch is mixed.
 //!
-//! A clip is read whole (from `trim_start`, for as long as it plays) and
-//! kept, within a memory budget, so mixing another stretch of the same
-//! timeline, as playback from another moment does, reads nothing again.
+//! A clip is read from `trim_start` for as long as it plays before the end
+//! of the stretch mixed, and no further than its file goes: past either,
+//! nothing can be heard. What is read is kept, within a memory budget, so
+//! mixing the timeline again from another moment, as playback does, reads
+//! nothing again.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -139,10 +141,30 @@ impl SoundDecoder {
         from_ms: f64,
         length_ms: f64,
     ) -> Result<Arc<[f32]>, MediaError> {
-        let (modified, probed) = self.probes.get(&self.tools, path)?;
+        let samples = self.sound_of(path, from_ms, length_ms)?;
         let length = frames_in(length_ms) * CHANNELS;
+        if samples.len() == length {
+            return Ok(samples);
+        }
+        let mut padded = Vec::with_capacity(length);
+        padded.extend_from_slice(&samples);
+        padded.resize(length, 0.0);
+        Ok(padded.into())
+    }
+
+    /// What the file at `path` has of `length_ms` milliseconds of sound
+    /// from `from_ms` into it: as [`decode`](Self::decode) gives, but
+    /// shorter, without the silence, where the file ends sooner or has no
+    /// sound. Read once and kept.
+    fn sound_of(
+        &self,
+        path: &Path,
+        from_ms: f64,
+        length_ms: f64,
+    ) -> Result<Arc<[f32]>, MediaError> {
+        let (modified, probed) = self.probes.get(&self.tools, path)?;
         if !probed.info.has_sound {
-            return Ok(vec![0.0; length].into());
+            return Ok(Arc::new([]));
         }
         let key = (
             path.to_owned(),
@@ -154,7 +176,7 @@ impl SoundDecoder {
             return Ok(kept);
         }
         let mut samples = self.read(path, from_ms.max(0.0), length_ms, probed.channels)?;
-        samples.resize(length, 0.0);
+        samples.truncate(frames_in(length_ms) * CHANNELS);
         let samples: Arc<[f32]> = samples.into();
         lock(&self.cache).keep(key, Arc::clone(&samples));
         Ok(samples)
@@ -204,9 +226,13 @@ impl SoundDecoder {
                     continue;
                 }
             };
+            // Only what can be heard: not past the end of the stretch mixed,
+            // nor past the end of the file. What `add` is not given is
+            // silence.
+            let audible_ms = sound.duration_ms.min(to_ms - sound.start_ms);
             let clip = match self.has_sound(&path) {
                 Ok(false) => continue,
-                Ok(true) => self.decode(&path, sound.media_start_ms, sound.duration_ms),
+                Ok(true) => self.sound_of(&path, sound.media_start_ms, audible_ms),
                 Err(error) => Err(error),
             };
             match clip {

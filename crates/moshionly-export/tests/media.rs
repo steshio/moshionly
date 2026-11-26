@@ -451,3 +451,43 @@ fn mixing_honours_start_trim_and_volume() {
         Err(MediaError::Cancelled)
     );
 }
+
+#[test]
+fn a_clip_that_ends_long_after_its_file_keeps_no_more_than_it_can_play() {
+    let Some(tools) = tools("a_clip_that_ends_long_after_its_file_keeps_no_more_than_it_can_play")
+    else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ramp(&tools, dir.path());
+    let project = dir.path().join("project.moshi");
+    // Two seconds of sound in a clip ten minutes long.
+    let document = document(json!([
+        { "id": "a", "parent": "ab", "index": "a0", "type": "audio", "source": "ramp.wav",
+          "start": 0, "end": 600_000 },
+    ]));
+    let decoder = SoundDecoder::new(tools);
+    let artboard = NodeId::from("ab");
+    let cancel = CancelToken::new();
+    let second = 48_000 * 2 * 4;
+    let mix = decoder
+        .mix(&document, &artboard, Some(&project), 0.0, 1000.0, &cancel)
+        .unwrap();
+    assert_eq!((mix.sounds, mix.frames()), (1, 48_000));
+    assert!((mix.samples[2 * 24_000] - 0.25).abs() < 1e-3);
+    // Only the second mixed is read and kept.
+    let used = decoder.memory_used();
+    assert!(used <= second, "{used} bytes");
+    // Mixed for five seconds, only the file's two are kept.
+    let longer = decoder
+        .mix(&document, &artboard, Some(&project), 0.0, 5000.0, &cancel)
+        .unwrap();
+    assert!((longer.samples[2 * 72_000] - 0.75).abs() < 1e-3);
+    assert!(
+        longer.samples[2 * 96_000..]
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    let kept = decoder.memory_used() - used;
+    assert!(kept <= 2 * second + 2 * 4 * 48, "{kept} bytes");
+}
