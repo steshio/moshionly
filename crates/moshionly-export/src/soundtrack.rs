@@ -10,6 +10,7 @@
 //! warning; GIF, PNG and PNG sequences have no sound, and say so.
 
 use std::ffi::OsString;
+use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -188,6 +189,13 @@ pub(crate) fn add_to_mp4(
     );
     args.push(muxed.as_os_str().to_owned());
     Running::start(ffmpeg, &args, Format::Mp4, cancel.clone())?.finish()?;
+    // Temporary files are private; this one takes the place of the
+    // export, so it takes its permissions too.
+    let permissions = fs::metadata(path)
+        .map_err(|error| ExportError::io("read", path, error))?
+        .permissions();
+    fs::set_permissions(&muxed, permissions)
+        .map_err(|error| ExportError::io("written", &*muxed, error))?;
     muxed
         .persist(path)
         .map_err(|error| ExportError::io("written", path, error.error))?;

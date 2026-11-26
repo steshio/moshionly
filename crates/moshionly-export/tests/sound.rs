@@ -144,6 +144,12 @@ fn mp4_webm_and_prores_carry_the_sound() {
     };
     let dir = tempfile::tempdir().unwrap();
     let (file, document) = project(&tools, dir.path());
+    // Any new file gets these permissions.
+    let ordinary = tempfile::tempdir().unwrap();
+    std::fs::write(ordinary.path().join("file"), b"").unwrap();
+    let permissions = std::fs::metadata(ordinary.path().join("file"))
+        .unwrap()
+        .permissions();
     for (format, name, codec) in [
         (Format::Mp4, "out.mp4", "aac"),
         (Format::WebM, "out.webm", "opus"),
@@ -155,6 +161,12 @@ fn mp4_webm_and_prores_carry_the_sound() {
             exported.warnings.is_empty(),
             "{format}: {:?}",
             exported.warnings
+        );
+        // An ordinary file, as readable as any other.
+        assert_eq!(
+            std::fs::metadata(&out).unwrap().permissions(),
+            permissions,
+            "{format}"
         );
         let found = streams(&out);
         let sound: Vec<_> = found.iter().filter(|stream| stream.0 == "audio").collect();
