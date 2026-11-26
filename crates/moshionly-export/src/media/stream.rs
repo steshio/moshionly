@@ -27,6 +27,10 @@ use crate::ffmpeg::last_words;
 /// error messages.
 const MESSAGE_BYTES: usize = 2000;
 
+/// What to say when `ffmpeg` is older than 5.1, which added `-fps_mode`.
+const TOO_OLD: &str = "reading video needs ffmpeg 5.1 or newer, and this one is older; update \
+     ffmpeg (on a Mac with Homebrew: brew upgrade ffmpeg)";
+
 /// A running `ffmpeg` reading frames. Dropping it stops the program.
 pub(crate) struct Stream {
     child: Child,
@@ -157,12 +161,7 @@ impl Stream {
 
     /// What ffmpeg said, or `fallback` when it said nothing.
     fn failure(&self, fallback: &str) -> String {
-        let said = self.said();
-        if said.is_empty() {
-            fallback.to_owned()
-        } else {
-            said
-        }
+        explained(self.said(), fallback)
     }
 
     fn said(&self) -> String {
@@ -178,6 +177,18 @@ impl Drop for Stream {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+    }
+}
+
+/// Why `ffmpeg` failed: what it `said`, put plainly when it is too old to
+/// read frames this way, or `fallback` when it said nothing.
+fn explained(said: String, fallback: &str) -> String {
+    if said.contains("Unrecognized option 'fps_mode'") {
+        TOO_OLD.to_owned()
+    } else if said.is_empty() {
+        fallback.to_owned()
+    } else {
+        said
     }
 }
 
@@ -318,6 +329,20 @@ mod tests {
             describe("Stream #0:0 -> #0:0 (mpeg4 (native) -> rawvideo (native))"),
             Line::Other
         );
+    }
+
+    #[test]
+    fn an_ffmpeg_too_old_to_read_frames_is_said_to_be() {
+        // What ffmpeg 5.0 and older say to -fps_mode.
+        let said = "Unrecognized option 'fps_mode'.\n\
+                    Error splitting the argument list: Option not found";
+        let message = explained(said.to_owned(), "no frame");
+        assert!(message.contains("needs ffmpeg 5.1 or newer"), "{message}");
+        assert_eq!(
+            explained("Invalid data".to_owned(), "no frame"),
+            "Invalid data"
+        );
+        assert_eq!(explained(String::new(), "no frame"), "no frame");
     }
 
     #[test]

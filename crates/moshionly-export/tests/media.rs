@@ -10,8 +10,8 @@ use std::process::Command;
 use std::sync::Arc;
 
 use moshionly_core::{Document, Edit, Node, NodeId};
-use moshionly_export::CancelToken;
 use moshionly_export::media::{MediaError, MediaTools, SoundDecoder, VideoDecoder};
+use moshionly_export::{CancelToken, Ffmpeg};
 use moshionly_render::skia_safe as sk;
 use serde_json::{Value, json};
 
@@ -83,6 +83,33 @@ fn ramp(tools: &MediaTools, dir: &Path) -> PathBuf {
             "pcm_f32le",
         ],
     )
+}
+
+/// Tools whose `ffmpeg` is a shell script in `dir` that runs `script` and
+/// then the real `ffmpeg`, beside the real `ffprobe`.
+#[cfg(unix)]
+fn wrapped(tools: &MediaTools, dir: &Path, script: &str) -> MediaTools {
+    use std::os::unix::fs::PermissionsExt;
+    let ffmpeg = dir.join("ffmpeg");
+    let real = tools.ffmpeg().display();
+    std::fs::write(
+        &ffmpeg,
+        format!("#!/bin/sh\n{script}\nexec '{real}' \"$@\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(tools.ffprobe(), dir.join("ffprobe")).unwrap();
+    // On Linux a script just written can briefly be "busy" while another
+    // test starts a program.
+    for _ in 0..50 {
+        match Command::new(&ffmpeg).arg("-version").output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => break,
+        }
+    }
+    MediaTools::with_ffmpeg(&Ffmpeg::at(ffmpeg)).unwrap()
 }
 
 /// Which frame of [`counting_video`] a picture is.
@@ -233,6 +260,31 @@ fn frames_asked_for_out_of_order_equal_frames_asked_for_in_order() {
             });
         }
     });
+}
+
+#[test]
+#[cfg(unix)]
+fn an_ffmpeg_too_old_to_read_frames_is_said_to_be() {
+    let Some(tools) = tools("an_ffmpeg_too_old_to_read_frames_is_said_to_be") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let video = counting_video(&tools, dir.path());
+    // What ffmpeg 5.0 and older answer to -fps_mode.
+    let script = r#"for arg in "$@"; do
+  if [ "$arg" = "-fps_mode" ]; then
+    echo "Unrecognized option 'fps_mode'." >&2
+    echo "Error splitting the argument list: Option not found" >&2
+    exit 1
+  fi
+done"#;
+    let bin = tempfile::tempdir().unwrap();
+    let decoder = VideoDecoder::new(wrapped(&tools, bin.path(), script));
+    let error = decoder.frame_at(&video, 0.0, 32.0, 16.0).unwrap_err();
+    assert!(
+        error.to_string().contains("needs ffmpeg 5.1 or newer"),
+        "{error}"
+    );
 }
 
 /// A document with one artboard "ab" holding `nodes`.
