@@ -14,8 +14,7 @@
 //! a written one has its own × to leave it out again.
 
 use egui::{Align, Layout, Ui};
-use moshionly_core::eval::{Property, PropertyValue, value_at};
-use moshionly_core::model::{Glow, Noise};
+use moshionly_core::eval::{Property, PropertyValue, effects_at, value_at};
 use moshionly_core::text::find_number;
 use moshionly_core::{Color, Document, Edit, Node, NodeType};
 use serde_json::{Value, json};
@@ -318,17 +317,11 @@ pub(super) fn resolved(document: &Document, node: &Node, slot: Slot) -> Option<V
             }),
             _ => json!({ "color": "#00000000", "x": 0.0, "y": 0.0, "blur": 0.0 }),
         },
-        // A layer without the effect at that moment has an invisible one,
-        // as the engine counts it: a transparent default glow, grain and a
-        // directional blur of no strength.
+        // The effect as the engine counts it, also when it cannot be seen
+        // (a layer without one has an invisible one), so that a faded glow
+        // keeps its size and a faded directional blur its angle.
         NodeType::Glow => {
-            let glow = match get(Property::Glow)? {
-                PropertyValue::Glow(Some(glow)) => glow,
-                _ => Glow {
-                    color: Glow::default().color.with_alpha(0),
-                    ..Glow::default()
-                },
-            };
+            let (glow, _, _) = effects_at(document, target, time)?;
             json!({
                 "color": glow.color.to_hex(),
                 "radius": glow.radius,
@@ -336,21 +329,13 @@ pub(super) fn resolved(document: &Document, node: &Node, slot: Slot) -> Option<V
             })
         }
         NodeType::Noise => {
-            let noise = match get(Property::Noise)? {
-                PropertyValue::Noise(Some(noise)) => noise,
-                _ => Noise {
-                    amount: 0.0,
-                    ..Noise::default()
-                },
-            };
+            let (_, noise, _) = effects_at(document, target, time)?;
             json!({ "amount": noise.amount, "size": noise.size })
         }
-        NodeType::DirectionalBlur => match get(Property::DirectionalBlur)? {
-            PropertyValue::DirectionalBlur(Some(blur)) => {
-                json!({ "amount": blur.amount, "angle": blur.angle })
-            }
-            _ => json!({ "amount": 0.0, "angle": 0.0 }),
-        },
+        NodeType::DirectionalBlur => {
+            let (_, _, blur) = effects_at(document, target, time)?;
+            json!({ "amount": blur.amount, "angle": blur.angle })
+        }
         NodeType::Counter => match get(Property::Content)? {
             PropertyValue::Text(text) => json!(find_number(&text).map_or(0.0, |n| n.value)),
             _ => return None,
@@ -765,6 +750,47 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn effects_that_cannot_be_seen_start_from_their_own_parts() {
+        // A directional blur faded out by one action and brought back by
+        // another, grain at 0% and a transparent glow: none can be seen,
+        // but each keeps its size and angle, and so does what starts from
+        // it.
+        let document = io::parse(
+            r##"{"format":"moshionly","version":4,"name":"T","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":4000},
+            {"id":"r","parent":"ab","index":"a0","type":"rect",
+             "directional_blur":{"amount":20,"angle":90},"noise":{"amount":0,"size":4},
+             "glow":{"color":"#FF000000","radius":30,"spread":6}},
+            {"id":"out","parent":"ab","index":"a0","type":"directional_blur","target":"r",
+             "start":0,"end":500,"to":{"amount":0}},
+            {"id":"back","parent":"ab","index":"a1","type":"directional_blur","target":"r",
+             "start":1000,"end":1500,"to":{"amount":30}},
+            {"id":"grain","parent":"ab","index":"a2","type":"noise","target":"r",
+             "start":0,"end":500,"to":{"amount":0.5}},
+            {"id":"glow","parent":"ab","index":"a3","type":"glow","target":"r",
+             "start":0,"end":500,"to":{"color":"#FF0000"}}
+            ]}"##,
+        )
+        .unwrap();
+        let resolve = |id: &str, slot: Slot| {
+            let node = document.get(&NodeId::from(id)).unwrap();
+            resolved(&document, node, slot).unwrap()
+        };
+        assert_eq!(
+            resolve("back", Slot::From),
+            json!({"amount": 0.0, "angle": 90.0})
+        );
+        assert_eq!(
+            resolve("grain", Slot::From),
+            json!({"amount": 0.0, "size": 4.0})
+        );
+        assert_eq!(
+            resolve("glow", Slot::From),
+            json!({"color": "#FF000000", "radius": 30.0, "spread": 6.0})
+        );
     }
 
     #[test]
