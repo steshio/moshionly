@@ -25,7 +25,8 @@ use std::time::{Duration, Instant};
 use egui::{Context, CursorIcon, Pos2, Rect, Ui, ViewportCommand, pos2};
 use moshionly_agent::{Session, SessionHandle, Tools};
 use moshionly_core::{Document, NodeId, build};
-use moshionly_render::{AssetLoader, FontLibrary, Renderer};
+use moshionly_export::media::{MediaTools, SoundDecoder};
+use moshionly_render::{FontLibrary, Renderer};
 
 use self::{
     canvas_panel::CanvasDrag,
@@ -42,17 +43,19 @@ pub use self::{
 };
 use crate::host::HostWork;
 use crate::{
+    audio::{AudioOut, Soundtrack},
     canvas::{CanvasRenderer, Quality},
     commands::{CommandId, CommandRegistry, Palette},
     connect::AgentServer,
-    dialogs::{Dialogs, NoDialogs, is_image, is_project},
+    dialogs::{Dialogs, NoDialogs, is_image, is_media, is_project},
     editor::{
         Editor,
         actions::{ActionError, targets_of, with_emptied_folders},
+        clips::{ClipDrag, clip_key, clip_of},
         pen::Pen,
         playback::{Playback, step_frames},
         text::TextEditing,
-        timeline::{is_folder, timeline_groups},
+        timeline::{SOUND_GROUP, is_folder, timeline_groups},
         tree::TreeState,
     },
     key::Key,
@@ -72,6 +75,14 @@ pub struct Shell {
     palette: Palette,
     /// The playhead tied to the clock while playing.
     playback: Playback,
+    /// The scene's sound, played in step with the playhead.
+    soundtrack: Soundtrack,
+    /// Where playback put the playhead in the last frame, to notice it
+    /// being moved by something else while playing.
+    shown_playhead: f64,
+    /// The installed `ffmpeg` video and sound are read with; `None`
+    /// without it, and then media cannot be imported.
+    media: Option<MediaTools>,
     /// The window's clock, in seconds, as of this frame.
     now: f64,
     /// How sharp the canvas is drawn while playing.
@@ -99,6 +110,10 @@ pub struct Shell {
     shown_selection: Vec<NodeId>,
     /// The selected actions as of the last frame, to notice changes.
     shown_actions: Vec<NodeId>,
+    /// The actions and the videos last picked together on the timeline:
+    /// while those actions stay selected, those videos' clips show as
+    /// selected with them.
+    picked_clips: (Vec<NodeId>, Vec<NodeId>),
     /// Scroll the layer list to this row on the next frame.
     reveal_row: Option<NodeId>,
     /// The layer row being renamed, with the name typed so far.
@@ -189,16 +204,26 @@ pub fn untitled_session() -> SessionHandle {
 impl Shell {
     /// A shell on `session`, drawing with the bundled and installed fonts
     /// on worker threads.
+    ///
+    /// Video and sound are read with the installed `ffmpeg`, when there is
+    /// one; sound plays through [`set_audio`](Self::set_audio)'s output.
     pub fn new(settings: Settings, session: SessionHandle) -> Self {
-        let renderer = Renderer::new(FontLibrary::with_system_fonts(), AssetLoader::default());
+        let media = MediaTools::locate();
+        let renderer = Renderer::new(
+            FontLibrary::with_system_fonts(),
+            crate::media::asset_loader(None, media.as_ref()),
+        );
         let pictures = CanvasRenderer::new(renderer.clone());
-        Self::build(settings, session, renderer, pictures)
+        let mut shell = Self::build(settings, session, renderer, pictures);
+        shell.set_media(media);
+        shell
     }
 
     /// A shell on `session` that draws with `renderer` and renders the
     /// canvas on the calling thread, so that every frame shows finished
     /// pictures. For tests and screenshots: the bundled fonts look the same
-    /// on every machine.
+    /// on every machine. It reads no video or sound files until
+    /// [`set_media`](Self::set_media) says how, and plays no sound.
     pub fn headless(settings: Settings, session: SessionHandle, renderer: Renderer) -> Self {
         let pictures = CanvasRenderer::inline(renderer.clone());
         Self::build(settings, session, renderer, pictures)
@@ -220,13 +245,22 @@ impl Shell {
             session.clone(),
             crate::host::stoppable_app_host(&renderer, &own_work),
         );
+        let mut commands = CommandRegistry::new();
+        // Shown while media cannot be imported.
+        commands.set_disabled_reason(
+            CommandId::ImportMedia,
+            Some(crate::media::FFMPEG_NEEDED.to_owned()),
+        );
         Self {
             settings,
-            commands: CommandRegistry::new(),
+            commands,
             inspector: InspectorState::default(),
             toasts: Toasts::default(),
             palette: Palette::default(),
             playback: Playback::new(),
+            soundtrack: Soundtrack::default(),
+            shown_playhead: 0.0,
+            media: None,
             now: 0.0,
             quality: Quality::new(),
             looping: true,
@@ -242,6 +276,7 @@ impl Shell {
             layer_query: String::new(),
             shown_selection: Vec::new(),
             shown_actions: Vec::new(),
+            picked_clips: (Vec::new(), Vec::new()),
             reveal_row: None,
             renaming: None,
             list_drag: None,
@@ -275,6 +310,7 @@ impl Shell {
     /// moment to clean up, so no half-written file is left behind. The app
     /// calls this as it exits.
     pub fn prepare_to_quit(&mut self) {
+        self.pause();
         // The chat's exports stop while the rest shuts down.
         self.own_work.cancel();
         // Closing the dialog cancels its export and waits for it to stop.
@@ -295,6 +331,31 @@ impl Shell {
     /// dialogs; until then every dialog is cancelled.
     pub fn set_dialogs(&mut self, dialogs: Box<dyn Dialogs>) {
         self.dialogs = dialogs;
+    }
+
+    /// Reads video and sound with `tools` from now on, or with nothing:
+    /// without them media cannot be imported and the scene plays without
+    /// sound. [`new`](Self::new) finds the installed `ffmpeg` itself;
+    /// [`headless`](Self::headless) starts without. Video frames come from
+    /// the renderer's own provider, which this does not change.
+    pub fn set_media(&mut self, tools: Option<MediaTools>) {
+        let decoder = tools
+            .as_ref()
+            .map(|tools| std::sync::Arc::new(SoundDecoder::new(tools.clone())));
+        self.soundtrack.set_decoder(decoder);
+        self.media = tools;
+    }
+
+    /// The installed `ffmpeg` video and sound are read with, if any.
+    pub fn media_tools(&self) -> Option<&MediaTools> {
+        self.media.as_ref()
+    }
+
+    /// Says where sound goes: the app gives the computer's speakers;
+    /// until then nothing is heard.
+    pub fn set_audio(&mut self, out: Box<dyn AudioOut>) {
+        let playhead = self.editor.playhead();
+        self.soundtrack.set_output(out, playhead);
     }
 
     /// Whether text is being edited on the canvas.
@@ -544,6 +605,9 @@ impl Shell {
         if inspected.replace_image {
             self.replace_image_dialog();
         }
+        if let Some(ids) = inspected.replace_media {
+            self.replace_media_dialog(&ids);
+        }
         requested.extend(inspected.commands);
 
         self.advance_playback(&ctx);
@@ -596,7 +660,8 @@ impl Shell {
             .is_some_and(|editing| editing.created)
     }
 
-    /// Images dropped on the window are placed where they were dropped.
+    /// Images, videos and sound dropped on the window are placed where
+    /// they were dropped.
     fn dropped_files(&mut self, ctx: &Context) {
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
@@ -614,6 +679,15 @@ impl Shell {
             let at = self.pointer;
             self.import_images(&images, at);
         }
+        let media: Vec<&std::path::Path> = dropped
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .filter(|path| is_media(path))
+            .collect();
+        if !media.is_empty() {
+            let at = self.pointer;
+            self.import_media(&media, at);
+        }
         // A project dropped on the window is opened.
         if let Some(project) = dropped.iter().find(|path| is_project(path)) {
             self.request(FileAction::Open(Some(project.clone())));
@@ -627,6 +701,76 @@ impl Shell {
             let paths: Vec<&std::path::Path> =
                 paths.iter().map(std::path::PathBuf::as_path).collect();
             self.import_images(&paths, None);
+        }
+    }
+
+    /// Asks for video and sound files and adds them to the current
+    /// artboard. Without `ffmpeg`, says how to get it.
+    fn import_media_dialog(&mut self) {
+        self.editor.tool = Tool::Select;
+        if self.media.is_none() {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        }
+        if let Some(paths) = self.dialogs.import_media() {
+            let paths: Vec<&std::path::Path> =
+                paths.iter().map(std::path::PathBuf::as_path).collect();
+            self.import_media(&paths, None);
+        }
+    }
+
+    /// Adds video and sound files, as video layers centred on `at` (or on
+    /// the current artboard) and audio items on its timeline, and says
+    /// what could not be used and when the scene grew to fit them. Sound
+    /// alone shows the Animate tab, where its settings are.
+    fn import_media(&mut self, paths: &[&std::path::Path], at: Option<Pos2>) {
+        let Some(tools) = self.media.clone() else {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        };
+        let probe = std::sync::Arc::new(crate::media::FfmpegProbe::with_tools(tools));
+        let made = self.editor.import_media(paths, at, probe);
+        for problem in &made.problems {
+            self.toasts.push(Toast::error(problem.clone()));
+        }
+        if let Some(length) = made.scene_length {
+            self.toasts.push(Toast::info(format!(
+                "The scene now lasts {} s, to fit what was added.",
+                crate::widgets::numeric::format_value(length / 1000.0, 2)
+            )));
+        }
+        if let Some(name) = made.unknown_length.first() {
+            self.toasts.push(Toast::info(format!(
+                "{name} does not say how long it is, so it plays for {} s. Drag its end on the \
+                 timeline to change that.",
+                crate::widgets::numeric::format_value(
+                    crate::editor::media::UNKNOWN_LENGTH / 1000.0,
+                    2
+                )
+            )));
+        }
+        if made.videos.is_empty() && !made.sounds.is_empty() {
+            self.inspector.tab = InspectorTab::Animate;
+        }
+    }
+
+    /// Asks for a file for the video layers or sounds `ids` to play
+    /// instead.
+    fn replace_media_dialog(&mut self, ids: &[NodeId]) {
+        let Some(tools) = self.media.clone() else {
+            self.toasts.push(Toast::info(crate::media::FFMPEG_NEEDED));
+            return;
+        };
+        let Some(path) = self
+            .dialogs
+            .import_media()
+            .and_then(|paths| paths.into_iter().next())
+        else {
+            return;
+        };
+        let probe = std::sync::Arc::new(crate::media::FfmpegProbe::with_tools(tools));
+        if let Err(problem) = self.editor.replace_media(ids, &path, probe) {
+            self.toasts.push(Toast::error(problem));
         }
     }
 
@@ -711,7 +855,8 @@ impl Shell {
         let document = std::sync::Arc::clone(self.editor.document());
         self.pictures.retain(&document);
         self.tree.retain(&document);
-        self.collapsed_groups.retain(|id| document.contains(id));
+        self.collapsed_groups
+            .retain(|id| document.contains(id) || id.as_str() == SOUND_GROUP);
     }
 
     /// When the selection changes, its rows come into view in the layer
@@ -734,15 +879,19 @@ impl Shell {
             self.tree.reveal(&document, id);
         }
         // Actions stay selected only while the layers they animate are; a
-        // folder while a layer its actions animate is.
+        // folder while a layer its actions animate is. Sound, which
+        // animates no layer, while no layer is selected.
         let kept: Vec<NodeId> = self
             .editor
             .actions()
             .iter()
             .filter(|action| {
-                targets_of(&document, std::slice::from_ref(action))
-                    .iter()
-                    .any(|target| selection.contains(target))
+                let targets = targets_of(&document, std::slice::from_ref(action));
+                if targets.is_empty() {
+                    selection.is_empty()
+                } else {
+                    targets.iter().any(|target| selection.contains(target))
+                }
             })
             .cloned()
             .collect();
@@ -770,24 +919,46 @@ impl Shell {
             .as_ref()
             .and_then(|id| moshionly_core::eval::duration_of(&document, id))
             .unwrap_or(0.0);
-        // A selected folder's row is tinted, or else the selected layer's.
+        // A selected folder's row is tinted, or the sound's when only sound
+        // is selected, or else the selected layer's.
+        let only_sound = !self.editor.actions().is_empty()
+            && self.editor.actions().iter().all(|id| {
+                document.get(id).is_some_and(|node| {
+                    node.node_type() == moshionly_core::NodeType::Audio
+                        && node.parent.as_ref() == artboard.as_ref()
+                })
+            });
         let selected_folder = self
             .editor
             .actions()
             .first()
             .map(|id| Key::new(id.as_str()))
-            .filter(|key| is_folder(&document, key));
+            .filter(|key| is_folder(&document, key))
+            .or_else(|| only_sound.then(|| Key::new(SOUND_GROUP)));
         let selected_layer = selected_folder.or_else(|| {
             self.editor
                 .selection
                 .single()
                 .map(|id| Key::new(id.as_str()))
         });
+        // A selected video's clip shows as selected, and is dragged with
+        // the selection, while no action is selected, or when it was picked
+        // on the timeline with the actions selected now: dragging an action
+        // of a video leaves the video's clip where it is.
+        if self.picked_clips.0 != self.editor.actions() {
+            self.picked_clips = (Vec::new(), Vec::new());
+        }
         let selected_bars: Vec<Key> = self
             .editor
             .actions()
             .iter()
             .map(|id| Key::new(id.as_str()))
+            .chain(self.editor.selection.ids().iter().filter_map(|id| {
+                let node = document.get(id)?;
+                let picked = self.editor.actions().is_empty() || self.picked_clips.1.contains(id);
+                (node.node_type() == moshionly_core::NodeType::Video && picked)
+                    .then(|| clip_key(id, node.node_type()))
+            }))
             .collect();
         let timeline = parts::panel(ui, "timeline", layout.timeline, c.surface, |ui| {
             Timeline::new(&mut self.timeline, &groups)
@@ -823,18 +994,31 @@ impl Shell {
             TimelineEvent::JumpedToStart => self.editor.set_playhead(0.0),
             TimelineEvent::JumpedToEnd => self.jump_to_end(),
             TimelineEvent::BarActivated { .. } => self.inspector.tab = InspectorTab::Animate,
-            TimelineEvent::SelectionChanged { bars } => {
-                // Selecting actions selects the layers they animate, and
-                // shows their settings.
-                self.editor.set_actions(bars.iter().map(node));
-                self.editor.select_targets();
-                if !bars.is_empty() {
-                    self.inspector.tab = InspectorTab::Animate;
-                }
-            }
+            TimelineEvent::SelectionChanged { bars } => self.select_bars(&bars),
             TimelineEvent::GroupClicked { key } => {
                 let document = std::sync::Arc::clone(self.editor.document());
-                if is_folder(&document, &key) {
+                if key.as_str() == SOUND_GROUP {
+                    // All the scene's sound, which belongs to no layer.
+                    let sound: Vec<NodeId> = self
+                        .editor
+                        .artboard()
+                        .map(|artboard| {
+                            document
+                                .children(artboard, moshionly_core::Family::Animation)
+                                .iter()
+                                .filter(|id| {
+                                    document.get(id).is_some_and(|node| {
+                                        node.node_type() == moshionly_core::NodeType::Audio
+                                    })
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.editor.selection.clear();
+                    self.editor.set_actions(sound);
+                    self.inspector.tab = InspectorTab::Animate;
+                } else if is_folder(&document, &key) {
                     // The folder itself, so that Delete, Duplicate and
                     // Ungroup work on it whole, with the actions in it.
                     self.editor.select_folder(&node(&key));
@@ -866,17 +1050,28 @@ impl Shell {
                 );
             }
             TimelineEvent::BarMoved { key, start, end } => {
-                self.timeline_drag("Move action", |editor| {
-                    editor.retime_actions("Move action", &[(node(&key), start, end)])
-                });
+                match clip_of(self.editor.document(), &key) {
+                    Some(clip) => self.timeline_drag("Move clip", |editor| {
+                        Ok(editor.drag_clip("Move clip", &clip, ClipDrag::Move, start, end)?)
+                    }),
+                    None => self.timeline_drag("Move action", |editor| {
+                        editor.retime_actions("Move action", &[(node(&key), start, end)])
+                    }),
+                }
             }
             TimelineEvent::BarResized {
-                key, start, end, ..
-            } => {
-                self.timeline_drag("Change action length", |editor| {
+                key,
+                edge,
+                start,
+                end,
+            } => match clip_of(self.editor.document(), &key) {
+                Some(clip) => self.timeline_drag("Trim clip", |editor| {
+                    Ok(editor.drag_clip("Trim clip", &clip, ClipDrag::Trim(edge), start, end)?)
+                }),
+                None => self.timeline_drag("Change action length", |editor| {
                     editor.retime_actions("Change action length", &[(node(&key), start, end)])
-                });
-            }
+                }),
+            },
             TimelineEvent::DurationChanged { duration } => {
                 let Some(artboard) = self.editor.artboard().cloned() else {
                     return;
@@ -887,6 +1082,37 @@ impl Shell {
             }
             TimelineEvent::EditFinished => self.end_timeline_drag(),
             TimelineEvent::Command { command } => self.action_command(command),
+        }
+    }
+
+    /// Selects what the bars `bars` stand for: actions and sound, and the
+    /// layers they animate; a video's clip selects the video. Sound alone
+    /// selects no layer. Bars show their settings in the Animate tab.
+    fn select_bars(&mut self, bars: &[Key]) {
+        let document = std::sync::Arc::clone(self.editor.document());
+        let mut videos = Vec::new();
+        let mut actions = Vec::new();
+        for key in bars {
+            match clip_of(&document, key) {
+                Some(id) if id.as_str() != key.as_str() => videos.push(id),
+                _ => actions.push(NodeId::from(key.as_str())),
+            }
+        }
+        self.editor.set_actions(actions);
+        self.picked_clips = (self.editor.actions().to_vec(), videos.clone());
+        let mut layers = targets_of(&document, self.editor.actions());
+        for video in videos {
+            if !layers.contains(&video) {
+                layers.push(video);
+            }
+        }
+        if !layers.is_empty() {
+            self.editor.selection.set(layers);
+        } else if !self.editor.actions().is_empty() {
+            self.editor.selection.clear();
+        }
+        if !bars.is_empty() {
+            self.inspector.tab = InspectorTab::Animate;
         }
     }
 
@@ -915,8 +1141,22 @@ impl Shell {
         }
     }
 
-    /// Carries out a command on the selected actions.
+    /// Carries out a command on the selected actions. A video's clip is
+    /// not an action: with only clips selected, Delete removes their
+    /// videos.
     fn action_command(&mut self, command: BarCommand) {
+        if command == BarCommand::Delete && self.editor.actions().is_empty() {
+            let document = std::sync::Arc::clone(self.editor.document());
+            let videos = self.editor.selection.ids().iter().all(|id| {
+                document
+                    .get(id)
+                    .is_some_and(|node| node.node_type() == moshionly_core::NodeType::Video)
+            });
+            if videos {
+                self.delete_selection();
+            }
+            return;
+        }
         let result = match command {
             BarCommand::Duplicate => self.editor.duplicate_actions().map(drop),
             BarCommand::Delete => self.editor.delete_actions().map(drop),
@@ -939,7 +1179,7 @@ impl Shell {
             .artboard()
             .and_then(|id| moshionly_core::eval::duration_of(self.editor.document(), id))
             .unwrap_or(0.0);
-        self.playback.pause();
+        self.pause();
         self.editor.set_playhead(end);
     }
 
@@ -983,6 +1223,9 @@ impl Shell {
         if !self.editor.actions().is_empty() {
             self.commands.set_enabled(CommandId::Deselect, true);
         }
+        // Media is read with ffmpeg; without it the command says so.
+        self.commands
+            .set_enabled(CommandId::ImportMedia, self.media.is_some());
         let has_artboards = !self.editor.document().artboards().is_empty();
         self.commands
             .set_enabled(CommandId::SelectAll, has_artboards);
@@ -1139,6 +1382,7 @@ impl Shell {
             CommandId::ConnectAgent => self.connect_open = true,
             CommandId::Export => self.open_export_dialog(),
             CommandId::ImportImage => self.import_image_dialog(),
+            CommandId::ImportMedia => self.import_media_dialog(),
             other if self.component_command(other) => {}
             other if self.edit_command(ctx, other) => {}
             CommandId::NewProject => self.request(FileAction::New),
@@ -1227,10 +1471,18 @@ impl Shell {
                 .playback
                 .play(self.now, self.editor.playhead(), self.scene_length());
             self.editor.set_playhead(from);
+            self.shown_playhead = self.editor.playhead();
             self.inspector.tab = InspectorTab::Animate;
+            self.soundtrack.play(from);
         } else {
-            self.playback.pause();
+            self.pause();
         }
+    }
+
+    /// Stops playback, and its sound, where it is.
+    pub(super) fn pause(&mut self) {
+        self.playback.pause();
+        self.soundtrack.stop();
     }
 
     /// The length of the current scene, in milliseconds.
@@ -1244,7 +1496,7 @@ impl Shell {
     /// Pauses and moves the playhead `frames` frames on, or back for a
     /// negative count.
     fn step(&mut self, frames: i32) {
-        self.playback.pause();
+        self.pause();
         let time = step_frames(self.editor.playhead(), frames, self.scene_length());
         self.editor.set_playhead(time);
         self.inspector.tab = InspectorTab::Animate;
@@ -1253,27 +1505,69 @@ impl Shell {
     /// Moves the playhead on with the clock while playing. At the end of
     /// the scene it starts over when looping and stops otherwise.
     ///
+    /// While sound is heard, the playhead follows the sound rather than
+    /// the window's clock, so the two stay in step; the sound jumps with
+    /// the playhead when something else moves it (a click on the ruler).
+    /// While looping, the sound starts over by itself at the end of the
+    /// scene, so the loop has no gap; it jumps with the playhead when the
+    /// window's clock starts the loop over (nothing is heard yet).
+    ///
     /// Only the Animate tab shows the animation on the canvas; the Design
     /// tab shows the design at rest. Leaving the Animate tab (with M or the
     /// tab itself) therefore pauses playback where it is, rather than run
     /// the clock over a canvas that does not move.
     fn advance_playback(&mut self, ctx: &Context) {
+        self.follow_sound();
         if !self.playback.is_playing() {
             return;
         }
         if self.inspector.tab != InspectorTab::Animate {
-            self.playback.pause();
+            self.pause();
             return;
         }
-        let tick = self.playback.tick(
-            self.now,
-            self.editor.playhead(),
-            self.scene_length(),
-            self.looping,
-        );
+        let playhead = self.editor.playhead();
+        let moved = playhead != self.shown_playhead;
+        if moved {
+            self.soundtrack.seek(playhead);
+        }
+        let length = self.scene_length();
+        self.soundtrack.set_loop(self.looping.then_some(length));
+        // What is heard is where the scene is, unless the playhead was just
+        // moved and the sound has yet to follow.
+        let from = match self.soundtrack.position() {
+            Some(heard) if !moved => heard,
+            _ => playhead,
+        };
+        let tick = self.playback.tick(self.now, from, length, self.looping);
+        if !tick.playing {
+            self.soundtrack.stop();
+        } else if tick.time < from {
+            // Started over.
+            self.soundtrack.seek(tick.time);
+        }
         self.editor.set_playhead(tick.time);
+        self.shown_playhead = self.editor.playhead();
         if tick.playing {
             ctx.request_repaint();
+        }
+    }
+
+    /// Keeps the sound of the current scene mixed while the Animate tab
+    /// shows it, so that play starts with sound, and says which sound
+    /// files could not be read.
+    fn follow_sound(&mut self) {
+        let animate = self.inspector.tab == InspectorTab::Animate;
+        if (animate || self.playback.is_playing())
+            && let Some(artboard) = self.editor.artboard().cloned()
+        {
+            let document = std::sync::Arc::clone(self.editor.document());
+            let project = self.editor.project_file().map(ToOwned::to_owned);
+            self.soundtrack
+                .follow(&document, &artboard, project.as_deref());
+        }
+        for warning in self.soundtrack.poll(self.editor.playhead()) {
+            self.toasts
+                .push(Toast::warning(format!("{}.", files::sentence(&warning))));
         }
     }
 
@@ -1323,6 +1617,7 @@ fn ends_a_canvas_drag(id: CommandId) -> bool {
             | CommandId::Save
             | CommandId::SaveAs
             | CommandId::ImportImage
+            | CommandId::ImportMedia
             | CommandId::Export
     ) || Tool::from_command(id).is_some()
 }
@@ -1340,6 +1635,8 @@ fn tool_cursor(tool: Tool) -> CursorIcon {
 
 #[cfg(test)]
 mod tests {
+    use moshionly_render::AssetLoader;
+
     use super::*;
 
     fn demo_shell() -> Shell {
@@ -1488,6 +1785,198 @@ mod tests {
         assert!(!document.contains(&folder));
         shell.editor_mut().undo().unwrap();
         assert!(shell.editor().document().contains(&folder));
+    }
+
+    #[test]
+    fn the_sound_plays_jumps_and_stops_with_playback() {
+        use crate::audio::{AudioCall, SilentAudio};
+        let mut shell = demo_shell();
+        let out = SilentAudio::recording();
+        shell.set_audio(Box::new(out.clone()));
+        let ctx = Context::default();
+        shell.now = 10.0;
+        shell.set_playing(true);
+        shell.now = 10.1;
+        shell.advance_playback(&ctx);
+        assert!((shell.editor().playhead() - 100.0).abs() < 1e-6);
+        // A click on the ruler while playing: the sound jumps there.
+        shell.timeline_event(TimelineEvent::PlayheadMoved { time: 2000.0 });
+        shell.now = 10.2;
+        shell.advance_playback(&ctx);
+        // Past the end of the 4 second scene, the loop starts over.
+        shell.now = 12.5;
+        shell.advance_playback(&ctx);
+        assert!((shell.editor().playhead() - 300.0).abs() < 1e-6);
+        shell.set_playing(false);
+        // Paused, the playhead moves without sound.
+        shell.timeline_event(TimelineEvent::PlayheadMoved { time: 1000.0 });
+        shell.advance_playback(&ctx);
+        // Leaving the Animate tab stops playback and its sound.
+        shell.set_playing(true);
+        shell.inspector.tab = InspectorTab::Design;
+        shell.advance_playback(&ctx);
+        assert!(!shell.is_playing());
+        shell.prepare_to_quit();
+        let calls = out.calls();
+        assert_eq!(calls.len(), 8, "{calls:?}");
+        assert_eq!(
+            calls[..4],
+            [
+                AudioCall::Play(0.0),
+                // The demo has no sound: its track is silence.
+                AudioCall::Track(None),
+                // It loops, and the sound starts over with it.
+                AudioCall::Loop(Some(4000.0)),
+                AudioCall::Seek(2000.0),
+            ]
+        );
+        // Silent output cannot say what is heard, so the window's clock
+        // starts the loop over, and the sound jumps with it.
+        assert!(
+            matches!(calls[4], AudioCall::Seek(at) if (at - 300.0).abs() < 1e-6),
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls[5..],
+            [AudioCall::Stop, AudioCall::Play(1000.0), AudioCall::Stop]
+        );
+    }
+
+    /// A shell on a scene with a video and a song.
+    fn media_shell() -> Shell {
+        let document = moshionly_core::io::parse(
+            r##"{"format":"moshionly","version":3,"name":"Media","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000},
+            {"id":"film","parent":"ab","index":"a0","type":"video","source":"/no/film.mp4",
+             "start":1000,"end":3000,"trim_start":500},
+            {"id":"song","parent":"ab","index":"a0","type":"audio","source":"/no/song.mp3",
+             "start":0,"end":2000}
+            ]}"##,
+        )
+        .unwrap();
+        let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
+        Shell::headless(
+            Settings::default(),
+            SessionHandle::from_document(document),
+            renderer,
+        )
+    }
+
+    fn clip(shell: &Shell, id: &str) -> moshionly_core::model::ClipTiming {
+        *shell
+            .editor()
+            .document()
+            .get(&NodeId::from(id))
+            .unwrap()
+            .data
+            .clip()
+            .unwrap()
+    }
+
+    #[test]
+    fn dragging_a_clip_moves_or_trims_it_in_one_step() {
+        use crate::timeline::Edge;
+        let mut shell = media_shell();
+        for start in [1100.0, 1200.0] {
+            shell.timeline_event(TimelineEvent::BarMoved {
+                key: Key::new("film/clip"),
+                start,
+                end: start + 2000.0,
+            });
+        }
+        shell.timeline_event(TimelineEvent::EditFinished);
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1200.0, 3200.0, 500.0)
+        );
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Move clip")
+        );
+        // The left edge trims: the file's moments stay where they were.
+        shell.timeline_event(TimelineEvent::BarResized {
+            key: Key::new("film/clip"),
+            edge: Edge::Start,
+            start: 1500.0,
+            end: 3200.0,
+        });
+        shell.timeline_event(TimelineEvent::EditFinished);
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1500.0, 3200.0, 800.0)
+        );
+        // A sound's right edge changes its end.
+        shell.timeline_event(TimelineEvent::BarResized {
+            key: Key::new("song"),
+            edge: Edge::End,
+            start: 0.0,
+            end: 2600.0,
+        });
+        shell.timeline_event(TimelineEvent::EditFinished);
+        assert_eq!(clip(&shell, "song").end, 2600.0);
+        assert_eq!(
+            shell.editor().undo_label().as_deref(),
+            Some("Undo Trim clip")
+        );
+        for _ in 0..3 {
+            shell.editor_mut().undo().unwrap();
+        }
+        let film = clip(&shell, "film");
+        assert_eq!(
+            (film.start, film.end, film.trim_start),
+            (1000.0, 3000.0, 500.0)
+        );
+        assert_eq!(clip(&shell, "song").end, 2000.0);
+    }
+
+    #[test]
+    fn sound_is_selected_on_its_own_and_a_clip_selects_its_video() {
+        let mut shell = media_shell();
+        shell.editor_mut().selection.select(NodeId::from("film"));
+        shell.follow_selection();
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("song")],
+        });
+        assert!(shell.editor().selection.is_empty());
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        assert_eq!(shell.inspector_tab(), InspectorTab::Animate);
+        // Sound stays selected while no layer is.
+        shell.follow_selection();
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        // A video's clip selects the video.
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("film/clip")],
+        });
+        assert_eq!(shell.editor().selection.ids(), [NodeId::from("film")]);
+        assert!(shell.editor().actions().is_empty());
+        // The Sound row selects all the sound.
+        shell.timeline_event(TimelineEvent::GroupClicked {
+            key: Key::new(SOUND_GROUP),
+        });
+        assert_eq!(shell.editor().actions(), [NodeId::from("song")]);
+        assert!(shell.editor().selection.is_empty());
+        // Delete then takes the sound away.
+        assert!(shell.run(&Context::default(), CommandId::Delete));
+        assert!(!shell.editor().document().contains(&NodeId::from("song")));
+    }
+
+    #[test]
+    fn deleting_a_clip_from_the_timeline_deletes_its_video() {
+        let mut shell = media_shell();
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("film/clip")],
+        });
+        shell.timeline_event(TimelineEvent::Command {
+            command: BarCommand::Delete,
+        });
+        assert!(!shell.editor().document().contains(&NodeId::from("film")));
+        // With nothing selected, nothing goes.
+        shell.timeline_event(TimelineEvent::Command {
+            command: BarCommand::Delete,
+        });
+        assert!(shell.editor().document().contains(&NodeId::from("song")));
     }
 
     #[test]

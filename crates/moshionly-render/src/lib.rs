@@ -16,6 +16,7 @@
 //! | [`frame`] | [`Frame`]: the pixels, premultiplied or not, and PNG encoding |
 //! | [`fonts`] | [`FontLibrary`]: bundled, registered and installed fonts; also core's text measurer |
 //! | [`assets`] | [`AssetLoader`]: finds, decodes and keeps images |
+//! | [`video`] | [`VideoFrames`]: where the frames of video layers come from |
 //! | [`hit`] | [`LayerBounds`] and the hit-test tolerance |
 //! | [`error`] | [`RenderError`] (no frame) and [`RenderWarning`] (a frame, not quite as asked) |
 //!
@@ -65,6 +66,7 @@ pub mod hit;
 pub mod options;
 pub mod renderer;
 mod text;
+pub mod video;
 
 pub use assets::AssetLoader;
 pub use error::{RenderError, RenderWarning};
@@ -73,6 +75,7 @@ pub use frame::Frame;
 pub use hit::{HIT_TOLERANCE, LayerBounds};
 pub use options::{Background, RenderOptions};
 pub use renderer::Renderer;
+pub use video::{VideoFrames, VideoRequest};
 
 /// The Skia binding this crate draws with, for callers of
 /// [`Renderer::render_into`] who need its canvas type.

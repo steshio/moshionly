@@ -90,6 +90,18 @@ pub(super) fn add(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
                 ));
             }
         },
+        // Sound changes no layer, so it has no target to find its
+        // timeline by.
+        Family::Animation if ty == NodeType::Audio => match &placement.parent {
+            Parent::Given(parent) => Some(parent.clone()),
+            _ => {
+                return Err(args.missing(
+                    "parent",
+                    "the id of the artboard (or animation_group) whose timeline the sound goes \
+                     on",
+                ));
+            }
+        },
         Family::Animation => {
             let target = read_target(batch, &mut node, &node_field)?;
             fill_in_timing(ty, &mut node);
@@ -120,7 +132,7 @@ pub(super) fn add(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     batch.commit(vec![Edit::add(node)], Owner::Node)?;
     match ty.family() {
         Family::Layer => warn::layer(batch, &id),
-        Family::Animation => warn::animation(batch, &id),
+        Family::Animation => warn::late(batch, &id),
     }
     batch.created(&id, temp.as_deref(), None);
     Ok(())

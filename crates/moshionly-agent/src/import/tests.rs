@@ -110,6 +110,21 @@ fn images_must_carry_their_pixels() {
 }
 
 #[test]
+fn video_and_sound_are_refused() {
+    for media in [
+        json!({ "id": "1:3", "parent": "1:1", "type": "video", "source": "/Users/someone/clip.mp4",
+                "start": 0, "end": 1000 }),
+        json!({ "id": "1:4", "type": "audio", "source": "/etc/hosts", "start": 0, "end": 1000 }),
+    ] {
+        let mut nodes = design("#000000");
+        nodes.as_array_mut().unwrap().push(media.clone());
+        let error = read(&envelope(nodes)).unwrap_err();
+        assert!(matches!(error, EnvelopeError::Media(_)), "{media}: {error}");
+        assert!(error.to_string().contains("video or sound"), "{error}");
+    }
+}
+
+#[test]
 fn an_accepted_design_is_one_import_step() {
     let session = demo_session();
     let pending = read(&envelope(design("#0D99FF"))).unwrap();

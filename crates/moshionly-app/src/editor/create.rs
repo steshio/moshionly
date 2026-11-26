@@ -448,7 +448,7 @@ pub fn fitted(size: Vec2, room: Vec2) -> Vec2 {
 }
 
 /// The first sentence of a message.
-fn first_sentence(text: &str) -> String {
+pub(super) fn first_sentence(text: &str) -> String {
     let text = text.trim();
     match text.find(". ") {
         Some(end) => text[..=end].to_owned(),

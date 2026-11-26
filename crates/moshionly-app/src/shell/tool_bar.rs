@@ -2,10 +2,11 @@
 
 use egui::{Align, Align2, Layout, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2};
 
+use super::parts::command_item;
 use crate::{
-    commands::CommandId,
+    commands::{CommandId, CommandRegistry},
     theme::{Theme, icons},
-    widgets::{ToolButton, paint, tooltip},
+    widgets::{ToolButton, context_menu, paint, tooltip},
 };
 
 /// What a click or drag on the canvas does.
@@ -88,8 +89,15 @@ const DIVIDER_WIDTH: f32 = 13.0;
 const AI_WIDTH: f32 = 82.0;
 
 /// Draws the tool bar over `canvas` and returns the command of the button
-/// that was clicked, if any: a tool command or [`CommandId::AskAi`].
-pub fn tool_bar(ui: &mut Ui, canvas: Rect, active: Tool) -> Option<CommandId> {
+/// that was clicked, if any: a tool command, [`CommandId::AskAi`], or an
+/// import from the image tool's menu (a right click), which also offers
+/// video and sound.
+pub fn tool_bar(
+    ui: &mut Ui,
+    canvas: Rect,
+    active: Tool,
+    commands: &CommandRegistry,
+) -> Option<CommandId> {
     let theme = Theme::of(ui);
     let c = &theme.color;
     let size = &theme.size;
@@ -129,8 +137,18 @@ pub fn tool_bar(ui: &mut Ui, canvas: Rect, active: Tool) -> Option<CommandId> {
         if !shortcut.is_empty() {
             button = button.shortcut(&shortcut);
         }
-        if bar.add(button).clicked() {
+        let response = bar.add(button);
+        if response.clicked() {
             clicked = Some(command);
+        }
+        if tool == Tool::Image {
+            context_menu(&response, |ui| {
+                for import in [CommandId::ImportImage, CommandId::ImportMedia] {
+                    if command_item(ui, import, commands, None) {
+                        clicked = Some(import);
+                    }
+                }
+            });
         }
     }
 

@@ -28,6 +28,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev libgtk-3-dev libasound2-dev libssl-dev pkg-config
+      # ffmpeg is optional for people, but the tests of WebM, ProRes, video
+      # and sound only run where it is installed.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -36,8 +44,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Build
         run: cargo build --workspace --all-targets --locked
+      # Every test binary runs even after one fails, so a failure does not
+      # hide the ones after it.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   mac-app:
     name: Mac app (ad-hoc signed)

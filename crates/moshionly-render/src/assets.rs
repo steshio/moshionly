@@ -11,6 +11,9 @@
 //!
 //! Decoding uses the `image` crate, which is the same code on every
 //! platform. Photos are turned upright by their orientation tag.
+//!
+//! Video frames come from a [`VideoFrames`] installed with
+//! [`AssetLoader::with_video`]; the loader only finds the file.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -23,6 +26,7 @@ use moshionly_core::io::{Asset, resolve_asset};
 use skia_safe as sk;
 
 use crate::frame;
+use crate::video::{VideoFrames, VideoRequest};
 
 /// How much memory decoded images may take by default: 256 MB.
 pub const DEFAULT_BUDGET: usize = 256 << 20;
@@ -38,13 +42,16 @@ const MAX_PIXELS: u64 = frame::MAX_FRAME_PIXELS;
 /// The largest image file that is read, in bytes: 256 MB.
 const MAX_FILE_BYTES: u64 = 256 << 20;
 
-/// Finds, decodes and keeps the images of image layers.
+/// Finds, decodes and keeps the images of image layers, and finds the
+/// files of video layers for the [`VideoFrames`] it carries.
 ///
 /// Cheap to clone; clones share what they keep. It can be used from any
 /// thread.
 #[derive(Clone)]
 pub struct AssetLoader {
     shared: Arc<Mutex<Store>>,
+    /// Where video frames come from; `None` draws placeholders.
+    video: Option<Arc<dyn VideoFrames>>,
 }
 
 impl std::fmt::Debug for AssetLoader {
@@ -55,6 +62,7 @@ impl std::fmt::Debug for AssetLoader {
             .field("images", &store.images.len())
             .field("bytes", &store.bytes)
             .field("budget", &store.budget)
+            .field("video", &self.video.is_some())
             .finish()
     }
 }
@@ -126,7 +134,22 @@ impl AssetLoader {
                 budget: DEFAULT_BUDGET,
                 clock: 0,
             })),
+            video: None,
         }
+    }
+
+    /// The same loader, getting the frames of video layers from `frames`.
+    ///
+    /// Only this loader and its later clones carry it; clones made before
+    /// keep what they had, and all of them share the images they keep.
+    pub fn with_video(mut self, frames: Arc<dyn VideoFrames>) -> Self {
+        self.video = Some(frames);
+        self
+    }
+
+    /// Where video frames come from, when a provider is installed.
+    pub fn video(&self) -> Option<&Arc<dyn VideoFrames>> {
+        self.video.as_ref()
     }
 
     /// The same loader keeping at most `bytes` of decoded images. The image
@@ -197,6 +220,45 @@ impl AssetLoader {
         let image = decode(&bytes)?;
         self.store().keep(source, image.clone(), modified);
         Ok(image)
+    }
+
+    /// The frame a video layer shows: `source` at `time_ms` into the file,
+    /// drawn about `width` by `height` pixels. Or why there is none, in
+    /// words for a person.
+    pub(crate) fn video_frame(
+        &self,
+        source: &str,
+        time_ms: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<sk::Image, String> {
+        let Some(frames) = &self.video else {
+            return Err(
+                "video is not read here: reading video needs ffmpeg, which was not found \
+                 (brew install ffmpeg)"
+                    .into(),
+            );
+        };
+        let project_file = self.store().project_file.clone();
+        let path = match resolve_asset(source, project_file.as_deref()) {
+            Ok(Asset::File(path)) => path,
+            Ok(Asset::Data { .. }) => {
+                return Err(
+                    "a video cannot be embedded as a \"data:\" URI; use the path of a file".into(),
+                );
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        frames.frame(&VideoRequest {
+            path: &path,
+            time_ms: if time_ms.is_finite() {
+                time_ms.max(0.0)
+            } else {
+                0.0
+            },
+            width,
+            height,
+        })
     }
 
     fn store(&self) -> MutexGuard<'_, Store> {

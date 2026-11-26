@@ -37,7 +37,8 @@ pub mod tools;
 pub use bridge::{BridgePart, BridgeResult, BridgeTool, ToolBridge};
 pub use host::{
     ExportFormat, ExportOptions, ExportProgress, ExportRequest, Exported, Exporter, FontFamily,
-    FontSource, Frame, FrameRequest, FrameSource, Host, HostError, SharedMeasurer,
+    FontSource, Frame, FrameRequest, FrameSource, Host, HostError, MediaInfo, MediaProbe,
+    SharedMeasurer,
 };
 pub use session::{
     Change, ChangeKind, Origin, Session, SessionHandle, SessionSaveError, Step, Subscription,

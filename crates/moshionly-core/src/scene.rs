@@ -161,6 +161,23 @@ pub enum Content {
         /// Outline of the box.
         stroke: Option<SceneStroke>,
     },
+    /// One frame of a video filling the box, drawn like an image.
+    Video {
+        /// Where the video comes from, as written in the document. Resolve
+        /// it with [`resolve_asset`](crate::io::resolve_asset).
+        source: String,
+        /// Which moment of the file to show, in milliseconds from its
+        /// start: the frame that is showing at that time, which is the
+        /// last one that starts at or before it.
+        media_time_ms: f64,
+        /// How the frame fills the box when their proportions differ.
+        fit: ImageFit,
+        /// Corner radii in pixels: top-left, top-right, bottom-right,
+        /// bottom-left. Already limited to what fits in the box.
+        radii: [f64; 4],
+        /// Outline of the box.
+        stroke: Option<SceneStroke>,
+    },
 }
 
 /// A paint with its geometry in pixels in the node's coordinates.
@@ -413,7 +430,7 @@ impl Scene {
     /// the outermost group down to the frontmost node that the point is on.
     /// Empty when the point is on nothing.
     ///
-    /// Rectangles, text, images and stars count as their box, ellipses as
+    /// Rectangles, text, images, videos and stars count as their box, ellipses as
     /// the full ellipse, paths as the box around their points. A rectangle
     /// or ellipse that is only an outline is hit near its edge, not through
     /// its empty middle. Clips and masks hide what they cut off. Repeated

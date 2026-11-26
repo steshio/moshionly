@@ -9,7 +9,7 @@ The reference tables in the middle of this document are generated from the code 
 ```json
 {
   "format": "moshionly",
-  "version": 2,
+  "version": 3,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null, "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -25,7 +25,7 @@ The reference tables in the middle of this document are generated from the code 
 | Field | Value | Meaning |
 |---|---|---|
 | `format` | `"moshionly"` | Says what the file is. Anything else is refused as "not a Moshionly project". |
-| `version` | whole number | The version of the format. This document describes version 2, which added components (`component` and `instance`). Version 1 files are read as they are. |
+| `version` | whole number | The version of the format. This document describes version 3, which added video and sound (`video` and `audio`); version 2 added components (`component` and `instance`). Older files are read as they are. |
 | `name` | string | The name of the project. May be left out. |
 | `nodes` | list of nodes | Everything in the project, as a flat list. |
 
@@ -35,7 +35,7 @@ When Moshionly saves a file it writes one node per line, in tree order, with the
 
 ## Nodes
 
-A project is a flat list of nodes. Every node is either a **layer** (something that is drawn) or an **animation** (something that changes a layer over time). The `type` field says which, and decides which other fields the node has.
+A project is a flat list of nodes. Every node is either a **layer** (something that is drawn) or an **animation** (something that changes a layer over time). The `type` field says which, and decides which other fields the node has. Sound (`audio`) counts as an animation: it sits on a timeline, but changes no layer.
 
 Every node has these four fields:
 
@@ -58,7 +58,7 @@ The nodes form trees through `parent`:
 | any other layer | an `artboard`, a `group`, a `mask_group` or a `component` |
 | any animation | the `artboard` whose timeline it is on, or an `animation_group` in that artboard |
 
-An animation does not sit inside the layer it changes. It is listed in the timeline of the artboard and names its layer in `target`. The target must be a layer in the same artboard (for a `fill` animation it may be the artboard itself). Removing a layer removes the layers inside it and every animation that targets any of them.
+An animation does not sit inside the layer it changes. It is listed in the timeline of the artboard and names its layer in `target` (an `audio` item and an `animation_group` change no layer and have no target). The target must be a layer in the same artboard (for a `fill` animation it may be the artboard itself). Removing a layer removes the layers inside it and every animation that targets any of them.
 
 An `instance` names the `component` it shows in its `component` field, which may be in any artboard. `parent`, `target` and `component` are the only ways a node refers to another. See [Components](#components).
 
@@ -228,9 +228,24 @@ A copy of a main component: shows its look, layers and animations, time_offset m
 | `component` | id | required | Id of the main component this instance shows: a `component` layer anywhere in the document, in any artboard. |
 | `time_offset` | number | `0` | How much later than the component this instance plays the component's animations, in milliseconds; negative plays them earlier. Give each copy a little more to stagger them. |
 
+#### `video`
+
+A video clip from a file: between start and end it shows the file's frames like an image and plays its sound.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `source` | string | required | Where the video comes from: a path relative to the project file or an absolute path. Video cannot be embedded as a `data:` URI. |
+| `fit` | `"cover"`, `"contain"` or `"stretch"` | `"cover"` | How the frames fill the box when their proportions differ. |
+| `stroke` | [stroke](#stroke) | none | Outline of the box. |
+| `corner_radius` | [corner_radius](#corner_radius) | `0` | Rounding of the corners in pixels. |
+| `start` | number | required | When the clip starts playing, in milliseconds from the start of the artboard, 0 or more. |
+| `end` | number | required | When the clip stops playing, in milliseconds from the start of the artboard; after `start`. |
+| `trim_start` | number | `0` | Where in the file the clip begins, in milliseconds from the start of the file, 0 or more: at `start` the clip is this far into its file. |
+| `volume` | number | `1` | How loud the clip's sound plays, from 0 (silent) to 1 (as recorded). |
+
 ### Fields of every animation
 
-Every animation that runs over time has these. `show`, `hide` and `animation_group` list their own fields below.
+Every animation that runs over time has these. `show`, `hide`, `audio` and `animation_group` list their own fields below.
 
 | Field | Value | Default | Meaning |
 |---|---|---|---|
@@ -524,6 +539,23 @@ Counts the first number in a text layer up or down, keeping the text around it.
 | `from` | number | none | Number shown at the start. Default: the number at that moment. |
 | `to` | number | none | Number shown at the end. Default: the number written in the text. |
 
+### Sound
+
+Sound on the timeline. It changes no layer, so it has no `target`. Video layers play their own sound too.
+
+#### `audio`
+
+Sound from a file that plays between start and end on the artboard's timeline; it draws nothing and has no target.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `name` | string | `""` | Label shown on the timeline row. |
+| `source` | string | required | Where the sound comes from: a path relative to the project file or an absolute path, of a sound file or a video file with sound. Sound cannot be embedded as a `data:` URI. |
+| `start` | number | required | When the clip starts playing, in milliseconds from the start of the artboard, 0 or more. |
+| `end` | number | required | When the clip stops playing, in milliseconds from the start of the artboard; after `start`. |
+| `trim_start` | number | `0` | Where in the file the clip begins, in milliseconds from the start of the file, 0 or more: at `start` the clip is this far into its file. |
+| `volume` | number | `1` | How loud the clip's sound plays, from 0 (silent) to 1 (as recorded). |
+
 ### Timeline structure
 
 Folders for the timeline. They do not change playback.
@@ -546,8 +578,8 @@ A folder that organises animations on the timeline; it does not change playback.
 | `opacity` | every layer except `artboard` |
 | `resize` | every layer except `artboard` |
 | `fill` | `artboard`, `group`, `rect`, `ellipse`, `star`, `path`, `text`, `component` |
-| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component` |
-| `corner_radius` | `group`, `rect`, `image`, `component` |
+| `stroke` | `group`, `rect`, `ellipse`, `star`, `path`, `text`, `image`, `component`, `video` |
+| `corner_radius` | `group`, `rect`, `image`, `component`, `video` |
 | `blur` | every layer except `artboard` |
 | `shadow` | every layer except `artboard` |
 | `show` | every layer except `artboard` |
@@ -1087,7 +1119,7 @@ Recognised are thousands separators (`,`, a space, `'`, or `.` with a decimal co
 
 ### The length of the timeline
 
-An artboard's `duration` is the length of its timeline. Animations may end after it; export stops at the duration. A frame can be asked for at any time, also past the end.
+An artboard's `duration` is the length of its timeline. Animations, videos and sound may end after it; export stops at the duration. A frame can be asked for at any time, also past the end.
 
 ## Components
 
@@ -1112,7 +1144,7 @@ What an instance shows at a moment is what the component's own type draws (its f
 
 The rules: an instance's `component` must name a `component` layer; a component cannot be inside another component; and no component may show itself, by holding an instance of itself or of a component that shows it. Instances of other components inside a component are fine. Removing a component that instances still show is refused; the editor and the agents' `remove` first *detach* those instances, replacing each with a `group` that looks the same, with copies of the component's layers and of their animations (except that a group from an instance resized out of proportion keeps stroke widths and font sizes, and one from an instance with a negative `time_offset` squeezes the animations under way at 0 ms into what is left of them; the agents' tools warn when that happens). A `group` and a `component` have the same fields, so an update can turn one into the other by setting `type`.
 
-Version 2 of the format added `component` and `instance`. A version 1 file is read as it is and saved as version 2.
+Version 2 of the format added `component` and `instance`, and version 3 added `video` and `audio`. An older file is read as it is and saved as version 3.
 
 ## Images
 
@@ -1124,6 +1156,35 @@ The `source` of an `image` layer is one of:
 
 Keeping images in or below the project's folder and using relative paths makes the project portable. Web addresses are not loaded.
 
+## Video and sound
+
+A `video` layer plays the frames of a video file, and an `audio` item plays sound on an artboard's timeline:
+
+```json
+{ "id": "clp", "parent": "ab12", "index": "a2", "type": "video", "name": "Intro",
+  "source": "assets/intro.mp4", "width": 1080, "height": 608,
+  "start": 500, "end": 3500, "trim_start": 2000, "volume": 0.8 },
+{ "id": "mus", "parent": "ab12", "index": "a3", "type": "audio", "name": "Music",
+  "source": "assets/music.mp3", "start": 0, "end": 4000 }
+```
+
+Both are *clips*, timed by four fields:
+
+- `start` and `end`: when the clip plays, in milliseconds on the artboard's timeline, from `start` up to (not including) `end`, which comes after `start`.
+- `trim_start`: how far into the file the clip begins. At a time `t` while it plays, the clip is at `trim_start + (t - start)` in its file. So the intro above shows its file from 2 s to 5 s between 0.5 s and 3.5 s of the timeline.
+- `volume`: how loud its sound plays, from 0 (silent) to 1 (as recorded).
+
+A video layer is drawn like an image, with every layer field and the same `fit`, `corner_radius` and `stroke`, and it takes the animations an image takes. It is only drawn while its clip plays; in the design, with no time, it shows the frame at `trim_start`. At a moment of the file it shows the last frame that starts at or before that moment. Past the end of the file it keeps its last frame, and its sound is silent. A video plays the sound of its own file at its `volume`.
+
+An `audio` item draws nothing. It is a row on the timeline of its artboard (or of an `animation_group` in it) like an animation, but it changes no layer, so it has no `target`.
+
+- Sound does not follow visibility: a hidden or transparent video still plays its sound. Set its `volume` to 0 to silence it.
+- An instance plays the videos inside its component, with their sound, `time_offset` milliseconds later, like their animations. The audio items of the component's artboard are not part of the component.
+- `source` is a path relative to the project's folder or an absolute path, as for images. It cannot be a `data:` URI: video and sound are too large to keep inside the project file.
+- A file is not read when a project is loaded, so a clip is not checked against the length of its file. The app and the agents' `import_media` set `end` from the file's duration when media is added.
+
+Video and sound are read with `ffmpeg`, which is not part of Moshionly: install it to use them (on a Mac: `brew install ffmpeg`). Without it, media cannot be added in the app, a video layer draws a grey placeholder with a warning, and exports are written without sound, saying so. MP4, WebM and ProRes exports carry the artboard's sound: every audio item and every video with a `volume` above 0, mixed. GIF, PNG and PNG sequences hold no sound, and Lottie files leave video and sound out; the export says so.
+
 ## Designs from other tools
 
 A plugin that sends a design to Moshionly sends a list of layer nodes in the format of this document, with a few allowances:
@@ -1131,7 +1192,7 @@ A plugin that sends a design to Moshionly sends a list of layer nodes in the for
 - `id` can be any text that is unique in the list. Every node gets a new id on import.
 - `index` may be left out. Siblings then keep the order of the list.
 - `parent` names another node of the list, or is left out for a top-level layer.
-- Only layers are accepted, no animations.
+- Only layers are accepted, no animations, and no `video`: video and sound always refer to files on the computer, which a design sent from elsewhere may not do.
 - A top-level `artboard` becomes an artboard, or, when the design is placed inside an existing artboard, a group that clips and keeps the artboard's size and fill.
 
 Set `source_id` on every layer to something that identifies it in the tool it comes from, for example `figma:<file key>:<node id>`. When the same design is sent again, Moshionly pairs the old layers with the new ones by `source_id` and moves each layer's animations over to its new version. Layers that share a `source_id` (copies of one component, say) are paired in order: the first old one with the first new one, and so on. Animations of layers that no longer exist are removed, and so are animations of a type that does not work on what a layer has become.
@@ -1147,7 +1208,7 @@ This is `crates/moshionly-core/examples/demo.moshi`: a card that fades and slide
 ```json
 {
   "format": "moshionly",
-  "version": 2,
+  "version": 3,
   "name": "Launch day",
   "nodes": [
     {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},

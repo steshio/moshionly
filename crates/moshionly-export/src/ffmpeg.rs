@@ -4,7 +4,9 @@
 //! installed `ffmpeg` writes them. Frames are rendered as usual and piped
 //! to its standard input as raw straight-alpha RGBA; `ffmpeg` converts them
 //! to BT.709 Y'CbCr, encodes them and writes the file. Both formats keep
-//! transparency when the plan asks for it.
+//! transparency when the plan asks for it. The artboard's sound, when the
+//! export has any, is a second input (see [`crate::soundtrack`]): Opus in
+//! WebM, 24-bit PCM in ProRes.
 //!
 //! `ffmpeg` runs as a separate program, so its licence does not extend to
 //! Moshionly. It is found on `PATH` and in the places package managers put
@@ -29,6 +31,7 @@ use crate::frames::{self, Pass};
 use crate::job::Context;
 use crate::progress::{CancelToken, Phase};
 use crate::settings::{Plan, Quality};
+use crate::soundtrack::SoundTrack;
 
 /// Where `ffmpeg` is commonly installed, besides the folders on `PATH`.
 const USUAL_PLACES: [&str; 5] = [
@@ -56,17 +59,7 @@ impl Ffmpeg {
     /// Finds `ffmpeg` in the folders on `PATH`, then in the usual install
     /// places. `None` when it is not installed.
     pub fn locate() -> Option<Ffmpeg> {
-        let name = if cfg!(windows) {
-            "ffmpeg.exe"
-        } else {
-            "ffmpeg"
-        };
-        let path_dirs = env::var_os("PATH").unwrap_or_default();
-        env::split_paths(&path_dirs)
-            .chain(USUAL_PLACES.iter().map(PathBuf::from))
-            .map(|dir| dir.join(name))
-            .find(|path| is_program(path))
-            .map(|path| Ffmpeg { path })
+        find_program("ffmpeg").map(|path| Ffmpeg { path })
     }
 
     /// The `ffmpeg` at `path`, for example one the person chose in the
@@ -84,6 +77,23 @@ impl Ffmpeg {
     pub fn check(&self, format: Format) -> Result<(), String> {
         self.encoders()
             .and_then(|encoders| encoders.check(&self.path, format))
+    }
+
+    /// Whether this `ffmpeg` can add sound to a file of `format`, or why
+    /// not.
+    pub(crate) fn check_sound(&self, format: Format) -> Result<(), String> {
+        let Some(encoder) = sound_encoder_for(format) else {
+            return Err(format!("{format} files hold no sound"));
+        };
+        if self.encoders()?.0.iter().any(|name| name == encoder) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the ffmpeg at {} was built without the {encoder} encoder that {format} sound \
+                 needs; install a full build of ffmpeg",
+                self.path.display()
+            ))
+        }
     }
 
     /// The encoders this `ffmpeg` was built with, or why it could not say:
@@ -161,8 +171,33 @@ fn encoder_for(format: Format) -> Option<&'static str> {
     }
 }
 
+/// The `ffmpeg` encoder for a format's sound.
+fn sound_encoder_for(format: Format) -> Option<&'static str> {
+    match format {
+        Format::Mp4 => Some("aac"),
+        Format::WebM => Some("libopus"),
+        Format::ProRes => Some("pcm_s24le"),
+        _ => None,
+    }
+}
+
+/// Finds the program `name` (`ffmpeg`, `ffprobe`) in the folders on
+/// `PATH`, then in the usual install places.
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    let path_dirs = env::var_os("PATH").unwrap_or_default();
+    env::split_paths(&path_dirs)
+        .chain(USUAL_PLACES.iter().map(PathBuf::from))
+        .map(|dir| dir.join(&file))
+        .find(|path| is_program(path))
+}
+
 /// Whether `path` is a file this process may run.
-fn is_program(path: &Path) -> bool {
+pub(crate) fn is_program(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };
@@ -177,9 +212,9 @@ fn is_program(path: &Path) -> bool {
     }
 }
 
-/// The `ffmpeg` command line that reads frames from standard input and
-/// writes `plan`'s video to `out`.
-fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
+/// The `ffmpeg` command line that reads frames from standard input (and
+/// the sound track, when there is one) and writes `plan`'s video to `out`.
+fn arguments(plan: &Plan, out: &Path, sound: Option<&SoundTrack>) -> Vec<OsString> {
     let rate = plan
         .moments
         .frames()
@@ -201,9 +236,20 @@ fn arguments(plan: &Plan, out: &Path) -> Vec<OsString> {
         &fps,
     ]);
     add(&["-i", "pipe:0"]);
-    // Options after the input are for the output. No random ids or version
-    // strings, so the same export gives the same file.
+    if let Some(sound) = sound {
+        args.extend(sound.input());
+    }
+    let mut add = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    // Options after the inputs are for the output. No random ids or
+    // version strings, so the same export gives the same file.
     add(&["-fflags", "+bitexact", "-flags:v", "+bitexact"]);
+    if sound.is_some() {
+        add(&["-map", "0:v:0", "-map", "1:a:0", "-flags:a", "+bitexact"]);
+        match plan.format {
+            Format::ProRes => add(&["-c:a", "pcm_s24le"]),
+            _ => add(&["-c:a", "libopus", "-b:a", "160k"]),
+        }
+    }
     let key_interval = (2.0 * rate.fps()).round().max(1.0).to_string();
     let pixel_format = match (plan.format, plan.transparent) {
         (Format::ProRes, true) => "yuva444p10le",
@@ -275,7 +321,7 @@ pub(crate) fn write(cx: &mut Context<'_>, path: &Path, ffmpeg: &Ffmpeg) -> Resul
     let plan = cx.plan;
     let format = plan.format;
     let cancel = cx.reporter.cancel_token().clone();
-    let mut child = Running::start(ffmpeg, &arguments(plan, path), format, cancel)?;
+    let mut child = Running::start(ffmpeg, &arguments(plan, path, cx.sound), format, cancel)?;
 
     let pass = Pass {
         moments: plan.moments,
@@ -302,7 +348,7 @@ const CHECK_EVERY: Duration = Duration::from_millis(20);
 /// a watcher thread stops the program as soon as the export is cancelled,
 /// which also ends a write that is waiting for `ffmpeg` to take a frame,
 /// and waiting for `ffmpeg` to finish the file gives up on cancellation.
-struct Running {
+pub(crate) struct Running {
     /// Shared with the watcher, which stops it on cancellation.
     child: Arc<Mutex<Child>>,
     stdin: Option<ChildStdin>,
@@ -320,7 +366,9 @@ struct Watcher {
 }
 
 impl Running {
-    fn start(
+    /// Starts `ffmpeg` with `args`, stopping it when `cancel` is
+    /// cancelled. Its errors are reported as errors writing `format`.
+    pub(crate) fn start(
         ffmpeg: &Ffmpeg,
         args: &[OsString],
         format: Format,
@@ -383,7 +431,7 @@ impl Running {
     }
 
     /// Lets ffmpeg finish the file and checks that it did.
-    fn finish(mut self) -> Result<(), ExportError> {
+    pub(crate) fn finish(mut self) -> Result<(), ExportError> {
         drop(self.stdin.take());
         if self.wait()?.success() {
             Ok(())
@@ -471,7 +519,7 @@ fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
 
 /// The end of what a program printed, at most `limit` bytes, without
 /// surrounding blank space.
-fn last_words(said: &str, limit: usize) -> &str {
+pub(crate) fn last_words(said: &str, limit: usize) -> &str {
     let said = said.trim();
     let start = said.len().saturating_sub(limit);
     let start = (start..said.len())
@@ -525,6 +573,7 @@ mod tests {
         let args = joined(&arguments(
             &plan(Format::WebM, Settings::default()),
             Path::new("/out/clip.part"),
+            None,
         ));
         assert!(
             args.contains("-s 200x100 -framerate 30/1 -i pipe:0"),
@@ -546,16 +595,59 @@ mod tests {
                 moshionly_core::Color::BLACK,
             ))
             .with_quality(Quality::High);
-        let args = joined(&arguments(&plan(Format::ProRes, opaque), Path::new("x")));
+        let args = joined(&arguments(
+            &plan(Format::ProRes, opaque),
+            Path::new("x"),
+            None,
+        ));
         assert!(args.contains("-profile:v 4444xq"), "{args}");
         assert!(args.contains("-pix_fmt yuv444p10le"), "{args}");
         assert!(!args.contains("alpha_bits"), "{args}");
         let clear = Settings::default().with_frame_rate(crate::FrameRate::FPS_29_97);
-        let args = joined(&arguments(&plan(Format::ProRes, clear), Path::new("x")));
+        let args = joined(&arguments(
+            &plan(Format::ProRes, clear),
+            Path::new("x"),
+            None,
+        ));
         assert!(args.contains("-framerate 30000/1001"), "{args}");
         assert!(args.contains("-pix_fmt yuva444p10le"), "{args}");
         assert!(args.contains("-alpha_bits 16"), "{args}");
         assert!(args.contains("-f mov"), "{args}");
+    }
+
+    #[test]
+    fn sound_is_a_second_input_with_the_format_s_codec() {
+        let sound = SoundTrack::at("/out/.sound.x.part".into());
+        let webm = joined(&arguments(
+            &plan(Format::WebM, Settings::default()),
+            Path::new("/out/clip.part"),
+            Some(&sound),
+        ));
+        assert!(
+            webm.contains(
+                "-i pipe:0 -f f32le -ar 48000 -ac 2 -i file:/out/.sound.x.part -fflags +bitexact"
+            ),
+            "{webm}"
+        );
+        assert!(
+            webm.contains("-map 0:v:0 -map 1:a:0 -flags:a +bitexact -c:a libopus"),
+            "{webm}"
+        );
+        let prores = joined(&arguments(
+            &plan(Format::ProRes, Settings::default()),
+            Path::new("x"),
+            Some(&sound),
+        ));
+        assert!(prores.contains("-c:a pcm_s24le"), "{prores}");
+        let silent = joined(&arguments(
+            &plan(Format::WebM, Settings::default()),
+            Path::new("x"),
+            None,
+        ));
+        assert!(
+            !silent.contains("-map") && !silent.contains("-c:a"),
+            "{silent}"
+        );
     }
 
     #[test]

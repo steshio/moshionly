@@ -1,5 +1,5 @@
-//! Drawing image layers: the picture fitted into the box, cut to its
-//! rounded corners, and the box's outline on top.
+//! Drawing image and video layers: the picture fitted into the box, cut to
+//! its rounded corners, and the box's outline on top.
 
 use moshionly_core::Rect;
 use moshionly_core::model::ImageFit;
@@ -14,7 +14,7 @@ use crate::convert;
 const PLACEHOLDER_FILL: sk::Color = sk::Color::from_argb(255, 229, 231, 235);
 const PLACEHOLDER_LINES: sk::Color = sk::Color::from_argb(255, 156, 163, 175);
 
-/// What an image layer draws.
+/// What an image or video layer draws.
 pub(crate) struct ImageBox<'a> {
     /// The box's width and height.
     pub size: (f64, f64),
@@ -24,6 +24,9 @@ pub(crate) struct ImageBox<'a> {
     pub fit: ImageFit,
     /// The outline of the box.
     pub stroke: Option<&'a SceneStroke>,
+    /// Whether the picture has smaller copies to draw it small with. Video
+    /// frames do not: making them for every frame costs too much.
+    pub mipmaps: bool,
 }
 
 /// Draws the picture, or a placeholder when there is none, faded by
@@ -45,11 +48,16 @@ pub(crate) fn draw(
             let mut paint = sk::Paint::default();
             paint.set_anti_alias(true);
             paint.set_alpha_f(opacity);
+            let mipmaps = if frame.mipmaps {
+                sk::MipmapMode::Linear
+            } else {
+                sk::MipmapMode::None
+            };
             canvas.draw_image_rect_with_sampling_options(
                 picture,
                 None,
                 convert::rect(&target),
-                sk::SamplingOptions::new(sk::FilterMode::Linear, sk::MipmapMode::Linear),
+                sk::SamplingOptions::new(sk::FilterMode::Linear, mipmaps),
                 &paint,
             );
         }

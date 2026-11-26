@@ -18,6 +18,7 @@ pub fn type_label(ty: NodeType) -> &'static str {
         T::Image => "Image",
         T::Component => "Component",
         T::Instance => "Instance",
+        T::Video => "Video",
         T::Move => "Move",
         T::Rotate => "Rotate",
         T::Scale => "Scale",
@@ -47,6 +48,7 @@ pub fn type_label(ty: NodeType) -> &'static str {
         T::TextIn => "Text in",
         T::TextOut => "Text out",
         T::Counter => "Counter",
+        T::Audio => "Sound",
         T::AnimationGroup => "Folder",
     }
 }
@@ -90,14 +92,15 @@ pub enum ActionFamily {
     Instant,
 }
 
-/// Which family an animation type belongs to; `None` for layers and
-/// folders.
+/// Which family an animation type belongs to; `None` for layers, folders
+/// and sound.
 pub fn action_family(ty: NodeType) -> Option<ActionFamily> {
     let kind = ty.animation_kind()?;
     Some(match kind {
         AnimationKind::Instant => ActionFamily::Instant,
         AnimationKind::Text => ActionFamily::Text,
-        AnimationKind::Structure => return None,
+        // Sound and folders change no layer.
+        AnimationKind::Media | AnimationKind::Structure => return None,
         _ if ty.is_entrance() => ActionFamily::Entrance,
         _ if ty.is_exit() => ActionFamily::Exit,
         _ => ActionFamily::Change,

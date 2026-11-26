@@ -13,7 +13,8 @@
 //!
 //! - [`actions`]: the actions of layers: adding, retiming, staggering and
 //!   grouping them.
-//! - [`assets`]: the image files a project uses, kept with its file.
+//! - [`assets`]: the image, video and sound files a project uses, kept
+//!   with its file.
 //! - [`settle`]: the box auto-sized text is drawn in, which moving,
 //!   resizing and grouping work on.
 //! - [`selection`]: what a click selects, groups and locks included.
@@ -25,23 +26,29 @@
 //! - [`playback`]: the playhead tied to a clock while playing.
 //! - [`create`], [`pen`] and [`text`]: making layers with the tools, and
 //!   typing text on the canvas.
+//! - [`media`]: bringing video and sound files in as video layers and
+//!   audio items.
 //! - [`clipboard`]: copying and pasting layers as Moshionly's JSON.
 //! - [`components`]: main components, where new instances of them go, and
 //!   what deleting a main does to its instances.
 //! - [`snap`]: snapping to edges and centres, with guides.
 //! - [`tree`]: the rows of the layer list.
 //! - [`timeline`]: the timeline's rows, from an artboard's animations.
+//! - [`clips`]: video and sound clips on the timeline: moving and
+//!   trimming them.
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
 
 pub mod actions;
 pub mod assets;
 pub mod clipboard;
+pub mod clips;
 pub mod components;
 pub mod create;
 pub mod describe;
 pub mod drag;
 pub mod inspect;
+pub mod media;
 pub mod motion;
 pub mod pen;
 pub mod playback;

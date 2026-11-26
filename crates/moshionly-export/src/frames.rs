@@ -67,7 +67,7 @@ impl FrameSource<'_> {
 const MEMORY_BUDGET: usize = 512 << 20;
 
 /// The most worker threads used, whatever the number of cores.
-const MAX_WORKERS: usize = 16;
+pub(crate) const MAX_WORKERS: usize = 16;
 
 /// One run of frames through the workers.
 pub(crate) struct Pass {

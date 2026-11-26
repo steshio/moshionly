@@ -24,17 +24,21 @@ let exported = job.run(|progress| println!("{:.0}%", progress.fraction() * 100.0
 `job.plan()` checks the settings without writing anything, so a dialog can
 say what is wrong before the person starts.
 
+The crate also reads video and sound files with `ffmpeg` (the [`media`
+module](#video-and-sound)), for video layers in exports and in the editor,
+and for sound.
+
 ## Formats
 
-| Format | For | Transparent | Built in |
-|---|---|---|---|
-| PNG | One frame: a moment of the animation, or the design at rest | Yes | Yes |
-| PNG sequence | Video editors that import numbered images: a folder of `frame_0000.png`, `frame_0001.png`, ... | Yes | Yes |
-| GIF | Chat, email, documentation: plays everywhere | Pixels are fully see-through or fully solid | Yes |
-| MP4 (H.264) | Social media, slides, websites | No | Yes |
-| WebM (VP9) | Websites, including transparent overlays | Yes | Needs `ffmpeg` |
-| ProRes 4444 (MOV) | Video editing software, including transparent overlays | Yes | Needs `ffmpeg` |
-| Lottie (JSON) | Apps and websites: vector shapes and keyframes that play at any size | Yes | Yes |
+| Format | For | Transparent | Sound | Built in |
+|---|---|---|---|---|
+| PNG | One frame: a moment of the animation, or the design at rest | Yes | No | Yes |
+| PNG sequence | Video editors that import numbered images: a folder of `frame_0000.png`, `frame_0001.png`, ... | Yes | No | Yes |
+| GIF | Chat, email, documentation: plays everywhere | Pixels are fully see-through or fully solid | No | Yes |
+| MP4 (H.264) | Social media, slides, websites | No | AAC, added by `ffmpeg` | Yes |
+| WebM (VP9) | Websites, including transparent overlays | Yes | Opus | Needs `ffmpeg` |
+| ProRes 4444 (MOV) | Video editing software, including transparent overlays | Yes | 24-bit PCM | Needs `ffmpeg` |
+| Lottie (JSON) | Apps and websites: vector shapes and keyframes that play at any size | Yes | No | Yes |
 
 `available_formats()` says which formats can be written right now, and
 `availability()` says why one cannot (for example, "WebM needs ffmpeg, which
@@ -94,6 +98,10 @@ its own size, 30 frames per second, on its own background.
   folder beside it. The size sets the composition's size, which players use
   when nothing else decides; the content is scaled to it. Quality and the
   GIF settings do not apply.
+- **Sound**: whether MP4, WebM and ProRes carry the artboard's sound (on by
+  default). `Plan::sound` says whether the file will get a sound track:
+  the format can hold one, the setting is on, and sound plays in the
+  stretch exported.
 
 ### Which frames
 
@@ -142,8 +150,54 @@ written into.
   reported; on cancellation it is stopped at once, also while it is still
   finishing the file or not yet taking frames.
 
+- **Sound**: the artboard's sound for the stretch exported (every `audio`
+  item and every video with a `volume` above 0, from core's
+  `eval::sounds`) is mixed into 48 kHz stereo and written beside the export
+  as raw samples, which `ffmpeg` reads as a second input: Opus for WebM,
+  24-bit PCM for ProRes. The MP4 is written in-process as usual and then
+  copied once more by `ffmpeg`, video untouched, with AAC sound added.
+  Without `ffmpeg`, or without the encoder the format's sound needs, the
+  file is written without sound and `Exported::warnings` says so; GIF and
+  PNG exports of an artboard with sound say that they hold none.
+- **Video layers** are drawn with the renderer's frame provider, or with
+  a `media::VideoDecoder` of the job's own when the renderer has none and
+  the document has video. Without `ffmpeg` they draw a grey placeholder,
+  with a warning.
+
 Exporting the same thing twice gives the same bytes, in every format (for
-WebM and ProRes, with the same `ffmpeg`).
+WebM, ProRes and sound, with the same `ffmpeg`).
+
+## Video and sound
+
+Moshionly links no video or sound decoders: the `media` module runs the
+installed `ffmpeg` and `ffprobe`, like the WebM and ProRes exports, and
+everything in it is optional at run time.
+
+- `MediaTools::locate()` finds both programs; `probe(path)` (or
+  `MediaTools::probe`) says how long a file is, the size of its picture as
+  shown (in square pixels, turned upright), and whether it has video and
+  sound. Cover art in a sound file is not video.
+- `VideoDecoder` is the renderer's `VideoFrames` provider (install it with
+  `AssetLoader::with_video`). For each file and frame size, one or two
+  long-lived `ffmpeg` processes decode forward to raw RGBA; a request they
+  have passed, or that is far ahead, starts one again a little before it.
+  The frame shown at a moment is the last one whose own timestamp is at or
+  before it: timestamps come from `ffmpeg`'s description of each frame, as
+  written in the file, so the answer is the same in any order and from any
+  thread, which export's parallel rendering needs. A seek can land after
+  key frames that later frames depend on and skip a few frames; when the
+  first frame read is past the moment, reading starts again further back.
+  Frames read are kept within a memory budget (256 MB by default), and a
+  small box gets frames halved in size as often as they still cover it.
+- `SoundDecoder::decode` reads a stretch of a file's sound as 48 kHz stereo
+  32-bit float samples (mono plays on both sides at full level), and
+  `SoundDecoder::mix` mixes the sound of an artboard over a stretch of its
+  timeline, honouring each clip's start, trim and volume, and leaving out
+  what cannot be read with a warning. Each clip read is kept (512 MB by
+  default), so mixing from another moment, as playback does, reads nothing
+  again.
+
+Reading frames needs `ffmpeg` 5.1 or newer (for `-fps_mode`).
 
 ## Lottie
 
@@ -206,7 +260,8 @@ together. Players differ in whether a reveal also cuts a layer's shadow.
 ### Warnings
 
 What Lottie cannot express exactly is drawn as closely as it can be, and
-`Exported::warnings` says so in plain words, naming the layer. For example: a stretched
+`Exported::warnings` says so in plain words, naming the layer. Video layers
+and sound are left out, each named. For example: a stretched
 radial gradient (drawn round), a paint that changes between linear and
 radial, a stroke inside or outside the edge of anything but a rectangle or
 ellipse (drawn centred), letters that blur as they come in, a gradient on a
@@ -226,6 +281,7 @@ cargo run --release -p moshionly-export --example export -- demo.moshi frames --
 cargo run --release -p moshionly-export --example export -- demo.moshi clear.webm --transparent
 cargo run --release -p moshionly-export --example export -- demo.moshi demo.json --fps 60
 cargo run --release -p moshionly-export --example export -- demo.moshi demo.json --format lottie --images-beside
+cargo run --release -p moshionly-export --example export -- clip.moshi clip.mp4 --no-sound
 cargo run --release -p moshionly-export --example export -- --formats
 ```
 
@@ -240,8 +296,13 @@ crate and decodes them with OpenH264's decoder, and checks WebM and ProRes
 with `ffprobe`. For Lottie it checks the fitted keyframes against core's
 `value_at` at every frame for every easing and for combined animations,
 evaluating the written keyframes the way players do, and checks the
-structure of shapes, groups, masks, text, images, effects and warnings. The WebM and ProRes tests, and the MP4 check with
-`ffprobe`, print why they are skipped where `ffmpeg` is not installed.
+structure of shapes, groups, masks, text, images, effects and warnings. The media tests make their
+video and sound with `ffmpeg` in a temporary folder and check probing,
+that frames asked for out of order and from several threads equal frames
+asked for in order, the frame shown at each moment, mixing with start,
+trim and volume, and the sound tracks of MP4, WebM and ProRes exports with
+`ffprobe`. These, the WebM and ProRes tests, and the MP4 check with
+`ffprobe` print why they are skipped where `ffmpeg` is not installed.
 
 ## Patents
 
@@ -251,12 +312,13 @@ distributes itself. This crate builds OpenH264 from source, which does not
 carry that licence. Whoever distributes builds of Moshionly should check
 whether they need a licence where they distribute them. WebM (VP9) is
 royalty-free, and ProRes and the other formats are written by `ffmpeg` as a
-separate program.
+separate program. AAC, the sound of MP4 files, is patented in some
+countries too; it is encoded by `ffmpeg` as a separate program.
 
 ## Licences
 
 The code is MIT. Dependencies: `openh264` and `openh264-sys2` (BSD-2-Clause,
 with OpenH264 itself BSD-2-Clause), `gif` (MIT or Apache-2.0), `image` (MIT
 or Apache-2.0), `serde_json` (MIT or Apache-2.0), `tempfile` (MIT or
-Apache-2.0), `thiserror` (MIT or Apache-2.0). `ffmpeg` is never linked,
-only run.
+Apache-2.0), `thiserror` (MIT or Apache-2.0). `ffmpeg` and `ffprobe` are
+never linked, only run, also for reading video and sound.

@@ -151,11 +151,11 @@ pub(super) fn clone(batch: &mut Batch, args: &Args) -> Result<(), ToolError> {
     // One warning for the copy that ends latest is enough.
     let latest = added
         .iter()
-        .filter_map(|id| Some((id, batch.scratch.get(id)?.data.span()?.1)))
+        .filter_map(|id| Some((id, warn::end_of(batch.scratch.get(id)?)?)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id.clone());
     if let Some(latest) = latest {
-        warn::animation(batch, &latest);
+        warn::late(batch, &latest);
     }
     let listed = if copies.len() <= MAX_LISTED_COPIES {
         let mut map = Map::new();
@@ -267,6 +267,12 @@ fn clone_animation(
     let Some(Edit::Add { node }) = edits.first_mut() else {
         return Ok((edits, copies));
     };
+    if node.node_type() == NodeType::Audio {
+        return Err(ToolError::argument(
+            field,
+            "\"target\" cannot be used when copying an audio item: sound changes no layer.",
+        ));
+    }
     if node.target().is_none() {
         return Err(ToolError::argument(
             field,
@@ -313,9 +319,9 @@ fn read_offset(args: &Args) -> Result<(f64, f64), ToolError> {
     ))
 }
 
-/// Moves every copied animation `by` milliseconds later (earlier when
-/// negative), and so what every copied instance plays: `copied` holds the
-/// ids of the copies.
+/// Moves every copied animation, video clip and sound `by` milliseconds
+/// later (earlier when negative), and so what every copied instance plays:
+/// `copied` holds the ids of the copies.
 fn shift_animations(
     args: &Args,
     edits: &mut [Edit],
@@ -345,6 +351,15 @@ fn shift_animations(
                 }
                 instant.start
             }
+            // Video layers and sound play their clip later too.
+            data if data.clip().is_some() => match data.clip_mut() {
+                Some(clip) => {
+                    clip.start += by;
+                    clip.end += by;
+                    clip.start
+                }
+                None => continue,
+            },
             data => match data.timing_mut() {
                 Some(timing) => {
                     timing.start += by;

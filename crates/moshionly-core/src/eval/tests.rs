@@ -1522,3 +1522,4 @@ fn counters_and_text_animations_work_on_the_same_layer() {
 }
 
 mod components;
+mod media;

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use moshionly_core::{Document, NodeId};
+use moshionly_core::{Document, NodeId, NodeType};
 use moshionly_render::{AssetLoader, FontLibrary, RenderWarning, Renderer};
 
 use crate::error::ExportError;
@@ -12,11 +12,13 @@ use crate::format::Format;
 use crate::frames::FrameSource;
 use crate::gif;
 use crate::lottie;
+use crate::media::{MediaTools, VideoDecoder};
 use crate::mp4;
 use crate::output::Output;
 use crate::png;
 use crate::progress::{CancelToken, Phase, Progress};
 use crate::settings::{Plan, Settings};
+use crate::soundtrack::{self, SoundTrack};
 
 /// One export: an artboard of a document, written to a file in a format.
 ///
@@ -56,10 +58,14 @@ pub struct ExportJob {
     /// exist yet or is empty.
     pub destination: PathBuf,
     /// What draws the frames. `None` draws with the bundled and installed
-    /// fonts, and finds images next to the project file.
+    /// fonts, and finds images next to the project file. Video frames come
+    /// from the renderer's [`VideoFrames`](moshionly_render::VideoFrames),
+    /// or when it has none, from a
+    /// [`VideoDecoder`](crate::media::VideoDecoder) of the job's own.
     pub renderer: Option<Renderer>,
-    /// The `ffmpeg` that writes WebM and ProRes. `None` looks for one on
-    /// `PATH` and in the usual install places.
+    /// The `ffmpeg` that writes WebM and ProRes, reads video and adds
+    /// sound. `None` looks for one on `PATH` and in the usual install
+    /// places.
     pub ffmpeg: Option<Ffmpeg>,
 }
 
@@ -126,7 +132,8 @@ impl ExportJob {
         self
     }
 
-    /// The same job, writing WebM and ProRes with `ffmpeg`.
+    /// The same job, writing WebM and ProRes, reading video and adding
+    /// sound with `ffmpeg`.
     pub fn with_ffmpeg(mut self, ffmpeg: Ffmpeg) -> Self {
         self.ffmpeg = Some(ffmpeg);
         self
@@ -147,7 +154,9 @@ impl ExportJob {
     /// Frames are rendered on several threads and handed to the encoder in
     /// order. The file is written beside the destination and moved into
     /// place only when it is complete; a failed or cancelled export leaves
-    /// nothing behind.
+    /// nothing behind. MP4, WebM and ProRes get the artboard's sound when
+    /// it has some and the settings ask for it (see [`crate::soundtrack`]);
+    /// what could not be added is said in [`Exported::warnings`].
     pub fn run(
         &self,
         mut progress: impl FnMut(Progress),
@@ -160,8 +169,21 @@ impl ExportJob {
                 AssetLoader::new(self.project_file.clone()),
             )
         });
+        let renderer = self.with_video(renderer);
         let ffmpeg = self.ffmpeg_for(plan.format)?;
         let output = Output::create(&self.destination, plan.format.writes_folder())?;
+        let dir = output
+            .destination()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_owned();
+        // Mixing the sound can take a moment.
+        progress(Progress {
+            phase: Phase::Preparing,
+            frames_done: 0,
+            frames_total: plan.frame_count(),
+        });
+        let (sound, notes) = soundtrack::prepare(self, &plan, &dir, cancel)?;
         let mut cx = Context {
             plan: &plan,
             source: FrameSource {
@@ -172,9 +194,24 @@ impl ExportJob {
             reporter: Reporter::new(&mut progress, cancel, plan.frame_count()),
             project_file: self.project_file.as_deref(),
             destination: output.destination(),
+            sound: sound.as_ref(),
         };
-        cx.reporter.report(Phase::Preparing, 0);
+        for note in notes {
+            cx.reporter.note(note);
+        }
         let images = write(&mut cx, output.path(), ffmpeg.as_ref())?;
+        if let Some(sound) = &sound
+            && plan.format == Format::Mp4
+        {
+            // The MP4 is written in-process without sound; ffmpeg adds it.
+            let ffmpeg = self.ffmpeg.clone().or_else(Ffmpeg::locate).ok_or_else(|| {
+                ExportError::FfmpegMissing {
+                    format: plan.format,
+                    reason: format!("ffmpeg was not found; {INSTALL_HINT}"),
+                }
+            })?;
+            soundtrack::add_to_mp4(output.path(), sound, &ffmpeg, cancel)?;
+        }
         cx.reporter.check()?;
         cx.reporter.report(Phase::Finishing, plan.frame_count());
         let warnings = std::mem::take(&mut cx.reporter.warnings);
@@ -197,6 +234,34 @@ impl ExportJob {
 }
 
 impl ExportJob {
+    /// `renderer`, drawing video with a decoder of the job's own when it
+    /// has none and the document has video. Without `ffmpeg` video layers
+    /// draw a placeholder, with a warning.
+    fn with_video(&self, renderer: Renderer) -> Renderer {
+        let has_video = self
+            .document
+            .nodes()
+            .any(|node| node.node_type() == NodeType::Video);
+        if !has_video || renderer.assets().video().is_some() {
+            return renderer;
+        }
+        let tools = self
+            .ffmpeg
+            .clone()
+            .or_else(Ffmpeg::locate)
+            .and_then(|ffmpeg| MediaTools::with_ffmpeg(&ffmpeg).ok());
+        match tools {
+            Some(tools) => Renderer::new(
+                renderer.fonts().clone(),
+                renderer
+                    .assets()
+                    .clone()
+                    .with_video(Arc::new(VideoDecoder::new(tools))),
+            ),
+            None => renderer,
+        }
+    }
+
     /// The `ffmpeg` to write `format` with, checked to be able to, or
     /// `None` for formats that do not need it.
     fn ffmpeg_for(&self, format: Format) -> Result<Option<Ffmpeg>, ExportError> {
@@ -256,6 +321,8 @@ pub(crate) struct Context<'a> {
     pub project_file: Option<&'a Path>,
     /// Where the export ends up, for files that go beside it.
     pub destination: &'a Path,
+    /// The sound to add, for formats that hold sound.
+    pub sound: Option<&'a SoundTrack>,
 }
 
 /// Reports progress, gathers warnings and watches for cancellation.

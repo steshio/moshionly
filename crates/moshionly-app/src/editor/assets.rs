@@ -1,21 +1,23 @@
-//! The image files a project uses, kept with its project file.
+//! The image, video and sound files a project uses, kept with its project
+//! file.
 //!
-//! A saved project is meant to be self-contained: the images its layers
-//! show sit in its folder (imports put them in `assets/`), and image layers
-//! name them relative to the project file, so the folder can be moved or
-//! shared as a whole. Saving the project in another folder, and pasting an
-//! image layer into another project, keep that true: the images are copied
-//! along and the layers point at the copies.
+//! A saved project is meant to be self-contained: the files its image and
+//! video layers and its audio items play sit in its folder (imports put
+//! them in `assets/`), and they are named relative to the project file, so
+//! the folder can be moved or shared as a whole. Saving the project in
+//! another folder, and pasting layers or sound into another project, keep
+//! that true: the files are copied along and the nodes point at the
+//! copies.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
 use moshionly_core::io::{self, Asset};
-use moshionly_core::{Document, Edit, Node};
+use moshionly_core::{Document, Edit, Node, NodeType};
 
-use super::inspect::image_of;
-
-/// The folder next to the project file that images are copied into.
+/// The folder next to the project file that files are copied into.
 pub const ASSETS_FOLDER: &str = "assets";
 
 /// The most copies of one name tried before giving up on a free one.
@@ -30,9 +32,9 @@ pub fn is_data_uri(source: &str) -> bool {
         .is_some_and(|start| start.eq_ignore_ascii_case("data:"))
 }
 
-/// The image file `source` names, as an absolute path, for a project saved
-/// as `project_file` (or never saved). `None` for a `data:` URI or a link.
-pub fn image_file(source: &str, project_file: Option<&Path>) -> Option<PathBuf> {
+/// The file `source` names, as an absolute path, for a project saved as
+/// `project_file` (or never saved). `None` for a `data:` URI or a link.
+pub fn asset_file(source: &str, project_file: Option<&Path>) -> Option<PathBuf> {
     if is_data_uri(source) {
         return None;
     }
@@ -93,17 +95,18 @@ fn reason(error: &std::io::Error) -> String {
     }
 }
 
-/// Copies the image `file` to `preferred`, or beside it under the first free
-/// name (`hero 2.png`, `hero 3.png`, ...) when another image already has
-/// that name. A file there with the same content is used as it is. Returns
-/// where the copy is.
+/// Copies `file` to `preferred`, or beside it under the first free name
+/// (`hero 2.png`, `hero 3.png`, ...) when another file already has that
+/// name. A file there with the same content is used as it is. Returns
+/// where the copy is. Files are read a piece at a time, so a long video
+/// is never held in memory whole.
 fn copy_to(file: &Path, preferred: &Path) -> std::io::Result<PathBuf> {
-    let bytes = std::fs::read(file)?;
+    let length = std::fs::metadata(file)?.len();
     let folder = preferred.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(folder)?;
     let stem = preferred
         .file_stem()
-        .map_or_else(|| "image".to_owned(), |s| s.to_string_lossy().into_owned());
+        .map_or_else(|| "file".to_owned(), |s| s.to_string_lossy().into_owned());
     let extension = preferred
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
@@ -114,9 +117,9 @@ fn copy_to(file: &Path, preferred: &Path) -> std::io::Result<PathBuf> {
         } else {
             folder.join(format!("{stem} {n}{extension}"))
         };
-        match std::fs::read(&candidate) {
-            Ok(existing) if existing == bytes => return Ok(candidate),
-            Ok(_) => continue,
+        match same_content(file, &candidate, length) {
+            Ok(true) => return Ok(candidate),
+            Ok(false) => continue,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
@@ -126,7 +129,16 @@ fn copy_to(file: &Path, preferred: &Path) -> std::io::Result<PathBuf> {
             .open(&candidate);
         match created {
             Ok(mut out) => {
-                std::io::Write::write_all(&mut out, &bytes)?;
+                let copied = File::open(file).and_then(|mut input| {
+                    std::io::copy(&mut input, &mut out)?;
+                    out.sync_all()
+                });
+                if let Err(error) = copied {
+                    // Leave no half copy behind.
+                    drop(out);
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(error);
+                }
                 return Ok(candidate);
             }
             // Someone else took the name meanwhile: look at it again.
@@ -137,12 +149,36 @@ fn copy_to(file: &Path, preferred: &Path) -> std::io::Result<PathBuf> {
     Err(std::io::Error::other("no free name for the copy"))
 }
 
-/// The source that shows the same image from a project saved as `to`,
-/// copying the image into its folder when it is not there already. `from`
+/// Whether the file at `other` holds the same bytes as `file`, which is
+/// `length` bytes long. An error of kind `NotFound` when there is no file
+/// at `other`.
+fn same_content(file: &Path, other: &Path, length: u64) -> std::io::Result<bool> {
+    let metadata = std::fs::metadata(other)?;
+    if !metadata.is_file() || metadata.len() != length {
+        return Ok(false);
+    }
+    let mut a = BufReader::new(File::open(file)?);
+    let mut b = BufReader::new(File::open(other)?);
+    let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    let mut left = length;
+    while left > 0 {
+        let piece = left.min(x.len() as u64) as usize;
+        a.read_exact(&mut x[..piece])?;
+        b.read_exact(&mut y[..piece])?;
+        if x[..piece] != y[..piece] {
+            return Ok(false);
+        }
+        left -= piece as u64;
+    }
+    Ok(true)
+}
+
+/// The source that plays the same file from a project saved as `to`,
+/// copying the file into its folder when it is not there already. `from`
 /// is the project file `source` is relative to now, if any. `Ok(None)` when
 /// the source needs no change: a `data:` URI or a link.
 fn follow(source: &str, from: Option<&Path>, to: &Path) -> Result<Option<String>, String> {
-    let Some(file) = image_file(source, from) else {
+    let Some(file) = asset_file(source, from) else {
         return Ok(None);
     };
     let target = folder_of(to);
@@ -158,7 +194,7 @@ fn follow(source: &str, from: Option<&Path>, to: &Path) -> Result<Option<String>
         Some(relative) => target.join(relative),
         None => target
             .join(ASSETS_FOLDER)
-            .join(file.file_name().unwrap_or(std::ffi::OsStr::new("image"))),
+            .join(file.file_name().unwrap_or(std::ffi::OsStr::new("file"))),
     };
     let copy = copy_to(&file, &preferred).map_err(|error| {
         format!(
@@ -175,28 +211,29 @@ fn follow(source: &str, from: Option<&Path>, to: &Path) -> Result<Option<String>
 /// What following a project to a new place needs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gathered {
-    /// The edits that point image layers at their copies.
+    /// The edits that point image and video layers and audio items at
+    /// their copies.
     pub edits: Vec<Edit>,
-    /// A message for each image that could not be copied. Its layers keep
+    /// A message for each file that could not be copied. Its nodes keep
     /// their source.
     pub problems: Vec<String>,
 }
 
-/// Copies the images `document` uses into the folder of `to`, the project
-/// file it is about to be saved as, and returns the edits that point the
-/// image layers at the copies. `from` is the project file the document was
-/// saved as until now, or `None` for a project never saved.
+/// Copies the images, videos and sound `document` uses into the folder of
+/// `to`, the project file it is about to be saved as, and returns the
+/// edits that point the nodes at the copies. `from` is the project file
+/// the document was saved as until now, or `None` for a project never
+/// saved.
 ///
-/// Images already in that folder are only named relative to it. Embedded
+/// Files already in that folder are only named relative to it. Embedded
 /// images (`data:` URIs) stay as they are.
-pub fn gather_images(document: &Document, from: Option<&Path>, to: &Path) -> Gathered {
+pub fn gather_files(document: &Document, from: Option<&Path>, to: &Path) -> Gathered {
     let mut gathered = Gathered::default();
     let mut followed: HashMap<&str, Option<String>> = HashMap::new();
     for node in document.nodes() {
-        let Some(image) = image_of(node) else {
+        let Some(source) = node.data.source() else {
             continue;
         };
-        let source = image.source.as_str();
         let next = followed
             .entry(source)
             .or_insert_with(|| match follow(source, from, to) {
@@ -217,46 +254,55 @@ pub fn gather_images(document: &Document, from: Option<&Path>, to: &Path) -> Gat
     gathered
 }
 
-/// Makes the image sources of `nodes`, copied from a project saved as
-/// `project_file`, absolute, so that they can be found from anywhere: for
-/// the clipboard.
+/// Makes the sources of the image and video layers and audio items among
+/// `nodes`, copied from a project saved as `project_file`, absolute, so
+/// that they can be found from anywhere: for the clipboard.
 pub fn absolute_sources(nodes: &mut [Node], project_file: Option<&Path>) {
     for node in nodes {
-        if let moshionly_core::model::NodeData::Image(image) = &mut node.data
-            && let Some(file) = image_file(&image.source, project_file)
+        if let Some(source) = node.data.source_mut()
+            && let Some(file) = asset_file(source, project_file)
         {
-            image.source = file.to_string_lossy().into_owned();
+            *source = file.to_string_lossy().into_owned();
         }
     }
 }
 
-/// Makes the images of `nodes`, about to be pasted into a project saved as
-/// `project_file`, part of it: an image from elsewhere is copied into its
-/// assets folder and its layer points at the copy. A project never saved
-/// has no folder, so its images keep their full paths. Returns a message
-/// for each image that could not be copied, or whose file is missing.
-pub fn adopt_images(nodes: &mut [Node], project_file: Option<&Path>) -> Vec<String> {
+/// What is said when the file of a node of type `ty` is missing.
+fn missing(ty: NodeType, file: &Path) -> String {
+    let name = shown_name(file);
+    match ty {
+        NodeType::Video => format!("The video {name} is missing, so its layer shows nothing."),
+        NodeType::Audio => format!("The sound {name} is missing, so it is not heard."),
+        _ => format!("The image {name} is missing, so its layer shows nothing."),
+    }
+}
+
+/// Makes the files of `nodes`, about to be pasted into a project saved as
+/// `project_file`, part of it: an image, video or sound from elsewhere is
+/// copied into its assets folder and its node points at the copy. A
+/// project never saved has no folder, so its files keep their full paths.
+/// Returns a message for each file that could not be copied, or that is
+/// missing.
+pub fn adopt_files(nodes: &mut [Node], project_file: Option<&Path>) -> Vec<String> {
     let mut problems = Vec::new();
     for node in nodes {
-        let moshionly_core::model::NodeData::Image(image) = &mut node.data else {
+        let ty = node.node_type();
+        let Some(source) = node.data.source_mut() else {
             continue;
         };
-        let Some(file) = image_file(&image.source, None) else {
+        let Some(file) = asset_file(source, None) else {
             continue;
         };
         if !file.exists() {
-            problems.push(format!(
-                "The image {} is missing, so its layer shows nothing.",
-                shown_name(&file)
-            ));
+            problems.push(missing(ty, &file));
             continue;
         }
         let Some(project) = project_file else {
-            image.source = file.to_string_lossy().into_owned();
+            *source = file.to_string_lossy().into_owned();
             continue;
         };
         match follow(&file.to_string_lossy(), None, project) {
-            Ok(Some(next)) => image.source = next,
+            Ok(Some(next)) => *source = next,
             Ok(None) => {}
             Err(problem) => problems.push(problem),
         }
@@ -298,7 +344,7 @@ mod tests {
             }));
         }
         let text = serde_json::json!({
-            "format": "moshionly", "version": 2, "name": "Test", "nodes": nodes
+            "format": "moshionly", "version": 3, "name": "Test", "nodes": nodes
         });
         io::parse(&text.to_string()).unwrap()
     }
@@ -308,8 +354,8 @@ mod tests {
         document.apply(edits).unwrap();
         document
             .nodes()
-            .filter_map(image_of)
-            .map(|image| image.source.clone())
+            .filter_map(|node| node.data.source())
+            .map(ToOwned::to_owned)
             .collect()
     }
 
@@ -331,7 +377,7 @@ mod tests {
             embedded,
             "assets/hero.png",
         ]);
-        let gathered = gather_images(&doc, Some(&a.join("p.moshi")), &b.join("q.moshi"));
+        let gathered = gather_files(&doc, Some(&a.join("p.moshi")), &b.join("q.moshi"));
         assert!(gathered.problems.is_empty(), "{:?}", gathered.problems);
         assert_eq!(
             sources(&doc, &gathered.edits),
@@ -349,7 +395,7 @@ mod tests {
         // Only the layers whose source changed are edited.
         assert_eq!(gathered.edits.len(), 2);
         // Doing it again finds the same copies.
-        let again = gather_images(&doc, Some(&a.join("p.moshi")), &b.join("q.moshi"));
+        let again = gather_files(&doc, Some(&a.join("p.moshi")), &b.join("q.moshi"));
         assert_eq!(again, gathered);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -363,7 +409,7 @@ mod tests {
         write(&root.join("work/assets/inside.png"), b"inside");
         let inside = root.join("work/assets/inside.png");
         let doc = document(&[photo.to_str().unwrap(), inside.to_str().unwrap()]);
-        let gathered = gather_images(&doc, None, &project);
+        let gathered = gather_files(&doc, None, &project);
         assert!(gathered.problems.is_empty(), "{:?}", gathered.problems);
         // The photo is copied in; the image already there is only named.
         assert_eq!(
@@ -378,7 +424,7 @@ mod tests {
     fn a_missing_image_is_reported_and_left_alone() {
         let root = scratch("missing");
         let doc = document(&["assets/gone.png"]);
-        let gathered = gather_images(&doc, Some(&root.join("a/p.moshi")), &root.join("b/q.moshi"));
+        let gathered = gather_files(&doc, Some(&root.join("a/p.moshi")), &root.join("b/q.moshi"));
         assert!(gathered.edits.is_empty());
         assert_eq!(gathered.problems.len(), 1);
         assert!(
@@ -399,26 +445,104 @@ mod tests {
             .map(|id| doc.get(&NodeId::from(*id)).unwrap().clone())
             .collect();
         absolute_sources(&mut nodes, Some(&root.join("a/p.moshi")));
-        let source = |nodes: &[Node], at: usize| image_of(&nodes[at]).unwrap().source.clone();
+        let source = |nodes: &[Node], at: usize| nodes[at].data.source().unwrap().to_owned();
         assert!(Path::new(&source(&nodes, 0)).is_absolute());
 
         // Into a project never saved: full paths.
         let mut unsaved = nodes.clone();
-        let problems = adopt_images(&mut unsaved, None);
+        let problems = adopt_files(&mut unsaved, None);
         assert_eq!(problems.len(), 1, "the missing image is reported");
         assert_eq!(source(&unsaved, 0), source(&nodes, 0));
 
         // Into a saved project elsewhere: copied into its assets.
         let mut saved = nodes.clone();
-        let problems = adopt_images(&mut saved, Some(&root.join("b/q.moshi")));
+        let problems = adopt_files(&mut saved, Some(&root.join("b/q.moshi")));
         assert_eq!(problems.len(), 1);
         assert_eq!(source(&saved, 0), "assets/hero.png");
         assert!(root.join("b/assets/hero.png").exists());
 
         // Back into the project it came from: named as before, no copy.
         let mut home = nodes.clone();
-        adopt_images(&mut home, Some(&root.join("a/p.moshi")));
+        adopt_files(&mut home, Some(&root.join("a/p.moshi")));
         assert_eq!(source(&home, 0), "assets/hero.png");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn video_and_sound_go_with_the_project_too() {
+        let root = scratch("media");
+        write(&root.join("a/assets/beach.mp4"), b"video");
+        write(&root.join("a/assets/song.mp3"), b"sound");
+        let doc = io::parse(
+            &serde_json::json!({
+                "format": "moshionly", "version": 3, "name": "Media", "nodes": [
+                    {"id": "ab", "parent": null, "index": "a0", "type": "artboard"},
+                    {"id": "film", "parent": "ab", "index": "a0", "type": "video",
+                     "source": "assets/beach.mp4", "start": 0, "end": 1000},
+                    {"id": "song", "parent": "ab", "index": "a0", "type": "audio",
+                     "source": "assets/song.mp3", "start": 0, "end": 1000},
+                    {"id": "gone", "parent": "ab", "index": "a1", "type": "audio",
+                     "source": "assets/gone.wav", "start": 0, "end": 1000}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Saved elsewhere: copied along.
+        let gathered = gather_files(&doc, Some(&root.join("a/p.moshi")), &root.join("b/q.moshi"));
+        assert_eq!(gathered.problems.len(), 1, "the missing sound is said");
+        assert_eq!(
+            std::fs::read(root.join("b/assets/beach.mp4")).unwrap(),
+            b"video"
+        );
+        assert_eq!(
+            std::fs::read(root.join("b/assets/song.mp3")).unwrap(),
+            b"sound"
+        );
+        // Copied and pasted into another project: copied into it.
+        let mut nodes: Vec<Node> = ["film", "song", "gone"]
+            .iter()
+            .map(|id| doc.get(&NodeId::from(*id)).unwrap().clone())
+            .collect();
+        absolute_sources(&mut nodes, Some(&root.join("a/p.moshi")));
+        assert!(Path::new(nodes[0].data.source().unwrap()).is_absolute());
+        let problems = adopt_files(&mut nodes, Some(&root.join("c/r.moshi")));
+        assert_eq!(nodes[0].data.source(), Some("assets/beach.mp4"));
+        assert_eq!(nodes[1].data.source(), Some("assets/song.mp3"));
+        assert_eq!(
+            problems,
+            ["The sound gone.wav is missing, so it is not heard."]
+        );
+        assert!(root.join("c/assets/song.mp3").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copies_are_compared_by_content() {
+        let root = scratch("compare");
+        let file = root.join("a.bin");
+        write(&file, &[7u8; 200_000]);
+        let mut other = vec![7u8; 200_000];
+        write(&root.join("same.bin"), &other);
+        assert!(same_content(&file, &root.join("same.bin"), 200_000).unwrap());
+        other[150_000] = 8;
+        write(&root.join("near.bin"), &other);
+        assert!(!same_content(&file, &root.join("near.bin"), 200_000).unwrap());
+        write(&root.join("short.bin"), &[7u8; 10]);
+        assert!(!same_content(&file, &root.join("short.bin"), 200_000).unwrap());
+        assert_eq!(
+            same_content(&file, &root.join("none.bin"), 200_000)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        // A taken name with other content: the copy goes beside it.
+        let copy = copy_to(&file, &root.join("near.bin")).unwrap();
+        assert_eq!(copy, root.join("near 2.bin"));
+        assert_eq!(
+            copy_to(&file, &root.join("same.bin")).unwrap(),
+            root.join("same.bin")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -428,7 +552,7 @@ mod tests {
         assert!(is_data_uri("  DATA:image/png,x"));
         assert!(!is_data_uri("assets/data.png"));
         assert!(!is_data_uri("dat"));
-        assert_eq!(image_file("data:image/png;base64,AAAA", None), None);
+        assert_eq!(asset_file("data:image/png;base64,AAAA", None), None);
         assert!(same_folder(
             Path::new("/x/y/a.moshi"),
             Path::new("/x/y/b.moshi")

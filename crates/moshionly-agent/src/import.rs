@@ -131,6 +131,12 @@ pub enum EnvelopeError {
          refer to files"
     )]
     ImageNotEmbedded(String),
+    /// A design holds video or sound, which always refers to a file.
+    #[error(
+        "{0} is video or sound, which an import cannot carry: it would refer to a file on this \
+         computer. Add video and sound in the app instead"
+    )]
+    Media(String),
     /// The layers are not a design core accepts.
     #[error("the design cannot be used: {0}")]
     Design(#[from] ImportError),
@@ -206,6 +212,11 @@ pub fn read_envelope(body: &[u8]) -> Result<PendingImport, EnvelopeError> {
     };
     let nodes = import::parse_nodes(&Value::Array(list.clone()))?;
     for node in &nodes {
+        // Media always refers to a file, so a web page could use it to
+        // point the app at files on this computer.
+        if matches!(node.data, NodeData::Video(_) | NodeData::Audio(_)) {
+            return Err(EnvelopeError::Media(node.label()));
+        }
         if let NodeData::Image(image) = &node.data
             && !image
                 .source

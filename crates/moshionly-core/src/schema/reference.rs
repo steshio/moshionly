@@ -253,8 +253,8 @@ pub fn reference() -> String {
     let _ = writeln!(text, "### Fields of every animation\n");
     let _ = writeln!(
         text,
-        "Every animation that runs over time has these. `show`, `hide` and `animation_group` \
-         list their own fields below.\n"
+        "Every animation that runs over time has these. `show`, `hide`, `audio` and \
+         `animation_group` list their own fields below.\n"
     );
     let _ = writeln!(
         text,
@@ -285,6 +285,12 @@ pub fn reference() -> String {
             "These work on the content of a text layer.",
         ),
         (
+            "Sound",
+            AnimationKind::Media,
+            "Sound on the timeline. It changes no layer, so it has no `target`. Video layers \
+             play their own sound too.",
+        ),
+        (
             "Timeline structure",
             AnimationKind::Structure,
             "Folders for the timeline. They do not change playback.",
@@ -292,7 +298,7 @@ pub fn reference() -> String {
     ] {
         let _ = writeln!(text, "### {heading}\n\n{intro}\n");
         let shared: &[String] = match kind {
-            AnimationKind::Instant | AnimationKind::Structure => &[],
+            AnimationKind::Instant | AnimationKind::Media | AnimationKind::Structure => &[],
             _ => &timed_fields,
         };
         type_sections(&mut text, &of_kind(Some(kind)), shared);
@@ -301,7 +307,11 @@ pub fn reference() -> String {
     let _ = writeln!(text, "### Which layers an animation works on\n");
     let _ = writeln!(text, "| Animation | Works on |\n|---|---|");
     for animation in NodeType::ALL {
-        if animation.family() != Family::Animation || *animation == NodeType::AnimationGroup {
+        if animation.family() != Family::Animation
+            || animation
+                .animation_kind()
+                .is_some_and(|kind| matches!(kind, AnimationKind::Media | AnimationKind::Structure))
+        {
             continue;
         }
         let targets: Vec<String> = layers
@@ -392,7 +402,11 @@ mod tests {
                 .contains("| `align` | `\"left\"`, `\"center\"` or `\"right\"` | `\"left\"` |")
         );
         assert!(reference.contains("| `blend_mode` | [blend_mode](#blend_mode) | `\"normal\"` |"));
-        assert!(reference.contains("| `corner_radius` | `group`, `rect`, `image`, `component` |"));
+        assert!(
+            reference
+                .contains("| `corner_radius` | `group`, `rect`, `image`, `component`, `video` |")
+        );
+        assert!(!reference.contains("| `audio` |"), "sound has no target");
         assert!(
             reference
                 .contains("With `\"type\": \"linear_gradient\"`: Colours change along a line.")

@@ -80,8 +80,9 @@ impl Shell {
         let document = std::sync::Arc::clone(self.editor.document());
         // Instances whose main is not in this document come detached.
         let mut nodes = copied.nodes_for(&document);
-        // Images from another project are copied into this one.
-        for problem in assets::adopt_images(&mut nodes, self.editor.project_file()) {
+        // Images, videos and sound from another project are copied into
+        // this one.
+        for problem in assets::adopt_files(&mut nodes, self.editor.project_file()) {
             self.toasts.push(Toast::warning(problem));
         }
         let (parent, place) = paste_target(&document, &self.editor, &nodes);

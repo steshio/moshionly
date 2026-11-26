@@ -507,6 +507,28 @@ fn an_instance_that_starts_part_way_through_its_animations_is_warned_about() {
     assert_eq!(exported.warnings.len(), 1, "{said}");
 }
 
+#[test]
+fn video_and_sound_are_left_out_and_named() {
+    let nodes = r##",{"id":"film","parent":"board","index":"a0","type":"video","name":"Film",
+            "source":"film.mp4","width":320,"height":180,"start":0,"end":1000}
+        ,{"id":"box","parent":"board","index":"a1","type":"rect","name":"Box",
+            "width":50,"height":50,"fill":"#FF0000"}
+        ,{"id":"music","parent":"board","index":"a0","type":"audio","name":"Music",
+            "source":"music.mp3","start":0,"end":2000}"##;
+    let (lottie, exported) = export_document(document(2000.0, nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    assert!(said.contains("\"Film\" is a video"), "{said}");
+    assert!(said.contains("\"Music\" is sound"), "{said}");
+    assert_eq!(exported.warnings.len(), 2, "{said}");
+    // The rest is there.
+    assert_eq!(layer(&lottie["layers"], "Box")["ty"], 4);
+    assert_eq!(
+        lottie["layers"].as_array().unwrap().len(),
+        2,
+        "the box and the background"
+    );
+}
+
 /// The layer named `name` anywhere in the file: at the top or in a
 /// precomposition.
 fn any_layer<'a>(lottie: &'a Value, name: &str) -> &'a Value {

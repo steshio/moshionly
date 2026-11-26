@@ -1,7 +1,7 @@
 //! WebM and ProRes export through `ffmpeg`, checked with `ffprobe`.
 //!
-//! These tests need `ffmpeg` and `ffprobe`. Where they are not installed
-//! (the Ubuntu CI machines, for example) each test prints why and passes
+//! These tests need `ffmpeg` and `ffprobe` (5.1 or newer; CI installs
+//! them). Where they are not installed each test prints why and passes
 //! without checking anything.
 
 mod common;
@@ -27,13 +27,9 @@ fn tools_present(test: &str) -> bool {
 }
 
 /// What ffprobe says about the video stream, as `key=value` lines.
-fn probe(path: &Path, decoder: Option<&str>) -> String {
-    let mut command = Command::new("ffprobe");
-    command.args(["-v", "error"]);
-    if let Some(decoder) = decoder {
-        command.args(["-c:v", decoder]);
-    }
-    let output = command
+fn probe(path: &Path) -> String {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error"])
         .args(["-count_frames", "-select_streams", "v:0", "-show_entries"])
         .arg(
             "stream=codec_name,profile,width,height,pix_fmt,nb_read_frames,avg_frame_rate,\
@@ -50,6 +46,28 @@ fn probe(path: &Path, decoder: Option<&str>) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The pixel format ffmpeg's `decoder` gives for the first frame of the
+/// video at `path`, as its `showinfo` filter describes it. Decoded with
+/// ffmpeg because ffprobe before 8.1 cannot be told which decoder to use.
+fn decoded_pixel_format(path: &Path, decoder: &str) -> String {
+    let ffmpeg = Ffmpeg::locate().expect("ffmpeg is installed");
+    let output = Command::new(ffmpeg.path())
+        .args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"])
+        .args(["-c:v", decoder, "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-vf", "showinfo", "-f", "null", "-"])
+        .output()
+        .expect("ffmpeg runs");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{said}");
+    said.lines()
+        .filter(|line| line.contains("Parsed_showinfo"))
+        .find_map(|line| line.split_once(" fmt:"))
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no frame description in\n{said}"))
+        .to_owned()
 }
 
 fn has(report: &str, line: &str) -> bool {
@@ -81,7 +99,7 @@ fn a_transparent_webm_keeps_its_alpha() {
         (216, 216, 60)
     );
     assert!(common::names_in(dir.path()) == ["clear.webm"]);
-    let report = probe(&path, None);
+    let report = probe(&path);
     assert_has(
         &report,
         &[
@@ -98,7 +116,7 @@ fn a_transparent_webm_keeps_its_alpha() {
         ],
     );
     // Decoded with libvpx, which reads the transparency layer too.
-    assert_has(&probe(&path, Some("libvpx-vp9")), &["pix_fmt=yuva420p"]);
+    assert_eq!(decoded_pixel_format(&path, "libvpx-vp9"), "yuva420p");
 }
 
 #[test]
@@ -115,7 +133,7 @@ fn an_opaque_webm_has_no_alpha() {
     common::run(&common::job(Format::WebM, &path, settings))
         .0
         .unwrap();
-    let report = probe(&path, None);
+    let report = probe(&path);
     assert_has(
         &report,
         &["codec_name=vp9", "pix_fmt=yuv420p", "nb_read_frames=15"],
@@ -137,7 +155,7 @@ fn prores_4444_keeps_its_alpha_at_television_rates() {
         .with_range(None, Some(1001.0));
     let (result, _) = common::run(&common::job(Format::ProRes, &path, settings));
     assert_eq!(result.unwrap().frames, 30);
-    let report = probe(&path, None);
+    let report = probe(&path);
     assert_has(
         &report,
         &[

@@ -26,14 +26,14 @@ use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::index::{self, IndexError};
 use crate::model::{
-    AnimationGroup, Artboard, BlurAnimation, BlurPreset, Component, CornerRadius,
-    CornerRadiusAnimation, CounterAnimation, Direction, EllipseLayer, FadePreset, Family,
-    FillAnimation, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance, InstantAnimation,
-    LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, Offset, OpacityAnimation,
-    Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation, RevealPreset,
-    RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn, ShrinkOut,
-    SizeChange, SlidePreset, SpinPreset, StarLayer, StrokeAnimation, StrokeChange, TextAnimation,
-    TextLayer, Timing,
+    AnimationGroup, Artboard, Audio, BlurAnimation, BlurPreset, ClipTiming, Component,
+    CornerRadius, CornerRadiusAnimation, CounterAnimation, Direction, EllipseLayer, FadePreset,
+    Family, FillAnimation, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance,
+    InstantAnimation, LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, Offset,
+    OpacityAnimation, Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation,
+    RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn,
+    ShrinkOut, SizeChange, SlidePreset, SpinPreset, StarLayer, StrokeAnimation, StrokeChange,
+    TextAnimation, TextLayer, Timing, VideoLayer,
 };
 use crate::validate::animation_applies_to;
 
@@ -175,14 +175,20 @@ pub const PLACEHOLDER_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
 /// until `component` is set; [`add_instance`] makes a ready one.
 pub const PLACEHOLDER_COMPONENT: &str = "COMPONENT_ID";
 
+/// The file a new video layer from [`default_layer`] plays until a real
+/// one is chosen. Core cannot read files, so it is accepted; until there is
+/// a video at that path the layer draws a placeholder.
+pub const PLACEHOLDER_VIDEO: &str = "assets/video.mp4";
+
 /// Fill of a new shape: a neutral grey.
 const SHAPE_FILL: Color = Color::rgb(0xD9, 0xD9, 0xD9);
 
 /// A layer of the given type with sensible starting properties: shapes are
 /// 100 by 100 and grey, text says "Text" in black, an artboard is 1080 by
 /// 1080 and white, a path is a triangle, an image shows a transparent pixel,
-/// a component is an empty box, and an instance points at
-/// [`PLACEHOLDER_COMPONENT`].
+/// a component is an empty box, an instance points at
+/// [`PLACEHOLDER_COMPONENT`], and a 320 by 180 video plays
+/// [`PLACEHOLDER_VIDEO`] for the first 4 seconds.
 ///
 /// `None` when `ty` is not a layer type.
 pub fn default_layer(ty: NodeType) -> Option<NodeData> {
@@ -239,16 +245,26 @@ pub fn default_layer(ty: NodeType) -> Option<NodeData> {
             time_offset: 0.0,
         }
         .into(),
+        NodeType::Video => VideoLayer {
+            layer: LayerProps::new("", 0.0, 0.0, 320.0, 180.0),
+            source: PLACEHOLDER_VIDEO.to_owned(),
+            fit: ImageFit::default(),
+            stroke: None,
+            corner_radius: CornerRadius::default(),
+            clip: ClipTiming::new(0.0, 4000.0),
+        }
+        .into(),
         _ => return None,
     })
 }
 
 /// How long a new animation of the given type lasts, in milliseconds.
-/// 0 for `show`, `hide` and types that are not animations.
+/// 0 for `show`, `hide`, `audio` (which lasts as long as its file) and
+/// types that are not animations.
 pub fn default_duration(ty: NodeType) -> f64 {
     use NodeType as T;
     match ty {
-        T::Show | T::Hide | T::AnimationGroup => 0.0,
+        T::Show | T::Hide | T::AnimationGroup | T::Audio => 0.0,
         T::FadeIn | T::FadeOut => 500.0,
         T::GrowIn | T::GrowOut | T::ShrinkIn | T::ShrinkOut => 600.0,
         T::SlideIn | T::SlideOut | T::BlurIn | T::BlurOut | T::RevealIn | T::RevealOut => 700.0,
@@ -280,7 +296,8 @@ pub fn default_easing(ty: NodeType) -> Easing {
 /// pixels right, an `opacity` fades to 0, a `scale` grows to 1.5 and so on)
 /// and no `from`, so they start from wherever the layer is.
 ///
-/// `None` when `ty` is not an animation type, or is `animation_group`.
+/// `None` when `ty` is not an animation type, or is `animation_group` or
+/// `audio`, which have no target; [`add_audio`] adds sound.
 pub fn default_animation(ty: NodeType, target: &NodeId, start: f64) -> Option<NodeData> {
     use NodeType as T;
     let start = start.max(0.0);
@@ -648,6 +665,22 @@ pub fn add_animation(
     };
     let index = last_index(document, Some(&parent), Family::Animation)?;
     let node = node.with_parent(parent).with_index(index);
+    Ok((node.id.clone(), vec![Edit::add(node)]))
+}
+
+/// Edits that add an audio item as the bottom row of the timeline of
+/// `place`: an artboard, or an animation group in one.
+///
+/// Returns the id of the new item with the edits.
+pub fn add_audio(
+    document: &Document,
+    place: &NodeId,
+    audio: Audio,
+) -> Result<(NodeId, Vec<Edit>), BuildError> {
+    let node = Node::new(audio);
+    check_holds(existing(document, place)?, node.node_type(), node.label())?;
+    let index = last_index(document, Some(place), Family::Animation)?;
+    let node = node.with_parent(place).with_index(index);
     Ok((node.id.clone(), vec![Edit::add(node)]))
 }
 
@@ -1287,7 +1320,7 @@ mod tests {
         assert!(default_layer(NodeType::FadeIn).is_none());
         // Each new layer went in front of the one before.
         let layers = document.children(&id("ab"), Family::Layer);
-        assert_eq!(layers.len(), 2 + 10);
+        assert_eq!(layers.len(), 2 + 11);
         assert_eq!(layers[..2], [id("card"), id("loose")]);
     }
 
@@ -1301,7 +1334,7 @@ mod tests {
             .iter()
             .filter(|ty| ty.family() == Family::Animation)
         {
-            if *ty == NodeType::AnimationGroup {
+            if matches!(ty, NodeType::AnimationGroup | NodeType::Audio) {
                 assert!(default_animation(*ty, &text, 0.0).is_none());
                 continue;
             }
@@ -1327,6 +1360,28 @@ mod tests {
         assert_eq!(default_easing(NodeType::SlideOut), Easing::accelerate());
         assert_eq!(default_easing(NodeType::Move), Easing::smooth());
         assert_eq!(default_duration(NodeType::Show), 0.0);
+    }
+
+    #[test]
+    fn audio_goes_on_the_bottom_row_of_a_timeline() {
+        let document = sample();
+        let audio = Audio {
+            name: "Music".into(),
+            source: "assets/music.mp3".into(),
+            clip: ClipTiming::new(0.0, 3000.0),
+        };
+        let (new, edits) = add_audio(&document, &id("ab"), audio.clone()).unwrap();
+        let document = applied(&document, &edits);
+        assert_eq!(
+            document.children(&id("ab"), Family::Animation).last(),
+            Some(&new)
+        );
+        assert_eq!(document.get(&new).unwrap().data.span(), Some((0.0, 3000.0)));
+        // Not inside a layer.
+        assert!(matches!(
+            add_audio(&document, &id("r1"), audio),
+            Err(BuildError::CannotHold { .. })
+        ));
     }
 
     #[test]

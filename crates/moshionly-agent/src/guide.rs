@@ -20,7 +20,7 @@ and change it only through the tools. Every apply_edits call is one step the per
 - A file holds artboards: frames on the canvas, each with a size and a timeline whose length \
 is its duration in milliseconds.
 - Layers are what is drawn: group, mask_group, rect, ellipse, star, path, text, image, \
-component, instance. A layer's x and y are its top-left corner inside its parent (artboard or \
+component, instance, video. A layer's x and y are its top-left corner inside its parent (artboard or \
 group); rotation and scale turn and size it around its centre. Later siblings are drawn in front \
 of earlier ones.
 - A component is a group that is reused: every instance of it shows its look and layers, with \
@@ -32,6 +32,13 @@ little more to stagger them. Animate a layer inside the component to animate eve
 animate the instance itself (move, fade_in and so on) for that copy alone. detach turns an \
 instance into a plain group to change one copy on its own. Resizing a component resizes the \
 instances that were its size with it.
+- Video and sound are clips on the timeline. A video layer is drawn like an image and plays \
+its file from start to end (milliseconds on the artboard's timeline), beginning trim_start \
+milliseconds into the file, with its sound at volume (0 to 1; 0 silences it); it is not drawn \
+outside its clip. An audio item is a timeline row with the same fields and no target: add it \
+with \"parent\" set to the artboard. Bring a file in with import_media, which gives its \
+duration; keep end - start within the duration minus trim_start. Sound goes into mp4, webm and \
+prores exports, and reading video and sound needs ffmpeg on the person's machine.
 - The layers as they are stored are the design at rest. Motion is kept apart from it: an \
 animation is a node that says \"from start to end, change this property of that layer\" (its \
 target). There are no keyframes. Animations sit in rows on their artboard's timeline; an \
@@ -223,6 +230,9 @@ mod tests {
             "make_component",
             "time_offset",
             "detach",
+            "import_media",
+            "trim_start",
+            "ffmpeg",
             "Be brief",
         ] {
             assert!(GUIDE.contains(topic), "the guide does not mention {topic}");

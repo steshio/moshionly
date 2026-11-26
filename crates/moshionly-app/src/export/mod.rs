@@ -89,11 +89,14 @@ pub struct ExportChoices {
     pub gif_loop: GifLoop,
     /// A PNG captures the playhead's moment rather than the design at rest.
     pub still_at_playhead: bool,
+    /// MP4, WebM and ProRes files carry the artboard's sound, when it has
+    /// any.
+    pub sound: bool,
 }
 
 impl Default for ExportChoices {
     /// An MP4 at the artboard's size, 30 frames per second, standard
-    /// quality, on the artboard's background.
+    /// quality, on the artboard's background, with its sound.
     fn default() -> Self {
         Self {
             format: Format::Mp4.as_str().to_owned(),
@@ -103,6 +106,7 @@ impl Default for ExportChoices {
             transparent: false,
             gif_loop: GifLoop::Forever,
             still_at_playhead: false,
+            sound: true,
         }
     }
 }
@@ -165,7 +169,8 @@ impl ExportSetup {
             .with_size(Size::Scale(choices.scale()))
             .with_frame_rate(choices.frame_rate())
             .with_quality(choices.quality())
-            .with_gif_loop(choices.gif_loop.to_loop());
+            .with_gif_loop(choices.gif_loop.to_loop())
+            .with_sound(choices.sound);
         if choices.transparent && format.supports_transparency() {
             settings = settings.with_background(Background::Transparent);
         }
@@ -285,6 +290,16 @@ mod tests {
             (Some(500.0), Some(2500.0))
         );
         assert_eq!(settings.still_ms, None);
+        assert!(settings.sound, "sound is on unless left out");
+        setup.choices.sound = false;
+        assert!(!setup.settings().sound);
+    }
+
+    #[test]
+    fn choices_remembered_before_sound_keep_it() {
+        let old: ExportChoices = serde_json::from_str(r#"{"format":"webm","fps":24}"#).unwrap();
+        assert!(old.sound);
+        assert_eq!(old.format(), Format::WebM);
     }
 
     #[test]

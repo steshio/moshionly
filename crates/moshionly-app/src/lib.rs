@@ -19,6 +19,8 @@
 //!   Its rules (what a click selects, how a drag becomes edits) are plain
 //!   functions that are tested without a window.
 //! - [`canvas`]: pictures of the artboards, rendered on worker threads.
+//! - [`audio`]: sound while playing: the scene's sound mixed off the UI
+//!   thread and played through the speakers in step with the playhead.
 //! - [`connect`]: the MCP server agents and the Figma plugin reach the open
 //!   document through, and the choices for designs sent from Figma.
 //! - [`chat`]: the AI chat panel and the AI settings, over `moshionly-ai`
@@ -27,6 +29,7 @@
 //!   UI thread.
 //! - [`host`]: what the app does for the agent tools: screenshots, fonts
 //!   and exports.
+//! - [`media`]: reading video and sound with an installed `ffmpeg`.
 //! - [`shell`]: the window's layout and its panels.
 //! - [`app`]: the `eframe` application, with [`settings`] and [`dialogs`].
 //! - [`cli`]: the `moshionly` command's arguments, and its headless `mcp`
@@ -35,6 +38,7 @@
 //! See "The app" in `docs/architecture.md` for how the editor is laid out.
 
 pub mod app;
+pub mod audio;
 pub mod canvas;
 pub mod chat;
 pub mod cli;
@@ -45,6 +49,7 @@ pub mod editor;
 pub mod export;
 pub mod host;
 pub mod key;
+pub mod media;
 pub mod raster;
 pub mod settings;
 pub mod shell;

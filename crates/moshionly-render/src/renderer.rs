@@ -623,6 +623,169 @@ mod tests {
         }
     }
 
+    /// A video provider that hands out a 20 by 10 frame, red on the left
+    /// half and blue on the right, and keeps what it was asked for. A
+    /// file whose name has "broken" in it has no frames.
+    #[derive(Default)]
+    struct FakeFrames {
+        asked: std::sync::Mutex<Vec<(std::path::PathBuf, f64, f64, f64)>>,
+    }
+
+    impl crate::VideoFrames for FakeFrames {
+        fn frame(&self, request: &crate::VideoRequest<'_>) -> Result<sk::Image, String> {
+            self.asked.lock().unwrap().push((
+                request.path.to_owned(),
+                request.time_ms,
+                request.width,
+                request.height,
+            ));
+            if request.path.to_string_lossy().contains("broken") {
+                return Err("the file has no video".into());
+            }
+            let mut pixels = Vec::new();
+            for _ in 0..10 {
+                for x in 0..20 {
+                    pixels.extend(if x < 10 {
+                        [255, 0, 0, 255]
+                    } else {
+                        [0, 0, 255, 255]
+                    });
+                }
+            }
+            crate::video::image_from_rgba(20, 10, pixels)
+        }
+    }
+
+    fn video(source: &str, width: f64, height: f64, fit: ImageFit, radii: [f64; 4]) -> SceneNode {
+        let content = Content::Video {
+            source: source.into(),
+            media_time_ms: 1250.0,
+            fit,
+            radii,
+            stroke: None,
+        };
+        node("film", Affine::IDENTITY, width, height, content)
+    }
+
+    fn with_frames(frames: &std::sync::Arc<FakeFrames>) -> Renderer {
+        let assets = AssetLoader::new(Some("/projects/p.moshi".into()))
+            .with_video(std::sync::Arc::clone(frames) as std::sync::Arc<dyn crate::VideoFrames>);
+        Renderer::new(FontLibrary::bundled(), assets)
+    }
+
+    #[test]
+    fn video_frames_fill_their_box_by_fit_and_corners() {
+        let frames = std::sync::Arc::new(FakeFrames::default());
+        let renderer = with_frames(&frames);
+        let render = |nodes: Vec<SceneNode>, scale: f64| {
+            let mut scene = scene(None);
+            scene.nodes = nodes;
+            renderer
+                .render(&scene, &RenderOptions::new().with_scale(scale))
+                .unwrap()
+        };
+        let pixel = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap();
+        let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+
+        let stretched = render(
+            vec![video("clip.mp4", 40.0, 20.0, ImageFit::Stretch, [0.0; 4])],
+            1.0,
+        );
+        assert!(
+            stretched.warnings().is_empty(),
+            "{:?}",
+            stretched.warnings()
+        );
+        assert_eq!(pixel(&stretched, 5, 10), red);
+        assert_eq!(pixel(&stretched, 35, 10), blue);
+        let contain = render(
+            vec![video("clip.mp4", 20.0, 20.0, ImageFit::Contain, [0.0; 4])],
+            1.0,
+        );
+        assert_eq!(pixel(&contain, 2, 2), [0, 0, 0, 0]);
+        assert_eq!(pixel(&contain, 2, 10), red);
+        let rounded = render(
+            vec![video("clip.mp4", 20.0, 20.0, ImageFit::Cover, [8.0; 4])],
+            1.0,
+        );
+        assert_eq!(pixel(&rounded, 0, 0), [0, 0, 0, 0]);
+        assert_eq!(pixel(&rounded, 8, 8), red);
+
+        // The file is found next to the project, at the scene's moment, and
+        // the size asked for is the box's on the output.
+        render(
+            vec![video(
+                "media/clip.mp4",
+                40.0,
+                20.0,
+                ImageFit::Cover,
+                [0.0; 4],
+            )],
+            2.0,
+        );
+        let asked = frames.asked.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            asked,
+            ("/projects/media/clip.mp4".into(), 1250.0, 80.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_video_without_a_frame_draws_a_placeholder_and_says_why() {
+        let frames = std::sync::Arc::new(FakeFrames::default());
+        let warning_of = |renderer: &Renderer, source: &str| {
+            let mut scene = scene(None);
+            scene.nodes = vec![video(source, 40.0, 20.0, ImageFit::Cover, [0.0; 4])];
+            let frame = renderer.render(&scene, &RenderOptions::new()).unwrap();
+            assert_eq!(frame.premultiplied_pixel(30, 4).unwrap()[3], 255, "drawn");
+            match frame.warnings() {
+                [
+                    RenderWarning::MissingVideo {
+                        node,
+                        source,
+                        reason,
+                    },
+                ] => {
+                    assert_eq!(node, &NodeId::from("film"));
+                    (source.clone(), reason.clone())
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        let (source, reason) = warning_of(&with_frames(&frames), "broken.mp4");
+        assert_eq!(
+            (source.as_str(), reason.as_str()),
+            ("broken.mp4", "the file has no video")
+        );
+        // Without a provider, the warning says what is missing.
+        let (_, reason) = warning_of(&renderer(), "clip.mp4");
+        assert!(reason.contains("ffmpeg"), "{reason}");
+        // Video is never embedded in the document.
+        let (_, reason) = warning_of(&with_frames(&frames), "data:video/mp4;base64,AAAA");
+        assert!(reason.contains("data:"), "{reason}");
+        assert_eq!(
+            frames.asked.lock().unwrap().len(),
+            1,
+            "only the file was asked for"
+        );
+    }
+
+    #[test]
+    fn videos_are_found_and_measured_like_images() {
+        let renderer = renderer();
+        let mut scene = scene(None);
+        let mut film = video("clip.mp4", 20.0, 10.0, ImageFit::Cover, [0.0; 4]);
+        film.transform = Affine::translate(10.0, 5.0);
+        scene.nodes = vec![film];
+        assert_eq!(
+            renderer.hit_test(&scene, Point::new(15.0, 10.0)),
+            [NodeId::from("film")]
+        );
+        assert!(renderer.hit_test(&scene, Point::new(5.0, 2.0)).is_empty());
+        let bounds = renderer.bounds_of(&scene, &NodeId::from("film")).unwrap();
+        assert_eq!(bounds.corners[0], Point::new(10.0, 5.0));
+    }
+
     #[test]
     fn the_renderer_can_go_to_another_thread() {
         fn sendable<T: Send + Sync>() {}

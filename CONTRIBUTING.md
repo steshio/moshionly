@@ -12,7 +12,9 @@ cargo fmt --all           # format before you commit
 cargo clippy --workspace --all-targets
 ```
 
-macOS needs the Xcode command line tools. Linux needs development packages for fontconfig, freetype, xkbcommon, wayland and GTK 3; the list is in `.github/workflows/ci.yml`.
+macOS needs the Xcode command line tools. Linux needs development packages for fontconfig, freetype, xkbcommon, wayland, GTK 3 and ALSA (sound output); the list is in `.github/workflows/ci.yml`.
+
+The tests of video, sound, WebM and ProRes need [ffmpeg](https://ffmpeg.org) (5.1 or newer); where it is not installed they say they were skipped and pass, so install it to run them (CI does).
 
 ## Ground rules
 
@@ -39,6 +41,8 @@ app: snap timeline bars to 10 ms
 |---|---|
 | A layer type | `moshionly-core` node definitions, then the scene builder, then `moshionly-render` |
 | A field that names another node | `moshionly-core` validation, then every helper that copies nodes (`build::clone_subtree`, `import`), which must remap it |
+| A field that is a time on the timeline (like a clip's `start` and `end`) | `moshionly-core`, then everything that moves times: detaching an instance (`build::detach`), the agents' `clone` with `time_offset`, and the warnings about running past the end of the timeline |
+| Reading another kind of media | usually nothing: `ffmpeg` reads it (`moshionly-export::media`); the app's file filters list the extensions |
 | An action or preset | `moshionly-core` animation definitions and its evaluation rule |
 | An easing | `moshionly-core` easing module |
 | An export format | a new module in `moshionly-export` |

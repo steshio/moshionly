@@ -20,8 +20,8 @@ use crate::easing::Easing;
 use crate::id::NodeId;
 use crate::index;
 use crate::model::{
-    BlendMode, CornerRadius, Family, Gradient, LayerProps, Node, NodeData, NodeType, Paint,
-    PathData, Shadow, ShadowChange, SizeChange, Stroke, StrokeChange, Timing,
+    BlendMode, ClipTiming, CornerRadius, Family, Gradient, LayerProps, Node, NodeData, NodeType,
+    Paint, PathData, Shadow, ShadowChange, SizeChange, Stroke, StrokeChange, Timing,
 };
 
 /// What kind of rule a [`Problem`] is about.
@@ -95,27 +95,32 @@ impl Problem {
 /// Whether an animation of type `animation` can target a layer of type `layer`.
 ///
 /// - An artboard takes only `fill`, which animates its background.
-/// - `fill` needs a layer with a fill: everything but `mask_group`, `image`
-///   and `instance`.
+/// - `fill` needs a layer with a fill: everything but `mask_group`, `image`,
+///   `instance` and `video`.
 /// - `stroke` needs a layer with a stroke: everything but `mask_group`,
 ///   `instance` and `artboard`.
-/// - `corner_radius` works on `rect`, `group`, `image` and `component`.
+/// - `corner_radius` works on `rect`, `group`, `image`, `component` and
+///   `video`.
 /// - `text_in`, `text_out` and `counter` work on `text`.
 /// - Everything else works on every layer except an artboard.
 ///
-/// `false` when `animation` is not an animation type that has a target, or
-/// `layer` is not a layer type.
+/// `false` when `animation` is not an animation type that has a target
+/// (`animation_group` and `audio` have none), or `layer` is not a layer
+/// type.
 pub fn animation_applies_to(animation: NodeType, layer: NodeType) -> bool {
     use NodeType as T;
     if layer.family() != Family::Layer || animation.family() != Family::Animation {
         return false;
     }
     match animation {
-        T::AnimationGroup => false,
-        T::Fill => !matches!(layer, T::MaskGroup | T::Image | T::Instance),
+        T::AnimationGroup | T::Audio => false,
+        T::Fill => !matches!(layer, T::MaskGroup | T::Image | T::Instance | T::Video),
         _ if layer == T::Artboard => false,
         T::Stroke => !matches!(layer, T::MaskGroup | T::Instance),
-        T::CornerRadius => matches!(layer, T::Rect | T::Group | T::Image | T::Component),
+        T::CornerRadius => matches!(
+            layer,
+            T::Rect | T::Group | T::Image | T::Component | T::Video
+        ),
         T::TextIn | T::TextOut | T::Counter => layer == T::Text,
         _ => true,
     }
@@ -237,6 +242,12 @@ pub(crate) fn check_values(node: &Node) -> Result<(), Problem> {
             check.radius("corner_radius", Some(component.corner_radius))?;
         }
         NodeData::Instance(instance) => check.finite("time_offset", instance.time_offset)?,
+        NodeData::Video(video) => {
+            check.media_source(&video.source, "video")?;
+            check.stroke(video.stroke.as_ref())?;
+            check.radius("corner_radius", Some(video.corner_radius))?;
+            check.clip(&video.clip)?;
+        }
         NodeData::Move(animation) => {
             for (field, offset) in [("from", animation.from), ("to", animation.to)] {
                 if let Some(offset) = offset {
@@ -309,6 +320,10 @@ pub(crate) fn check_values(node: &Node) -> Result<(), Problem> {
         NodeData::Counter(animation) => {
             check.optional("from", animation.from, Values::finite)?;
             check.optional("to", animation.to, Values::finite)?;
+        }
+        NodeData::Audio(audio) => {
+            check.media_source(&audio.source, "sound")?;
+            check.clip(&audio.clip)?;
         }
         NodeData::AnimationGroup(_) => {}
     }
@@ -469,6 +484,52 @@ impl Values<'_> {
             ));
         }
         self.easing(&timing.easing)
+    }
+
+    /// The `source` of a video or an audio item: a file path. Media files
+    /// are too large to embed, so a `data:` URI is refused.
+    fn media_source(&self, source: &str, what: &str) -> Result<(), Problem> {
+        let source = source.trim();
+        if source.is_empty() {
+            return Err(self.fail(
+                "source",
+                format!("is empty, but it must be the path of a {what} file"),
+            ));
+        }
+        let embedded = source
+            .get(..5)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"));
+        if embedded {
+            return Err(self.fail(
+                "source",
+                format!(
+                    "is a \"data:\" URI, but {what} cannot be embedded in the project; put the \
+                     file in the project's assets folder and give its path"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// When a clip plays: a start, an end after it, a place in the file
+    /// and a volume.
+    fn clip(&self, clip: &ClipTiming) -> Result<(), Problem> {
+        self.not_negative("start", clip.start)?;
+        self.finite("end", clip.end)?;
+        if clip.end <= clip.start {
+            return Err(self.fail(
+                "end",
+                format!(
+                    "is {}, which is not after \"start\" ({}); a clip needs some length, so \
+                     make \"end\" more than {}",
+                    number(clip.end),
+                    number(clip.start),
+                    number(clip.start)
+                ),
+            ));
+        }
+        self.not_negative("trim_start", clip.trim_start)?;
+        self.between("volume", clip.volume, 0.0, 1.0)
     }
 
     fn easing(&self, easing: &Easing) -> Result<(), Problem> {
@@ -662,6 +723,12 @@ fn check_parent(document: &Document, node: &Node) -> Result<(), Problem> {
     };
     if !holds {
         let hint = match (family, document.artboard_of(parent_id)) {
+            // Folders and sound change no layer, so they have no target.
+            (Family::Animation, Some(artboard)) if node.target().is_none() => format!(
+                " Timeline rows live in the timeline of their artboard: set \"parent\" to \
+                 \"{}\".",
+                artboard.id
+            ),
             (Family::Animation, Some(artboard)) => format!(
                 " Animations live in the timeline of their artboard, not inside the layer \
                  they change: set \"parent\" to \"{}\" and keep the layer in \"target\".",
@@ -852,7 +919,9 @@ mod tests {
     fn default_nodes_of_every_type_pass() {
         for ty in NodeType::ALL {
             let mut fields = json!({ "type": ty.as_str() });
-            if ty.family() == Family::Animation && *ty != NodeType::AnimationGroup {
+            if ty.family() == Family::Animation
+                && !matches!(ty, NodeType::AnimationGroup | NodeType::Audio)
+            {
                 fields["target"] = json!("x");
                 fields["start"] = json!(0);
                 fields["end"] = json!(500);
@@ -862,6 +931,11 @@ mod tests {
             }
             if *ty == NodeType::Instance {
                 fields["component"] = json!("m1");
+            }
+            if matches!(ty, NodeType::Video | NodeType::Audio) {
+                fields["source"] = json!("assets/clip.mp4");
+                fields["start"] = json!(0);
+                fields["end"] = json!(500);
             }
             let node = node(fields);
             check_values(&node).unwrap_or_else(|problem| panic!("{ty}: {problem}"));
@@ -1042,6 +1116,49 @@ mod tests {
     }
 
     #[test]
+    fn clips_need_a_file_a_length_and_a_volume() {
+        let clip = |ty: &str, extra: Value| {
+            let mut fields =
+                json!({ "type": ty, "source": "assets/clip.mp4", "start": 100, "end": 600 });
+            fields
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            check_values(&node(fields))
+        };
+        for ty in ["video", "audio"] {
+            assert!(clip(ty, json!({})).is_ok());
+            let cases = [
+                (json!({ "start": -1 }), "start"),
+                (json!({ "end": 100 }), "end"),
+                (json!({ "end": 50 }), "end"),
+                (json!({ "trim_start": -5 }), "trim_start"),
+                (json!({ "volume": 1.5 }), "volume"),
+                (json!({ "volume": -0.1 }), "volume"),
+                (json!({ "source": " " }), "source"),
+                (json!({ "source": "DATA:video/mp4;base64,AAAA" }), "source"),
+            ];
+            for (fields, field) in cases {
+                let problem = clip(ty, fields.clone()).unwrap_err();
+                assert_eq!(
+                    problem.field.as_deref(),
+                    Some(field),
+                    "{ty} {fields}: {problem}"
+                );
+            }
+        }
+        let same = clip("video", json!({ "end": 100 })).unwrap_err();
+        assert!(same.message.contains("more than 100"), "{same}");
+        let embedded =
+            clip("audio", json!({ "source": "data:audio/wav;base64,AAAA" })).unwrap_err();
+        assert!(embedded.message.contains("assets folder"), "{embedded}");
+        assert!(
+            clip("video", json!({ "volume": 0 })).is_ok(),
+            "a silent video is fine"
+        );
+    }
+
+    #[test]
     fn ids_must_be_well_formed() {
         let mut bad = node(json!({ "type": "rect" }));
         bad.id = NodeId::from("has space");
@@ -1068,6 +1185,12 @@ mod tests {
         assert!(!animation_applies_to(T::CornerRadius, T::Instance));
         assert!(animation_applies_to(T::FadeIn, T::Instance));
         assert!(animation_applies_to(T::Resize, T::Instance));
+        assert!(!animation_applies_to(T::Fill, T::Video));
+        assert!(animation_applies_to(T::Stroke, T::Video));
+        assert!(animation_applies_to(T::CornerRadius, T::Video));
+        assert!(animation_applies_to(T::FadeIn, T::Video));
+        assert!(!animation_applies_to(T::Audio, T::Rect));
+        assert!(!animation_applies_to(T::Audio, T::Video));
         assert!(!animation_applies_to(T::CornerRadius, T::Ellipse));
         assert!(animation_applies_to(T::TextIn, T::Text));
         assert!(!animation_applies_to(T::Counter, T::Rect));
@@ -1077,7 +1200,7 @@ mod tests {
         assert!(!animation_applies_to(T::Move, T::FadeIn));
         assert_eq!(
             targets_of(T::CornerRadius),
-            "group, rect, image or component"
+            "group, rect, image, component or video"
         );
         assert_eq!(targets_of(T::Counter), "text");
     }

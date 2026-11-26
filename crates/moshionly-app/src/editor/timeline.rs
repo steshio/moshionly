@@ -10,12 +10,17 @@
 //! component, which live on the main's own timeline. Its group starts with
 //! one bar that cannot be edited, saying which component it plays and
 //! when.
+//!
+//! Video and sound are clips (see [`clips`](super::clips)): a video
+//! layer's group starts with the bar of its clip, and the scene's audio
+//! items have a group of their own at the bottom, "Sound", one row each.
 
 use std::collections::{HashMap, HashSet};
 
 use moshionly_core::model::NodeData;
 use moshionly_core::{Document, Family, Node, NodeId, NodeType};
 
+use super::clips::clip_key;
 use super::describe::{ActionFamily, action_family, display_name, type_label};
 use crate::{
     key::Key,
@@ -37,6 +42,7 @@ pub fn layer_icon(ty: NodeType) -> &'static str {
         NodeType::Image => icons::IMAGE,
         NodeType::Component => icons::DIAMONDS_FOUR,
         NodeType::Instance => icons::DIAMOND,
+        NodeType::Video => icons::VIDEO_CAMERA,
         _ => action_icon(ty),
     }
 }
@@ -71,13 +77,18 @@ pub fn action_icon(ty: NodeType) -> &'static str {
         T::TextIn | T::TextOut => icons::TEXT_AA,
         T::Counter => icons::HASH,
         T::AnimationGroup => icons::FOLDER_SIMPLE,
+        T::Audio => icons::SPEAKER_HIGH,
         _ => icons::LIGHTNING,
     }
 }
 
 /// The colour family of an animation type: teal brings in, rose takes away,
-/// the accent changes a property, amber works on text.
+/// the accent changes a property, amber works on text, and sound is sky
+/// blue like video clips.
 pub fn action_tone(ty: NodeType) -> Tone {
+    if ty == NodeType::Audio {
+        return Tone::Sky;
+    }
     match action_family(ty) {
         Some(ActionFamily::Entrance) => Tone::Teal,
         Some(ActionFamily::Exit) => Tone::Rose,
@@ -112,6 +123,50 @@ fn bar_of(document: &Document, node: &Node, with_layer: bool) -> Option<(NodeId,
         fixed: false,
     };
     Some((target.clone(), bar))
+}
+
+/// The key of the timeline group that holds the scene's sound. Ids never
+/// hold a `/`, so it is no node's.
+pub const SOUND_GROUP: &str = "/sound";
+
+/// The name a media file is shown with: the last part of its source.
+pub fn file_label(source: &str) -> String {
+    let name = source.trim().rsplit(['/', '\\']).next().unwrap_or_default();
+    if name.is_empty() {
+        source.trim().to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// What an audio item is called: its name, or else its file's.
+pub fn sound_name(node: &Node) -> String {
+    match (node.name().trim(), node.data.source()) {
+        ("", Some(source)) => file_label(source),
+        ("", None) => type_label(node.node_type()).to_owned(),
+        (name, _) => name.to_owned(),
+    }
+}
+
+/// The bar of the clip of a video layer or an audio item: the stretch of
+/// the timeline it plays, named after its file (or the audio item).
+pub fn clip_bar(node: &Node) -> Option<Bar> {
+    let clip = node.data.clip()?;
+    let ty = node.node_type();
+    let (label, icon) = match ty {
+        NodeType::Video => (file_label(node.data.source()?), icons::FILM_STRIP),
+        _ => (sound_name(node), icons::SPEAKER_HIGH),
+    };
+    Some(Bar {
+        key: clip_key(&node.id, ty),
+        label,
+        icon: Some(icon),
+        tone: Tone::Sky,
+        start: clip.start,
+        end: clip.end.max(clip.start),
+        instant: false,
+        fixed: false,
+    })
 }
 
 /// How deep instances inside components are followed to find what an
@@ -199,8 +254,9 @@ fn plays_bar(
 }
 
 /// The timeline groups of `artboard`: first its folders, each holding the
-/// actions put in it, then one group per layer that has other actions.
-/// `collapsed` names the groups whose rows are folded away.
+/// actions put in it, then one group per layer that has other actions or
+/// is a video, then the scene's sound. `collapsed` names the groups whose
+/// rows are folded away.
 pub fn timeline_groups(
     document: &Document,
     artboard: &NodeId,
@@ -209,12 +265,16 @@ pub fn timeline_groups(
     // Actions by target, in timeline row order, and the folders.
     let mut bars: HashMap<NodeId, Vec<Bar>> = HashMap::new();
     let mut folders: Vec<Group> = Vec::new();
+    let mut sound: Vec<Bar> = Vec::new();
     for node in document.child_nodes(artboard, Family::Animation) {
         if node.node_type() == NodeType::AnimationGroup {
             let inside = document
                 .walk(&node.id, Family::Animation)
-                .filter_map(|(_, inner)| bar_of(document, inner, true))
-                .map(|(_, bar)| bar)
+                .filter_map(|(_, inner)| {
+                    bar_of(document, inner, true)
+                        .map(|(_, bar)| bar)
+                        .or_else(|| clip_bar(inner))
+                })
                 .collect();
             folders.push(Group {
                 key: Key::new(node.id.as_str()),
@@ -228,12 +288,18 @@ pub fn timeline_groups(
             });
         } else if let Some((target, bar)) = bar_of(document, node, false) {
             bars.entry(target).or_default().push(bar);
+        } else if let Some(bar) = clip_bar(node) {
+            sound.push(bar);
         }
     }
-    // Instances first say what they play.
+    // Instances first say what they play, and videos when they play.
     let mut spans = HashMap::new();
     for (_, node) in document.walk(artboard, Family::Layer) {
-        if let Some(bar) = plays_bar(document, node, &mut spans) {
+        let first = match node.node_type() {
+            NodeType::Video => clip_bar(node),
+            _ => plays_bar(document, node, &mut spans),
+        };
+        if let Some(bar) = first {
             bars.entry(node.id.clone()).or_default().insert(0, bar);
         }
     }
@@ -259,7 +325,22 @@ pub fn timeline_groups(
             bars,
         })
     });
-    folders.into_iter().chain(layer_groups).collect()
+    let sound_group = (!sound.is_empty()).then(|| Group {
+        key: Key::new(SOUND_GROUP),
+        label: "Sound".to_owned(),
+        icon: Some(icons::SPEAKER_HIGH),
+        collapsed: collapsed.contains(&NodeId::from(SOUND_GROUP)),
+        hidden: false,
+        locked: false,
+        // Not a layer: no hide and lock toggles.
+        folder: true,
+        bars: sound,
+    });
+    folders
+        .into_iter()
+        .chain(layer_groups)
+        .chain(sound_group)
+        .collect()
 }
 
 /// Whether a timeline group is a folder rather than a layer.
@@ -353,6 +434,58 @@ mod tests {
         assert_eq!((bars[0].start, bars[0].end), (500.0, 1000.0));
         assert_eq!(plays_label("Card", -250.0), "Plays Card · 250 ms earlier");
         assert_eq!(plays_label("Card", 0.0), "Plays Card");
+    }
+
+    #[test]
+    fn videos_and_sound_show_their_clips() {
+        let doc = io::parse(
+            r##"{"format":"moshionly","version":3,"name":"Test","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","name":"Scene"},
+            {"id":"film","parent":"ab","index":"a0","type":"video","source":"assets/beach.mp4",
+             "start":500,"end":2500},
+            {"id":"still","parent":"ab","index":"a1","type":"rect"},
+            {"id":"fade","parent":"ab","index":"a0","type":"fade_in","target":"film","start":0,"end":300},
+            {"id":"song","parent":"ab","index":"a1","type":"audio","source":"/music/Song.mp3",
+             "start":0,"end":4000},
+            {"id":"voice","parent":"ab","index":"a2","type":"audio","name":"Voice over",
+             "source":"assets/voice.wav","start":1000,"end":2000},
+            {"id":"folder","parent":"ab","index":"a3","type":"animation_group","name":"Outro"},
+            {"id":"sting","parent":"folder","index":"a0","type":"audio","source":"assets/sting.wav",
+             "start":3000,"end":3500}
+            ]}"##,
+        )
+        .unwrap();
+        let groups = timeline_groups(&doc, &NodeId::from("ab"), &HashSet::new());
+        let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["Outro", "Video", "Sound"]);
+        // The folder holds its sound.
+        assert_eq!(groups[0].bars[0].label, "sting.wav");
+        // The video's clip comes before its actions, keyed apart from them.
+        let video = &groups[1];
+        assert_eq!(video.icon, Some(icons::VIDEO_CAMERA));
+        assert_eq!(video.bars.len(), 2);
+        let clip = &video.bars[0];
+        assert_eq!(clip.key.as_str(), "film/clip");
+        assert_eq!(clip.label, "beach.mp4");
+        assert_eq!((clip.start, clip.end), (500.0, 2500.0));
+        assert_eq!(clip.tone, Tone::Sky);
+        assert!(!clip.fixed && !clip.instant);
+        assert_eq!(video.bars[1].key.as_str(), "fade");
+        // The sound has a group of its own, one row per audio item.
+        let sound = &groups[2];
+        assert_eq!(sound.key.as_str(), SOUND_GROUP);
+        assert!(sound.folder);
+        let rows: Vec<(&str, &str)> = sound
+            .bars
+            .iter()
+            .map(|bar| (bar.key.as_str(), bar.label.as_str()))
+            .collect();
+        assert_eq!(rows, [("song", "Song.mp3"), ("voice", "Voice over")]);
+        assert_eq!(action_tone(NodeType::Audio), Tone::Sky);
+        assert_eq!(file_label("C:\\clips\\a.mov"), "a.mov");
+        let collapsed = HashSet::from([NodeId::from(SOUND_GROUP)]);
+        let groups = timeline_groups(&doc, &NodeId::from("ab"), &collapsed);
+        assert!(groups[2].collapsed);
     }
 
     #[test]

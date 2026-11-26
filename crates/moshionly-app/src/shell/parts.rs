@@ -58,8 +58,8 @@ pub fn edge_line(ui: &Ui, rect: Rect, edge: Edge) {
 }
 
 /// One menu line for a command, with its icon and shortcut, greyed out when
-/// the command is disabled. `checked` makes it a checkable item. Returns true
-/// when it was clicked.
+/// the command is disabled, with the reason when the pointer rests on it.
+/// `checked` makes it a checkable item. Returns true when it was clicked.
 pub fn command_item(
     ui: &mut Ui,
     id: CommandId,
@@ -77,5 +77,10 @@ pub fn command_item(
     if !shortcut.is_empty() {
         item = item.shortcut(&shortcut);
     }
-    ui.add_enabled(commands.is_enabled(id), item).clicked()
+    let response = ui.add_enabled(commands.is_enabled(id), item);
+    let response = match commands.disabled_reason(id) {
+        Some(reason) => response.on_disabled_hover_text(reason),
+        None => response,
+    };
+    response.clicked()
 }

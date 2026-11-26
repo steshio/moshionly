@@ -1,6 +1,6 @@
 //! What the app does for the agent tools: screenshots with the renderer,
-//! the list of fonts from the font library, and exports with
-//! `moshionly-export`.
+//! the list of fonts from the font library, exports with
+//! `moshionly-export`, and reading media files with `ffmpeg`.
 //!
 //! The agent crate knows documents, not pixels; it asks its host through
 //! the traits [`FrameSource`], [`FontSource`] and [`Exporter`]. This module
@@ -67,6 +67,7 @@ fn host_with(renderer: &Renderer, exporter: AppExporter, cancel: &CancelToken) -
         .with_fonts(Arc::new(LibraryFonts::new(fonts.clone())))
         .with_exporter(Arc::new(exporter.with_renderer(renderer.clone())))
         .with_measurer(Arc::new(fonts))
+        .with_media(Arc::new(crate::media::FfmpegProbe::located()))
 }
 
 /// Exports and screenshots done for tools, which can be stopped and
@@ -352,6 +353,7 @@ impl Exporter for AppExporter {
             path: exported.path,
             bytes: exported.bytes,
             frames: saturate(exported.frames),
+            warnings: exported.warnings,
         })
     }
 }
@@ -368,7 +370,8 @@ pub fn settings_for(options: &ExportOptions) -> Result<Settings, HostError> {
     let mut settings = Settings::default()
         .with_scale(options.scale)
         .with_frame_rate(rate)
-        .with_still(options.time_ms);
+        .with_still(options.time_ms)
+        .with_sound(options.sound);
     if options.transparent {
         settings = settings.with_background(Background::Transparent);
     }
@@ -532,12 +535,20 @@ mod tests {
             fps: 24.0,
             time_ms: Some(500.0),
             transparent: true,
+            sound: true,
         })
         .unwrap();
         assert_eq!(settings.size, moshionly_export::Size::Scale(2.0));
         assert_eq!(settings.frame_rate, FrameRate::FPS_24);
         assert_eq!(settings.still_ms, Some(500.0));
         assert_eq!(settings.background, Background::Transparent);
+        assert!(settings.sound);
+        let quiet = settings_for(&ExportOptions {
+            sound: false,
+            ..ExportOptions::default()
+        })
+        .unwrap();
+        assert!(!quiet.sound, "an agent can leave the sound out");
         let bad = settings_for(&ExportOptions {
             fps: -1.0,
             ..ExportOptions::default()

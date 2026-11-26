@@ -80,6 +80,15 @@ pub enum RenderWarning {
         /// Why the image could not be used.
         reason: String,
     },
+    /// A video frame could not be had. A placeholder was drawn in its box.
+    MissingVideo {
+        /// The video layer.
+        node: NodeId,
+        /// The layer's `source`, shortened when it is long.
+        source: String,
+        /// Why there is no frame.
+        reason: String,
+    },
     /// A font family is not installed or registered. The text was drawn
     /// with the default family instead.
     MissingFont {
@@ -100,6 +109,15 @@ impl std::fmt::Display for RenderWarning {
             } => write!(
                 f,
                 "the image \"{source}\" of layer \"{node}\" could not be loaded ({reason}); a \
+                 placeholder was drawn instead"
+            ),
+            RenderWarning::MissingVideo {
+                node,
+                source,
+                reason,
+            } => write!(
+                f,
+                "the video \"{source}\" of layer \"{node}\" could not be shown ({reason}); a \
                  placeholder was drawn instead"
             ),
             RenderWarning::MissingFont { node, family } => write!(
@@ -134,5 +152,17 @@ mod tests {
         let text = warning.to_string();
         assert!(text.contains("cat.png") && text.contains("photo"), "{text}");
         assert!(text.contains("placeholder"), "{text}");
+
+        let warning = RenderWarning::MissingVideo {
+            node: NodeId::from("film"),
+            source: "clip.mp4".into(),
+            reason: "ffmpeg was not found".into(),
+        };
+        let text = warning.to_string();
+        assert!(
+            text.contains("video \"clip.mp4\"") && text.contains("film"),
+            "{text}"
+        );
+        assert!(text.contains("ffmpeg was not found"), "{text}");
     }
 }

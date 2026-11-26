@@ -128,6 +128,7 @@ commands! {
     Save: File, "Save", Some(icons::FLOPPY_DISK), cmd(Key::S);
     SaveAs: File, "Save as…", None, cmd_shift(Key::S);
     ImportImage: File, "Import image…", Some(icons::IMAGE), cmd_shift(Key::I);
+    ImportMedia: File, "Import video or sound…", Some(icons::FILM_STRIP), cmd_alt(Key::I);
     Export: File, "Export…", Some(icons::EXPORT), cmd(Key::E);
 
     Undo: Edit, "Undo", Some(icons::ARROW_U_UP_LEFT), cmd(Key::Z);
@@ -209,6 +210,8 @@ impl CommandId {
 #[derive(Clone, Debug, Default)]
 pub struct CommandRegistry {
     disabled: HashSet<CommandId>,
+    /// Why disabled commands cannot run, for their tooltips.
+    reasons: HashMap<CommandId, String>,
     /// Names that say more than the fixed one right now: "Undo Move".
     labels: HashMap<CommandId, String>,
     /// The text of the last paste event, which the platform hands over
@@ -238,6 +241,26 @@ impl CommandRegistry {
         } else {
             self.disabled.insert(id);
         }
+    }
+
+    /// Says why `id` is disabled, shown when the pointer rests on it, or
+    /// says nothing with `None`.
+    pub fn set_disabled_reason(&mut self, id: CommandId, reason: Option<String>) {
+        match reason {
+            Some(reason) => {
+                self.reasons.insert(id, reason);
+            }
+            None => {
+                self.reasons.remove(&id);
+            }
+        }
+    }
+
+    /// Why `id` cannot run, when it is disabled and the reason is known.
+    pub fn disabled_reason(&self, id: CommandId) -> Option<&str> {
+        (!self.is_enabled(id))
+            .then(|| self.reasons.get(&id).map(String::as_str))
+            .flatten()
     }
 
     /// The name to show for `id` right now: the label set with
@@ -449,6 +472,18 @@ mod tests {
         assert!(registry.is_enabled(CommandId::Redo));
         registry.set_enabled(CommandId::Undo, true);
         assert!(registry.is_enabled(CommandId::Undo));
+    }
+
+    #[test]
+    fn a_disabled_command_says_why() {
+        let mut registry = CommandRegistry::new();
+        let id = CommandId::ImportMedia;
+        registry.set_disabled_reason(id, Some("Needs ffmpeg".into()));
+        assert_eq!(registry.disabled_reason(id), None, "it is enabled");
+        registry.set_enabled(id, false);
+        assert_eq!(registry.disabled_reason(id), Some("Needs ffmpeg"));
+        registry.set_disabled_reason(id, None);
+        assert_eq!(registry.disabled_reason(id), None);
     }
 
     #[test]

@@ -87,11 +87,11 @@ fn schema() -> Value {
             },
             "time_from": {
                 "type": "number",
-                "description": "Only animations still running at or after this time, in milliseconds. Use with time_to to ask what happens in a stretch of time; give both the same value for one moment."
+                "description": "Only animations, sounds and video clips still running at or after this time, in milliseconds. Use with time_to to ask what happens in a stretch of time; give both the same value for one moment."
             },
             "time_to": {
                 "type": "number",
-                "description": "Only animations that have started at or before this time, in milliseconds."
+                "description": "Only animations, sounds and video clips that have started at or before this time, in milliseconds."
             },
             "ids": {
                 "type": "array",
@@ -253,6 +253,7 @@ impl Filter {
             let overlaps = node
                 .data
                 .span()
+                .or_else(|| node.data.clip().map(|clip| (clip.start, clip.end)))
                 .is_some_and(|(start, end)| start <= to && end >= from);
             if !overlaps {
                 return false;
@@ -619,6 +620,37 @@ mod tests {
             json!({ "time_from": 900, "time_to": 100 }),
         );
         assert!(error.contains("is after \"time_to\""), "{error}");
+    }
+
+    #[test]
+    fn a_time_range_finds_the_video_and_sound_playing_in_it() {
+        let tools = demo_tools();
+        call(
+            &tools,
+            "apply_edits",
+            json!({ "operations": [
+                { "op": "add", "parent": "scene", "temp_id": "film", "node": {
+                    "type": "video", "name": "Film", "source": "f.mp4", "start": 2000, "end": 3000 } },
+                { "op": "add", "parent": "scene", "temp_id": "music", "node": {
+                    "type": "audio", "name": "Music", "source": "m.mp3", "start": 2500, "end": 3500 } }
+            ] }),
+        );
+        let names = |from: i64, to: i64| -> Vec<String> {
+            let found = call(
+                &tools,
+                "query_nodes",
+                json!({ "time_from": from, "time_to": to, "fields": ["name"] }),
+            );
+            found["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["name"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        };
+        assert_eq!(names(2100, 2200), ["Film"]);
+        assert_eq!(names(2600, 2600), ["Film", "Music"]);
+        assert_eq!(names(3200, 4000), ["Music"]);
     }
 
     #[test]

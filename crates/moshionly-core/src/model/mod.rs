@@ -6,6 +6,7 @@
 
 pub mod animation;
 pub mod layer;
+pub mod media;
 pub mod node;
 pub mod paint;
 pub mod path;
@@ -23,6 +24,7 @@ pub use layer::{
     Artboard, Component, EllipseLayer, Group, ImageFit, ImageLayer, Instance, LayerProps,
     MaskGroup, PathLayer, RectLayer, StarLayer, TextLayer,
 };
+pub use media::{Audio, ClipTiming, VideoLayer};
 pub use node::{Family, Node, NodeData, NodeType};
 pub use paint::{
     BlendMode, CornerRadius, Gradient, GradientStop, LinearGradient, Paint, RadialGradient, Shadow,
