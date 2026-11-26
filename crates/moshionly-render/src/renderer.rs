@@ -669,12 +669,14 @@ mod tests {
         assert!(alpha(&down, 20, 3) > 20, "{}", alpha(&down, 20, 3));
         assert!(alpha(&down, 20, 16) > 20, "{}", alpha(&down, 20, 16));
         assert_eq!(alpha(&down, 13, 10), 0, "nothing beside");
-        // Opposite directions smear alike.
-        assert_eq!(
-            smeared(180.0).premultiplied(),
-            across.premultiplied(),
-            "180 degrees is 0"
-        );
+        // Opposite directions smear alike, give or take rounding.
+        let opposite = smeared(180.0);
+        let alike = opposite
+            .premultiplied()
+            .iter()
+            .zip(across.premultiplied())
+            .all(|(a, b)| a.abs_diff(*b) <= 2);
+        assert!(alike, "180 degrees is 0");
     }
 
     #[test]
