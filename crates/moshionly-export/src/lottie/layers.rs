@@ -135,6 +135,15 @@ impl<'a> Converter<'a> {
         if !self.is_ever_visible(&node.id) {
             return (self.progress)(Step::Layer);
         }
+        // Grain is named here for every layer that is drawn, since some
+        // (a plain group, a picture) never get layer effects. Videos and
+        // instances are left out whole, with their own warning.
+        if !matches!(
+            node.data,
+            NodeData::Video(_) | NodeData::Instance(_) | NodeData::Artboard(_)
+        ) {
+            self.note_grain(node);
+        }
         match &node.data {
             NodeData::Rect(_) | NodeData::Ellipse(_) | NodeData::Star(_) | NodeData::Path(_) => {
                 let hints = self.timeline.hints(&node.id);

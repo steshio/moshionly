@@ -858,6 +858,36 @@ fn glows_and_directional_blurs_become_effects_and_grain_is_named() {
 }
 
 #[test]
+fn grain_is_named_on_every_kind_of_layer() {
+    // Neither the picture nor the group has an effect Lottie draws, so
+    // neither goes through the layer effects: the grain is named anyway.
+    let nodes = format!(
+        r##",{{"id":"pic","parent":"board","index":"a0","type":"image","name":"Photo",
+            "width":200,"height":100,"source":"{}","noise":{{"amount":0.5}}}}
+        ,{{"id":"set","parent":"board","index":"a1","type":"group","name":"Set",
+            "x":300,"width":200,"height":100,"noise":{{"amount":0.5}}}}
+        ,{{"id":"dot","parent":"set","index":"a0","type":"ellipse","name":"Dot",
+            "width":50,"height":50,"fill":"#0D99FF"}}
+        ,{{"id":"box","parent":"board","index":"a2","type":"rect","name":"Box",
+            "x":600,"width":100,"height":100,"fill":"#0D99FF","noise":{{"amount":0.5}}}}"##,
+        png_uri(40, 30)
+    );
+    let (_, exported) = export_document(document(1000.0, &nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    for name in ["Photo", "Set", "Box"] {
+        let expected =
+            format!("\"{name}\" has film grain (noise), which Lottie cannot show; it is left out.");
+        let times = exported
+            .warnings
+            .iter()
+            .filter(|warning| **warning == expected)
+            .count();
+        assert_eq!(times, 1, "{expected}\n{said}");
+    }
+    assert_eq!(exported.warnings.len(), 3, "{said}");
+}
+
+#[test]
 fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
     let nodes = r##",{"id":"star","parent":"board","index":"a0","type":"star","name":"Badge",
             "width":200,"height":100,"stroke":{"paint":"#000000","width":4,"position":"inside"},

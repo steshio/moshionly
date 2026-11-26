@@ -149,6 +149,19 @@ impl Converter<'_> {
         })
     }
 
+    /// Says that a layer's film grain is left out, when it ever has some.
+    /// Every exported layer comes here, also those that never get effects
+    /// of their own, such as a plain group or a picture with nothing but
+    /// grain.
+    pub fn note_grain(&mut self, node: &Node) {
+        if self.has_noise(&node.id) {
+            self.warnings.layer(
+                node,
+                "has film grain (noise), which Lottie cannot show; it is left out.",
+            );
+        }
+    }
+
     /// How far a layer's effects reach past what it draws, in its own
     /// pixels, at most over the export: the shadow's offset and three
     /// standard deviations of each blur. 0 for a layer without effects.
@@ -256,15 +269,10 @@ impl Converter<'_> {
     }
 
     /// Adds a layer's glow, drop shadow, blur and directional blur to its
-    /// Lottie layer, when it ever has them, and says what is left out.
+    /// Lottie layer, when it ever has them, and says what is not drawn
+    /// exactly. (Grain is named by [`Self::note_grain`].)
     pub fn add_effects(&mut self, node: &Node, layer: &mut Map<String, Value>) {
         let id = &node.id;
-        if self.has_noise(id) {
-            self.warnings.layer(
-                node,
-                "has film grain (noise), which Lottie cannot show; it is left out.",
-            );
-        }
         let frames = self.survey.clone();
         let glowing = frames
             .iter()
