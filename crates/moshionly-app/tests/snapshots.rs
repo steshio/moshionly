@@ -623,6 +623,84 @@ fn components() {
     }
 }
 
+/// Made-up video frames, so the snapshot needs no `ffmpeg`: an evening
+/// gradient whose light drifts with the moment of the file.
+struct FakeFrames;
+
+impl moshionly_render::VideoFrames for FakeFrames {
+    fn frame(
+        &self,
+        request: &moshionly_render::VideoRequest<'_>,
+    ) -> Result<moshionly_render::skia_safe::Image, String> {
+        let (width, height) = (96u32, 54u32);
+        let drift = request.time_ms / 4000.0;
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let across = x as f64 / f64::from(width) + drift;
+                let down = f64::from(y) / f64::from(height);
+                let sun = (1.0 - ((across - 0.6).powi(2) + (down - 0.55).powi(2)).sqrt() * 2.5)
+                    .clamp(0.0, 1.0);
+                let channel = |base: f64, glow: f64| ((base + glow * sun) * 255.0).min(255.0) as u8;
+                rgba.extend([
+                    channel(0.35 + 0.3 * down, 0.6),
+                    channel(0.25 + 0.15 * down, 0.5),
+                    channel(0.55 - 0.25 * down, 0.2),
+                    255,
+                ]);
+            }
+        }
+        moshionly_render::video::image_from_rgba(width, height, rgba)
+    }
+}
+
+/// Video and sound: a reel with a video layer drawn from made-up frames,
+/// selected with its Video section in the inspector, a title that fades
+/// in over it, and on the timeline the video's clip and the scene's sound.
+#[test]
+fn media() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1440.0, 900.0);
+    let reel = r##"{"format":"moshionly","version":3,"name":"Beach reel","nodes":[
+        {"id":"reel","parent":null,"index":"a0","type":"artboard","name":"Reel",
+         "width":1080,"height":1080,"fill":"#14161C","duration":6000},
+        {"id":"beach","parent":"reel","index":"a0","type":"video","name":"Beach at dusk",
+         "source":"/fake/Beach at dusk.mp4","x":60,"y":200,"width":960,"height":540,
+         "corner_radius":32,"start":500,"end":5000,"trim_start":1200,"volume":0.8},
+        {"id":"title","parent":"reel","index":"a1","type":"text","content":"Summer reel",
+         "x":60,"y":800,"font_size":96,"fill":"#FFFFFF"},
+        {"id":"fade","parent":"reel","index":"a0","type":"fade_in","target":"title",
+         "start":1000,"end":1800},
+        {"id":"music","parent":"reel","index":"a1","type":"audio","name":"Music",
+         "source":"/fake/music.mp3","start":0,"end":6000},
+        {"id":"waves","parent":"reel","index":"a2","type":"audio",
+         "source":"/fake/waves.wav","start":2500,"end":5500,"volume":0.5}
+    ]}"##;
+    for variant in Variant::ALL {
+        let document = moshionly_core::io::parse(reel).expect("the reel parses");
+        let renderer = moshionly_render::Renderer::new(
+            moshionly_render::FontLibrary::bundled(),
+            moshionly_render::AssetLoader::default().with_video(std::sync::Arc::new(FakeFrames)),
+        );
+        let mut shell = Shell::headless(
+            Settings::default(),
+            moshionly_agent::SessionHandle::from_document(document),
+            renderer,
+        );
+        shell
+            .editor_mut()
+            .selection
+            .select(moshionly_core::NodeId::from("beach"));
+        let (path, image) = snapshot("media", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
 /// The canvas on its own: two artboards without pictures, and one of every
 /// overlay.
 #[test]
