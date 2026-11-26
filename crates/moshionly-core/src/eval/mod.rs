@@ -90,8 +90,8 @@ use crate::document::Document;
 use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::model::{
-    AutoSize, CornerRadius, Family, Gradient, Instance, Node, NodeData, NodeType, Paint, Shadow,
-    Stroke, TextLayer,
+    AutoSize, CornerRadius, DirectionalBlur, Family, Glow, Gradient, Instance, Node, NodeData,
+    NodeType, Noise, Paint, Shadow, Stroke, TextLayer,
 };
 use crate::scene::{
     Clip, Content, Scene, SceneNode, ScenePaint, SceneStroke, TextContent, TextStyle,
@@ -146,13 +146,19 @@ pub enum Property {
     Blur,
     /// The drop shadow.
     Shadow,
+    /// The outer glow.
+    Glow,
+    /// The film grain.
+    Noise,
+    /// The directional blur.
+    DirectionalBlur,
     /// The text of a text layer, with counters applied.
     Content,
 }
 
 impl Property {
     /// Every property.
-    pub const ALL: [Property; 14] = [
+    pub const ALL: [Property; 17] = [
         Property::X,
         Property::Y,
         Property::Width,
@@ -166,6 +172,9 @@ impl Property {
         Property::CornerRadius,
         Property::Blur,
         Property::Shadow,
+        Property::Glow,
+        Property::Noise,
+        Property::DirectionalBlur,
         Property::Content,
     ];
 
@@ -186,6 +195,9 @@ impl Property {
             Property::CornerRadius => "corner_radius",
             Property::Blur => "blur",
             Property::Shadow => "shadow",
+            Property::Glow => "glow",
+            Property::Noise => "noise",
+            Property::DirectionalBlur => "directional_blur",
             Property::Content => "content",
         }
     }
@@ -213,8 +225,38 @@ pub enum PropertyValue {
     CornerRadius(CornerRadius),
     /// A shadow, or none.
     Shadow(Option<Shadow>),
+    /// A glow, or none.
+    Glow(Option<Glow>),
+    /// Noise, or none.
+    Noise(Option<Noise>),
+    /// A directional blur, or none.
+    DirectionalBlur(Option<DirectionalBlur>),
     /// Text.
     Text(String),
+}
+
+impl PropertyValue {
+    /// The value as JSON with every part written out, defaults included (a
+    /// shadow's offset of 4, a glow's radius of 20), whole numbers as
+    /// integers: what an inspector or an AI agent wants to read. `null` for
+    /// a fill, stroke or effect that is not there.
+    pub fn to_value(&self) -> serde_json::Value {
+        let written = crate::defaults::with_defaults(|| match self {
+            PropertyValue::Number(number) => serde_json::to_value(number),
+            PropertyValue::Flag(flag) => serde_json::to_value(flag),
+            PropertyValue::Paint(paint) => serde_json::to_value(paint),
+            PropertyValue::Stroke(stroke) => serde_json::to_value(stroke),
+            PropertyValue::CornerRadius(radius) => serde_json::to_value(radius),
+            PropertyValue::Shadow(shadow) => serde_json::to_value(shadow),
+            PropertyValue::Glow(glow) => serde_json::to_value(glow),
+            PropertyValue::Noise(noise) => serde_json::to_value(noise),
+            PropertyValue::DirectionalBlur(blur) => serde_json::to_value(blur),
+            PropertyValue::Text(text) => serde_json::to_value(text),
+        });
+        let mut value = written.unwrap_or_default();
+        crate::json::tidy_numbers(&mut value);
+        value
+    }
 }
 
 /// The length of an artboard's timeline in milliseconds. `None` when `id` is
@@ -282,6 +324,9 @@ pub fn value_at(
         Property::Visible => PropertyValue::Flag(state.visible),
         Property::Blur => PropertyValue::Number(state.blur),
         Property::Shadow => PropertyValue::Shadow(state.shadow),
+        Property::Glow => PropertyValue::Glow(state.glow),
+        Property::Noise => PropertyValue::Noise(state.noise),
+        Property::DirectionalBlur => PropertyValue::DirectionalBlur(state.directional_blur),
         Property::Content => PropertyValue::Text(state.content?),
         Property::Fill if has("fill") => PropertyValue::Paint(state.fill),
         Property::Stroke if has("stroke") => PropertyValue::Stroke(state.stroke),
@@ -536,6 +581,9 @@ impl<'a> Evaluator<'a> {
             blend_mode: layer.blend_mode,
             blur: state.blur,
             shadow: state.shadow,
+            glow: state.glow,
+            noise: state.noise,
+            directional_blur: state.directional_blur,
             clip: state.reveal_rect().map(|rect| Clip {
                 rect,
                 radii: [0.0; 4],
@@ -749,6 +797,9 @@ fn plain(id: &NodeId, state: &LayerState, content: Content) -> SceneNode {
         blend_mode: crate::model::BlendMode::Normal,
         blur: 0.0,
         shadow: None,
+        glow: None,
+        noise: None,
+        directional_blur: None,
         clip: None,
         mask: None,
         content,

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::color::Color;
-use crate::model::{BlendMode, GradientStop, TextAlign};
+use crate::model::{BlendMode, DirectionalBlur, Glow, GradientStop, Noise, TextAlign};
 use crate::scene::TextUnit;
 use crate::text::MonospaceMeasurer;
 
@@ -441,6 +441,141 @@ fn paints_radii_blur_and_shadow_animate() {
 }
 
 #[test]
+fn glow_noise_and_directional_blur_animate() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "width": 200, "height": 100, "fill": "#FF0000",
+          "glow": { "color": "#FFFFFF", "radius": 10 } },
+        { "id": "g", "type": "glow", "target": "r", "start": 0, "end": 1000,
+          "to": { "radius": 30, "spread": 8 }, "easing": linear() },
+        { "id": "n", "type": "noise", "target": "r", "start": 0, "end": 1000,
+          "to": { "amount": 0.5, "size": 3 }, "easing": linear() },
+        { "id": "d", "type": "directional_blur", "target": "r", "start": 1000, "end": 2000,
+          "from": { "angle": 90 }, "to": { "amount": 40, "angle": 0 }, "easing": linear() }
+    ]));
+    // Before anything runs: the resting glow, no grain, and the directional
+    // blur's `from` already holds, but with no amount there is nothing to draw.
+    let start = at(&document, 0.0);
+    let rect = node(&start, "r");
+    assert_eq!(
+        rect.glow,
+        Some(Glow {
+            color: Color::WHITE,
+            radius: 10.0,
+            spread: 0.0
+        })
+    );
+    assert_eq!((rect.noise, rect.directional_blur), (None, None));
+
+    let half = at(&document, 500.0);
+    let rect = node(&half, "r");
+    assert_eq!(
+        rect.glow,
+        Some(Glow {
+            color: Color::WHITE,
+            radius: 20.0,
+            spread: 4.0
+        })
+    );
+    assert_eq!(
+        rect.noise,
+        Some(Noise {
+            amount: 0.25,
+            size: 2.0,
+            animated: true
+        }),
+        "grain fades in from nothing at the default size"
+    );
+
+    let later = at(&document, 1500.0);
+    let rect = node(&later, "r");
+    assert_eq!(
+        rect.directional_blur,
+        Some(DirectionalBlur {
+            amount: 20.0,
+            angle: 45.0
+        })
+    );
+    assert_eq!(
+        rect.glow.map(|glow| (glow.radius, glow.spread)),
+        Some((30.0, 8.0)),
+        "the glow holds its end"
+    );
+    assert_eq!(
+        value_at(&document, &id("r"), Property::DirectionalBlur, 2000.0),
+        Some(PropertyValue::DirectionalBlur(Some(DirectionalBlur {
+            amount: 40.0,
+            angle: 0.0
+        })))
+    );
+    assert_eq!(
+        value_at(&document, &id("r"), Property::Noise, 0.0),
+        Some(PropertyValue::Noise(None))
+    );
+    assert!(matches!(
+        value_at(&document, &id("r"), Property::Glow, 2000.0),
+        Some(PropertyValue::Glow(Some(glow))) if glow.radius == 30.0
+    ));
+    // At rest the design shows, without any animation.
+    let rest = evaluate_at_rest(&document, &id("ab"), &MonospaceMeasurer::default()).unwrap();
+    let rect = node(&rest, "r");
+    assert_eq!(rect.glow.map(|glow| glow.radius), Some(10.0));
+    assert_eq!((rect.noise, rect.directional_blur), (None, None));
+}
+
+#[test]
+fn a_glow_fades_in_and_out_on_a_layer_without_one() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "noise": { "amount": 0.4, "animated": false } },
+        { "id": "in", "type": "glow", "target": "r", "start": 0, "end": 1000,
+          "to": { "color": "#FF0000" }, "easing": linear() },
+        { "id": "out", "type": "glow", "target": "r", "start": 1000, "end": 2000, "easing": linear() },
+        { "id": "n", "type": "noise", "target": "r", "start": 0, "end": 1000,
+          "to": { "amount": 0 }, "easing": linear() }
+    ]));
+    let glow = |time: f64| node(&at(&document, time), "r").glow;
+    assert_eq!(glow(0.0), None, "fully transparent is no glow");
+    let half = glow(500.0).unwrap();
+    assert_eq!(
+        (half.color, half.radius),
+        (Color::rgba(255, 0, 0, 128), 20.0),
+        "the default size, fading in"
+    );
+    assert_eq!(glow(1000.0).unwrap().color, Color::rgb(255, 0, 0));
+    assert_eq!(glow(1500.0).unwrap().color.a, 128);
+    assert_eq!(glow(2000.0), None, "back to the resting none");
+    let noise = node(&at(&document, 500.0), "r").noise.unwrap();
+    assert_eq!(
+        (noise.amount, noise.animated),
+        (0.2, false),
+        "the layer decides whether the grain moves"
+    );
+    assert!(
+        at(&document, 1000.0)
+            .find(&id("r"))
+            .unwrap()
+            .noise
+            .is_none()
+    );
+}
+
+#[test]
+fn text_layers_carry_effects_as_a_whole() {
+    let document = document(json!([
+        { "id": "t", "type": "text", "content": "Hi", "glow": {}, "noise": {},
+          "directional_blur": { "angle": 30 } }
+    ]));
+    let scene = at(&document, 0.0);
+    let text = node(&scene, "t");
+    assert_eq!(text.glow, Some(Glow::default()));
+    assert_eq!(text.noise, Some(Noise::default()));
+    assert_eq!(text.directional_blur.map(|blur| blur.angle), Some(30.0));
+    let Content::Text(content) = &text.content else {
+        panic!()
+    };
+    assert!(content.units.iter().all(|unit| unit.blur == 0.0));
+}
+
+#[test]
 fn gradients_are_resolved_to_pixels() {
     let stops = json!([{ "offset": 0, "color": "#000000" }, { "offset": 1, "color": "#FFFFFF" }]);
     let document = document(json!([
@@ -747,6 +882,17 @@ fn values_are_reported_per_property() {
         Some(PropertyValue::CornerRadius(CornerRadius::Uniform(0.0)))
     );
     assert_eq!(value("f", Property::X), None, "not a layer");
+    // As JSON every part is written out.
+    assert_eq!(
+        value("e", Property::Shadow).unwrap().to_value(),
+        json!({ "color": "#00000040", "x": 0, "y": 3, "blur": 12 })
+    );
+    assert_eq!(
+        value("e", Property::Glow).unwrap().to_value(),
+        Value::Null,
+        "no glow"
+    );
+    assert_eq!(value("e", Property::X).unwrap().to_value(), json!(5));
     assert_eq!(value("nope", Property::X), None);
     for property in Property::ALL {
         assert_eq!(Property::parse(property.as_str()), Some(property));

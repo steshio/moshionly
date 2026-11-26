@@ -109,6 +109,9 @@ mod tests {
             blend_mode: BlendMode::Normal,
             blur,
             shadow,
+            glow: None,
+            noise: None,
+            directional_blur: None,
             clip: None,
             mask: None,
             content: Content::Rect {

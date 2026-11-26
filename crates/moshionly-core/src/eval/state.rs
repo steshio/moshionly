@@ -3,11 +3,14 @@
 use super::preset::{Expansion, Pose, WHOLE_BOX, expand};
 use super::textfx::TextStep;
 use super::tween::{
-    BoxState, NO_SHADOW, ResizeStep, ShadowStep, Span, StrokeState, StrokeStep, Tween, additive,
-    replacing,
+    BoxState, ChangeStep, NO_DIRECTIONAL_BLUR, NO_SHADOW, ResizeStep, Span, StrokeState,
+    StrokeStep, Tween, additive, no_glow, no_noise, replacing,
 };
 use crate::geometry::{Affine, Point, Rect};
-use crate::model::{LayerProps, Node, NodeData, Paint, Shadow, Stroke};
+use crate::model::{
+    DirectionalBlur, DirectionalBlurChange, Glow, GlowChange, LayerProps, Node, NodeData, Noise,
+    NoiseChange, Paint, Shadow, ShadowChange, Stroke,
+};
 use crate::text::find_number;
 
 /// The animations of one layer, sorted into the properties they act on.
@@ -23,7 +26,10 @@ pub(crate) struct Channels {
     strokes: Vec<StrokeStep>,
     radii: Vec<Tween<[f64; 4]>>,
     blurs: Vec<Tween<f64>>,
-    shadows: Vec<ShadowStep>,
+    shadows: Vec<ChangeStep<ShadowChange>>,
+    glows: Vec<ChangeStep<GlowChange>>,
+    noises: Vec<ChangeStep<NoiseChange>>,
+    directional_blurs: Vec<ChangeStep<DirectionalBlurChange>>,
     /// `(time, becomes visible)` for every `show` and `hide`.
     instants: Vec<(f64, bool)>,
     /// What presets lay on top of the layer's own values. See
@@ -88,7 +94,22 @@ impl Channels {
                 a.to.map(|radius| radius.radii()),
             )),
             (NodeData::Blur(a), Some(span)) => self.blurs.push(Tween::new(span, a.from, a.to)),
-            (NodeData::Shadow(a), Some(span)) => self.shadows.push(ShadowStep {
+            (NodeData::Shadow(a), Some(span)) => self.shadows.push(ChangeStep {
+                span,
+                from: a.from,
+                to: a.to,
+            }),
+            (NodeData::Glow(a), Some(span)) => self.glows.push(ChangeStep {
+                span,
+                from: a.from,
+                to: a.to,
+            }),
+            (NodeData::Noise(a), Some(span)) => self.noises.push(ChangeStep {
+                span,
+                from: a.from,
+                to: a.to,
+            }),
+            (NodeData::DirectionalBlur(a), Some(span)) => self.directional_blurs.push(ChangeStep {
                 span,
                 from: a.from,
                 to: a.to,
@@ -203,6 +224,13 @@ impl Channels {
             .map(|rest| replacing(&rest.radii(), &self.radii, time).map(|radius| radius.max(0.0)));
         let blur = replacing(&layer.blur, &self.blurs, time).max(0.0);
         let shadow = replacing(&layer.shadow.unwrap_or(NO_SHADOW), &self.shadows, time);
+        let glow = replacing(&layer.glow.unwrap_or_else(no_glow), &self.glows, time);
+        let noise = replacing(&layer.noise.unwrap_or_else(no_noise), &self.noises, time);
+        let directional_blur = replacing(
+            &layer.directional_blur.unwrap_or(NO_DIRECTIONAL_BLUR),
+            &self.directional_blurs,
+            time,
+        );
 
         let pose_opacity = replacing(&1.0, &self.pose_opacity.steps, time).clamp(0.0, 1.0);
         let pose_scale = replacing(&1.0, &self.pose_scale.steps, time).max(0.0);
@@ -234,6 +262,9 @@ impl Channels {
                 }),
             radii: radii.unwrap_or_default(),
             shadow: (shadow.color.a > 0).then_some(shadow),
+            glow: (glow.color.a > 0).then_some(glow),
+            noise: (noise.amount > 0.0).then_some(noise),
+            directional_blur: (directional_blur.amount > 0.0).then_some(directional_blur),
             reveal,
             content: self.content(node, time),
             text: self.text.clone(),
@@ -289,6 +320,12 @@ pub(crate) struct LayerState {
     /// without corners.
     pub radii: [f64; 4],
     pub shadow: Option<Shadow>,
+    /// `None` when fully transparent.
+    pub glow: Option<Glow>,
+    /// `None` when it has no strength.
+    pub noise: Option<Noise>,
+    /// `None` when it has no amount.
+    pub directional_blur: Option<DirectionalBlur>,
     /// The part of the box that reveal presets leave showing, as
     /// `[left, top, right, bottom]` fractions of it.
     pub reveal: [f64; 4],
