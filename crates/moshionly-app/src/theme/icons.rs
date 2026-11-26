@@ -347,3 +347,7 @@ pub const DIAMONDS_FOUR: &str = "\u{e8f4}";
 pub const DIAMOND: &str = "\u{e1ec}";
 /// The `arrow-square-out` icon.
 pub const ARROW_SQUARE_OUT: &str = "\u{e5de}";
+/// The `sun-dim` icon: a glow.
+pub const SUN_DIM: &str = "\u{e474}";
+/// The `wind` icon: a directional blur.
+pub const WIND: &str = "\u{e5d2}";
