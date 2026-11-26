@@ -9,7 +9,7 @@ The reference tables in the middle of this document are generated from the code 
 ```json
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null, "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -25,7 +25,7 @@ The reference tables in the middle of this document are generated from the code 
 | Field | Value | Meaning |
 |---|---|---|
 | `format` | `"moshionly"` | Says what the file is. Anything else is refused as "not a Moshionly project". |
-| `version` | whole number | The version of the format. This document describes version 3, which added video and sound (`video` and `audio`); version 2 added components (`component` and `instance`). Older files are read as they are. |
+| `version` | whole number | The version of the format. This document describes version 4, which added the `glow`, `noise` and `directional_blur` effects and their animations; version 3 added video and sound (`video` and `audio`), and version 2 components (`component` and `instance`). Older files are read as they are. |
 | `name` | string | The name of the project. May be left out. |
 | `nodes` | list of nodes | Everything in the project, as a flat list. |
 
@@ -1234,7 +1234,7 @@ What an instance shows at a moment is what the component's own type draws (its f
 
 The rules: an instance's `component` must name a `component` layer; a component cannot be inside another component; and no component may show itself, by holding an instance of itself or of a component that shows it. Instances of other components inside a component are fine. Removing a component that instances still show is refused; the editor and the agents' `remove` first *detach* those instances, replacing each with a `group` that looks the same, with copies of the component's layers and of their animations (except that a group from an instance resized out of proportion keeps stroke widths and font sizes, and one from an instance with a negative `time_offset` squeezes the animations under way at 0 ms into what is left of them; the agents' tools warn when that happens). A `group` and a `component` have the same fields, so an update can turn one into the other by setting `type`.
 
-Version 2 of the format added `component` and `instance`, and version 3 added `video` and `audio`. An older file is read as it is and saved as version 3.
+Version 2 of the format added `component` and `instance`, version 3 added `video` and `audio`, and version 4 the effects `glow`, `noise` and `directional_blur`. An older file is read as it is and saved as the current version.
 
 ## Images
 
@@ -1298,7 +1298,7 @@ This is `crates/moshionly-core/examples/demo.moshi`: a card that fades and slide
 ```json
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch day",
   "nodes": [
     {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},
