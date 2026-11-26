@@ -15,15 +15,24 @@
 //! Inside the node's space, from the inside out:
 //!
 //! 1. draw the `content`;
-//! 2. add the `shadow` of what was drawn, behind it;
-//! 3. `blur` the result;
-//! 4. keep only what is inside `clip`, and multiply by the alpha of `mask`
+//! 2. add the `noise` grain to what was drawn, inside its alpha;
+//! 3. add the `shadow` and then the `glow` of the result behind it (the
+//!    glow over the shadow);
+//! 4. `blur` the result, then blur it along `directional_blur`'s angle;
+//! 5. keep only what is inside `clip`, and multiply by the alpha of `mask`
 //!    (the mask is a node in the same coordinate space and is not drawn);
-//! 5. composite onto what is behind with `blend_mode` and `opacity`.
+//! 6. composite onto what is behind with `blend_mode` and `opacity`.
 //!
-//! Shadow offsets, blur amounts and clips are in the node's own space, so
-//! they turn and scale with it. Nodes that cannot be seen (hidden, fully
-//! transparent, scaled to nothing) are not in the scene at all.
+//! Grain comes first so that the glow and shadow, which follow the shape's
+//! alpha, stay smooth, and the blurs come after the glow and shadow so that
+//! they soften everything the layer shows, as a camera would.
+//!
+//! Shadow offsets, glow sizes, grain sizes, blur amounts, blur angles and
+//! clips are in the node's own space, so they turn and scale with it. The
+//! grain is a pure function of the node's `id` and, when `noise.animated`
+//! is set, the scene's `time_ms`, so the same frame always gets the same
+//! grain. Nodes that cannot be seen (hidden, fully transparent, scaled to
+//! nothing) are not in the scene at all.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +40,8 @@ use crate::color::Color;
 use crate::geometry::{Affine, Point, Rect};
 use crate::id::NodeId;
 use crate::model::{
-    BlendMode, Font, GradientStop, ImageFit, PathData, Shadow, StrokeCap, StrokeJoin,
-    StrokePosition, TextAlign,
+    BlendMode, DirectionalBlur, Font, Glow, GradientStop, ImageFit, Noise, PathData, Shadow,
+    StrokeCap, StrokeJoin, StrokePosition, TextAlign,
 };
 
 /// One frame of one artboard.
@@ -76,6 +85,15 @@ pub struct SceneNode {
     /// Drop shadow, if any.
     #[serde(serialize_with = "crate::defaults::write_fully")]
     pub shadow: Option<Shadow>,
+    /// Outer glow, if any. Never fully transparent.
+    #[serde(serialize_with = "crate::defaults::write_fully")]
+    pub glow: Option<Glow>,
+    /// Film grain, if any. Its amount is never 0.
+    #[serde(serialize_with = "crate::defaults::write_fully")]
+    pub noise: Option<Noise>,
+    /// Blur along one direction, if any. Its amount is never 0.
+    #[serde(serialize_with = "crate::defaults::write_fully")]
+    pub directional_blur: Option<DirectionalBlur>,
     /// Region outside which nothing of the node is drawn, if any.
     pub clip: Option<Clip>,
     /// A node whose alpha masks this one, if any.
@@ -474,6 +492,9 @@ mod tests {
             blend_mode: BlendMode::Normal,
             blur: 0.0,
             shadow: None,
+            glow: None,
+            noise: None,
+            directional_blur: None,
             clip: None,
             mask: None,
             content,
@@ -682,6 +703,26 @@ mod tests {
         assert_eq!(
             value["shadow"],
             json!({ "color": "#00000040", "x": 0.0, "y": 4.0, "blur": 12.0 })
+        );
+        shadowed.glow = Some(Glow::default());
+        shadowed.noise = Some(Noise::default());
+        shadowed.directional_blur = Some(DirectionalBlur::default());
+        let value = serde_json::to_value(&shadowed).unwrap();
+        assert_eq!(
+            value["glow"],
+            json!({ "color": "#0D99FFCC", "radius": 20.0, "spread": 0.0 })
+        );
+        assert_eq!(
+            value["noise"],
+            json!({ "amount": 0.2, "size": 1.0, "animated": true })
+        );
+        assert_eq!(
+            value["directional_blur"],
+            json!({ "amount": 20.0, "angle": 0.0 })
+        );
+        assert_eq!(
+            serde_json::from_value::<SceneNode>(value).unwrap(),
+            shadowed
         );
         let style = TextStyle {
             font: Font::default(),

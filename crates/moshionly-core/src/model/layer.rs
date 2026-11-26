@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::effect::{DirectionalBlur, Glow, Noise};
 use super::paint::{BlendMode, CornerRadius, Paint, Shadow, Stroke};
 use super::path::PathData;
 use super::text::{AutoSize, Font, TextAlign, TextCase, VerticalAlign};
@@ -72,6 +73,15 @@ pub struct LayerProps {
     /// Drop shadow. Default: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shadow>,
+    /// Outer glow, behind the layer. Default: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glow: Option<Glow>,
+    /// Film grain over the layer's pixels. Default: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noise: Option<Noise>,
+    /// Blur along one direction, on top of `blur`. Default: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directional_blur: Option<DirectionalBlur>,
     /// Where an imported layer came from, for example
     /// `figma:<file key>:<node id>`. Re-importing a design matches layers by
     /// this value to keep their animations. Default: none.
@@ -95,6 +105,9 @@ impl Default for LayerProps {
             blend_mode: BlendMode::default(),
             blur: 0.0,
             shadow: None,
+            glow: None,
+            noise: None,
+            directional_blur: None,
             source_id: None,
         }
     }

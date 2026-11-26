@@ -132,8 +132,9 @@ fn describe_type(ty: NodeType) -> String {
     let used: BTreeSet<&str> = schema::fields(ty)
         .iter()
         .flat_map(|field| words(&field.value))
-        // `stroke`, `shadow` and `corner_radius` name an animation and the
-        // value it changes; whoever asks for one may mean the other.
+        // `stroke`, `shadow`, `glow`, `noise`, `directional_blur` and
+        // `corner_radius` name an animation and the value it changes;
+        // whoever asks for one may mean the other.
         .chain([ty.as_str()])
         .filter_map(|word| blocks.iter().find(|block| block.name == word))
         .map(|block| block.name)
@@ -375,6 +376,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("\nstroke_change — "), "{text}");
+        let text = call_text(&demo_tools(), "get_schema", json!({ "type": "glow" }));
+        assert!(text.starts_with("glow (animation) — "), "{text}");
+        assert!(text.contains("\nglow — An outer glow"), "{text}");
+        assert!(text.contains("\nglow_change — "), "{text}");
     }
 
     #[test]
@@ -417,7 +422,7 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("The value types are: shadow, paint,"),
+            error.contains("The value types are: shadow, glow, noise, directional_blur, paint,"),
             "{error}"
         );
         // Case and stray spaces are forgiven.

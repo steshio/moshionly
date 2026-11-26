@@ -20,8 +20,9 @@ use crate::easing::Easing;
 use crate::id::NodeId;
 use crate::index;
 use crate::model::{
-    BlendMode, ClipTiming, CornerRadius, Family, Gradient, LayerProps, Node, NodeData, NodeType,
-    Paint, PathData, Shadow, ShadowChange, SizeChange, Stroke, StrokeChange, Timing,
+    BlendMode, ClipTiming, CornerRadius, DirectionalBlur, DirectionalBlurChange, Family, Glow,
+    GlowChange, Gradient, LayerProps, Node, NodeData, NodeType, Noise, NoiseChange, Paint,
+    PathData, Shadow, ShadowChange, SizeChange, Stroke, StrokeChange, Timing,
 };
 
 /// What kind of rule a [`Problem`] is about.
@@ -292,6 +293,18 @@ pub(crate) fn check_values(node: &Node) -> Result<(), Problem> {
             check.shadow_change("from", animation.from)?;
             check.shadow_change("to", animation.to)?;
         }
+        NodeData::Glow(animation) => {
+            check.glow_change("from", animation.from)?;
+            check.glow_change("to", animation.to)?;
+        }
+        NodeData::Noise(animation) => {
+            check.noise_change("from", animation.from)?;
+            check.noise_change("to", animation.to)?;
+        }
+        NodeData::DirectionalBlur(animation) => {
+            check.directional_blur_change("from", animation.from)?;
+            check.directional_blur_change("to", animation.to)?;
+        }
         NodeData::Show(instant) | NodeData::Hide(instant) => {
             check.not_negative("start", instant.start)?;
             check.optional("end", instant.end, Values::finite)?;
@@ -406,6 +419,10 @@ impl Values<'_> {
         self.between(field, value, 0.0, 100.0)
     }
 
+    fn fraction(&self, field: &str, value: f64) -> Result<(), Problem> {
+        self.between(field, value, 0.0, 1.0)
+    }
+
     fn optional(
         &self,
         field: &str,
@@ -428,6 +445,18 @@ impl Values<'_> {
             self.finite("shadow.x", x)?;
             self.finite("shadow.y", y)?;
             self.not_negative("shadow.blur", blur)?;
+        }
+        if let Some(Glow { radius, spread, .. }) = layer.glow {
+            self.not_negative("glow.radius", radius)?;
+            self.not_negative("glow.spread", spread)?;
+        }
+        if let Some(Noise { amount, size, .. }) = layer.noise {
+            self.fraction("noise.amount", amount)?;
+            self.more_than_zero("noise.size", size)?;
+        }
+        if let Some(DirectionalBlur { amount, angle }) = layer.directional_blur {
+            self.not_negative("directional_blur.amount", amount)?;
+            self.finite("directional_blur.angle", angle)?;
         }
         Ok(())
     }
@@ -457,13 +486,26 @@ impl Values<'_> {
                 ));
             }
         }
-        if layer.shadow.is_some() {
-            return Err(self.fail(
-                "shadow",
-                "cannot be set on an artboard; remove it, or put the layers in a group and \
-                 give that a shadow"
-                    .into(),
-            ));
+        let effects = [
+            ("shadow", layer.shadow.is_some(), "a shadow"),
+            ("glow", layer.glow.is_some(), "a glow"),
+            ("noise", layer.noise.is_some(), "noise"),
+            (
+                "directional_blur",
+                layer.directional_blur.is_some(),
+                "a directional blur",
+            ),
+        ];
+        for (field, set, effect) in effects {
+            if set {
+                return Err(self.fail(
+                    field,
+                    format!(
+                        "cannot be set on an artboard; remove it, or put the layers in a group \
+                         and give that {effect}"
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -625,6 +667,50 @@ impl Values<'_> {
         self.optional(&format!("{field}.x"), change.x, Values::finite)?;
         self.optional(&format!("{field}.y"), change.y, Values::finite)?;
         self.optional(&format!("{field}.blur"), change.blur, Values::not_negative)
+    }
+
+    fn glow_change(&self, field: &str, change: Option<GlowChange>) -> Result<(), Problem> {
+        let Some(change) = change else {
+            return Ok(());
+        };
+        self.optional(
+            &format!("{field}.radius"),
+            change.radius,
+            Values::not_negative,
+        )?;
+        self.optional(
+            &format!("{field}.spread"),
+            change.spread,
+            Values::not_negative,
+        )
+    }
+
+    fn noise_change(&self, field: &str, change: Option<NoiseChange>) -> Result<(), Problem> {
+        let Some(change) = change else {
+            return Ok(());
+        };
+        self.optional(&format!("{field}.amount"), change.amount, Values::fraction)?;
+        self.optional(
+            &format!("{field}.size"),
+            change.size,
+            Values::more_than_zero,
+        )
+    }
+
+    fn directional_blur_change(
+        &self,
+        field: &str,
+        change: Option<DirectionalBlurChange>,
+    ) -> Result<(), Problem> {
+        let Some(change) = change else {
+            return Ok(());
+        };
+        self.optional(
+            &format!("{field}.amount"),
+            change.amount,
+            Values::not_negative,
+        )?;
+        self.optional(&format!("{field}.angle"), change.angle, Values::finite)
     }
 
     fn size(&self, field: &str, size: Option<SizeChange>) -> Result<(), Problem> {
@@ -993,6 +1079,30 @@ mod tests {
                 "font.family",
             ),
             (json!({ "type": "image", "source": "" }), "source"),
+            (
+                json!({ "type": "rect", "glow": { "radius": -1 } }),
+                "glow.radius",
+            ),
+            (
+                json!({ "type": "rect", "glow": { "spread": -2 } }),
+                "glow.spread",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "amount": 1.5 } }),
+                "noise.amount",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "amount": -0.1 } }),
+                "noise.amount",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "size": 0 } }),
+                "noise.size",
+            ),
+            (
+                json!({ "type": "text", "directional_blur": { "amount": -4 } }),
+                "directional_blur.amount",
+            ),
         ];
         for (fields, field) in cases {
             let problem = complaint(fields.clone());
@@ -1026,6 +1136,16 @@ mod tests {
             artboard(json!({ "shadow": {} })).field.as_deref(),
             Some("shadow")
         );
+        for effect in ["glow", "noise", "directional_blur"] {
+            let mut fields = json!({});
+            fields[effect] = json!({});
+            let problem = artboard(fields);
+            assert_eq!(problem.field.as_deref(), Some(effect));
+            assert!(
+                problem.message.contains("cannot be set on an artboard"),
+                "{problem}"
+            );
+        }
         assert_eq!(
             artboard(json!({ "blend_mode": "multiply" }))
                 .field
@@ -1102,6 +1222,26 @@ mod tests {
                 "from.blur",
             ),
             (json!({ "type": "corner_radius", "to": -4 }), "to"),
+            (
+                json!({ "type": "glow", "to": { "radius": -1 } }),
+                "to.radius",
+            ),
+            (
+                json!({ "type": "glow", "from": { "spread": -1 } }),
+                "from.spread",
+            ),
+            (
+                json!({ "type": "noise", "to": { "amount": 2 } }),
+                "to.amount",
+            ),
+            (
+                json!({ "type": "noise", "from": { "size": 0 } }),
+                "from.size",
+            ),
+            (
+                json!({ "type": "directional_blur", "to": { "amount": -1 } }),
+                "to.amount",
+            ),
             (json!({ "type": "slide_in", "distance": -1 }), "distance"),
             (json!({ "type": "grow_in", "scale": -1 }), "scale"),
             (json!({ "type": "blur_out", "blur": -1 }), "blur"),
@@ -1198,6 +1338,12 @@ mod tests {
         assert!(!animation_applies_to(T::AnimationGroup, T::Rect));
         assert!(!animation_applies_to(T::Rect, T::Rect));
         assert!(!animation_applies_to(T::Move, T::FadeIn));
+        for effect in [T::Glow, T::Noise, T::DirectionalBlur] {
+            assert!(!animation_applies_to(effect, T::Artboard));
+            for layer in [T::Rect, T::Text, T::Group, T::Image, T::Instance, T::Video] {
+                assert!(animation_applies_to(effect, layer), "{effect} on {layer}");
+            }
+        }
         assert_eq!(
             targets_of(T::CornerRadius),
             "group, rect, image, component or video"

@@ -5,10 +5,12 @@
 //! previous frame.
 
 use crate::color::Color;
+use crate::defaults;
 use crate::easing::{Easing, ease};
 use crate::geometry::Point;
 use crate::model::{
-    Gradient, GradientStop, LinearGradient, Paint, RadialGradient, Shadow, ShadowChange, Timing,
+    DirectionalBlur, DirectionalBlurChange, Glow, GlowChange, Gradient, GradientStop,
+    LinearGradient, Noise, NoiseChange, Paint, RadialGradient, Shadow, ShadowChange, Timing,
 };
 
 /// When a step runs and how it is paced.
@@ -418,37 +420,145 @@ impl Blend for Shadow {
     }
 }
 
-/// A step on a shadow, from a `shadow` animation.
+/// A partial value, such as a [`ShadowChange`], that fills in the parts it
+/// leaves alone from a whole value.
+pub(crate) trait Change<V> {
+    /// The whole value with this change's parts laid over `base`.
+    fn over(&self, base: &V) -> V;
+}
+
+/// A step whose start and end values are partial changes of the property's
+/// value: from a `shadow`, `glow`, `noise` or `directional_blur` animation.
+/// A part a change leaves out is the value at that moment (for `from`) or
+/// at rest (for `to`).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ShadowStep {
+pub(crate) struct ChangeStep<C> {
     pub span: Span,
-    pub from: Option<ShadowChange>,
-    pub to: Option<ShadowChange>,
+    pub from: Option<C>,
+    pub to: Option<C>,
 }
 
-fn shadow_over(change: Option<ShadowChange>, base: &Shadow) -> Shadow {
-    match change {
-        None => *base,
-        Some(change) => Shadow {
-            color: change.color.unwrap_or(base.color),
-            x: change.x.unwrap_or(base.x),
-            y: change.y.unwrap_or(base.y),
-            blur: change.blur.unwrap_or(base.blur),
-        },
-    }
-}
-
-impl Step<Shadow> for ShadowStep {
+impl<V: Clone, C: Change<V>> Step<V> for ChangeStep<C> {
     fn span(&self) -> &Span {
         &self.span
     }
 
-    fn from(&self, incoming: &Shadow) -> Shadow {
-        shadow_over(self.from, incoming)
+    fn from(&self, incoming: &V) -> V {
+        self.from
+            .as_ref()
+            .map_or_else(|| incoming.clone(), |change| change.over(incoming))
     }
 
-    fn to(&self, rest: &Shadow, _from: &Shadow) -> Shadow {
-        shadow_over(self.to, rest)
+    fn to(&self, rest: &V, _from: &V) -> V {
+        self.to
+            .as_ref()
+            .map_or_else(|| rest.clone(), |change| change.over(rest))
+    }
+}
+
+impl Change<Shadow> for ShadowChange {
+    fn over(&self, base: &Shadow) -> Shadow {
+        Shadow {
+            color: self.color.unwrap_or(base.color),
+            x: self.x.unwrap_or(base.x),
+            y: self.y.unwrap_or(base.y),
+            blur: self.blur.unwrap_or(base.blur),
+        }
+    }
+}
+
+/// A glow that is not there: the default glow, fully transparent, so that
+/// a glow fading in keeps its size.
+pub(crate) fn no_glow() -> Glow {
+    Glow {
+        color: defaults::glow_color().with_alpha(0),
+        ..Glow::default()
+    }
+}
+
+impl Blend for Glow {
+    fn blend(&self, other: &Self, t: f64) -> Self {
+        Glow {
+            color: self.color.lerp(other.color, t),
+            radius: mix(self.radius, other.radius, t).max(0.0),
+            spread: mix(self.spread, other.spread, t).max(0.0),
+        }
+    }
+}
+
+impl Change<Glow> for GlowChange {
+    fn over(&self, base: &Glow) -> Glow {
+        Glow {
+            color: self.color.unwrap_or(base.color),
+            radius: self.radius.unwrap_or(base.radius),
+            spread: self.spread.unwrap_or(base.spread),
+        }
+    }
+}
+
+/// Noise that is not there: the default grain with no strength.
+pub(crate) fn no_noise() -> Noise {
+    Noise {
+        amount: 0.0,
+        ..Noise::default()
+    }
+}
+
+/// The smallest grain noise blends to, so an overshooting easing never
+/// makes a grain of size 0.
+const MIN_GRAIN: f64 = 0.01;
+
+impl Blend for Noise {
+    fn blend(&self, other: &Self, t: f64) -> Self {
+        Noise {
+            amount: mix(self.amount, other.amount, t).clamp(0.0, 1.0),
+            size: mix(self.size, other.size, t).max(MIN_GRAIN),
+            // Whether the grain moves is the layer's own and does not blend.
+            animated: self.animated,
+        }
+    }
+}
+
+impl Change<Noise> for NoiseChange {
+    fn over(&self, base: &Noise) -> Noise {
+        Noise {
+            amount: self.amount.unwrap_or(base.amount),
+            size: self.size.unwrap_or(base.size),
+            animated: base.animated,
+        }
+    }
+}
+
+/// A directional blur that is not there: no amount, at angle 0.
+pub(crate) const NO_DIRECTIONAL_BLUR: DirectionalBlur = DirectionalBlur {
+    amount: 0.0,
+    angle: 0.0,
+};
+
+/// A blur with no amount smears nowhere, so its angle means nothing: while
+/// one end has no amount, the blur keeps the other end's angle. A blur
+/// fading in or out then smears one way all along instead of turning, as a
+/// colour fading from transparent keeps the other end's hue.
+impl Blend for DirectionalBlur {
+    fn blend(&self, other: &Self, t: f64) -> Self {
+        let (from, to) = match (self.amount == 0.0, other.amount == 0.0) {
+            (true, false) => (other.angle, other.angle),
+            (false, true) => (self.angle, self.angle),
+            _ => (self.angle, other.angle),
+        };
+        DirectionalBlur {
+            amount: mix(self.amount, other.amount, t).max(0.0),
+            angle: mix(from, to, t),
+        }
+    }
+}
+
+impl Change<DirectionalBlur> for DirectionalBlurChange {
+    fn over(&self, base: &DirectionalBlur) -> DirectionalBlur {
+        DirectionalBlur {
+            amount: self.amount.unwrap_or(base.amount),
+            angle: self.angle.unwrap_or(base.angle),
+        }
     }
 }
 
@@ -828,7 +938,7 @@ mod tests {
 
     #[test]
     fn shadows_fade_in_from_nothing() {
-        let step = ShadowStep {
+        let step = ChangeStep {
             span: Span::new(0.0, 100.0, Easing::Linear),
             from: None,
             to: Some(ShadowChange {
@@ -848,6 +958,133 @@ mod tests {
                 blur: 15.0
             }
         );
+    }
+
+    #[test]
+    fn glows_fade_in_keeping_their_size() {
+        let step = ChangeStep {
+            span: Span::new(0.0, 100.0, Easing::Linear),
+            from: None,
+            to: Some(GlowChange {
+                color: Some(Color::rgba(255, 0, 0, 200)),
+                radius: None,
+                spread: Some(10.0),
+            }),
+        };
+        let half = replacing(&no_glow(), &[step], 50.0);
+        assert_eq!(half.color, Color::rgba(255, 0, 0, 100), "no muddy mix");
+        assert_eq!((half.radius, half.spread), (20.0, 5.0));
+        // A `from` alone starts there and returns to the resting glow.
+        let rest = Glow {
+            color: Color::WHITE,
+            radius: 8.0,
+            spread: 0.0,
+        };
+        let pulse = ChangeStep {
+            span: Span::new(100.0, 200.0, Easing::Linear),
+            from: Some(GlowChange {
+                radius: Some(40.0),
+                ..GlowChange::default()
+            }),
+            to: None,
+        };
+        assert_eq!(replacing(&rest, &[pulse], 0.0).radius, 40.0, "held before");
+        assert_eq!(replacing(&rest, &[pulse], 150.0).radius, 24.0);
+        assert_eq!(replacing(&rest, &[pulse], 250.0), rest);
+    }
+
+    #[test]
+    fn noise_blends_its_strength_and_keeps_whether_it_moves() {
+        let rest = Noise {
+            amount: 0.4,
+            size: 2.0,
+            animated: false,
+        };
+        let step = ChangeStep {
+            span: Span::new(0.0, 100.0, Easing::Linear),
+            from: Some(NoiseChange {
+                amount: Some(0.0),
+                size: Some(6.0),
+            }),
+            to: None,
+        };
+        let half = replacing(&rest, &[step], 50.0);
+        assert_eq!(
+            half,
+            Noise {
+                amount: 0.2,
+                size: 4.0,
+                animated: false
+            }
+        );
+        let wild = no_noise().blend(&rest, 3.0);
+        assert_eq!(wild.amount, 1.0, "clamped to its range");
+        assert!(rest.blend(&no_noise(), -5.0).size >= MIN_GRAIN);
+    }
+
+    #[test]
+    fn directional_blurs_turn_and_grow() {
+        let step = ChangeStep {
+            span: Span::new(0.0, 100.0, Easing::Linear),
+            from: Some(DirectionalBlurChange {
+                amount: Some(10.0),
+                angle: Some(90.0),
+            }),
+            to: Some(DirectionalBlurChange {
+                amount: Some(30.0),
+                angle: None,
+            }),
+        };
+        let half = replacing(&NO_DIRECTIONAL_BLUR, &[step], 50.0);
+        assert_eq!(
+            half,
+            DirectionalBlur {
+                amount: 20.0,
+                angle: 45.0
+            }
+        );
+        assert_eq!(
+            NO_DIRECTIONAL_BLUR
+                .blend(&DirectionalBlur::default(), -1.0)
+                .amount,
+            0.0,
+            "never negative"
+        );
+    }
+
+    #[test]
+    fn directional_blurs_fade_in_and_out_without_turning() {
+        let down = DirectionalBlurChange {
+            amount: Some(30.0),
+            angle: Some(90.0),
+        };
+        let fade = |from, to| ChangeStep {
+            span: Span::new(0.0, 100.0, Easing::Linear),
+            from,
+            to,
+        };
+        let smear_down = DirectionalBlur {
+            amount: 15.0,
+            angle: 90.0,
+        };
+        let fading_in = fade(None, Some(down));
+        assert_eq!(
+            replacing(&NO_DIRECTIONAL_BLUR, &[fading_in], 50.0),
+            smear_down
+        );
+        let fading_out = fade(Some(down), None);
+        assert_eq!(
+            replacing(&NO_DIRECTIONAL_BLUR, &[fading_out], 50.0),
+            smear_down
+        );
+        // With no amount at either end there is nothing to keep: the angle
+        // goes where it is asked to.
+        let still = DirectionalBlur {
+            amount: 0.0,
+            angle: 90.0,
+        };
+        assert_eq!(still.blend(&NO_DIRECTIONAL_BLUR, 0.5).angle, 45.0);
+        assert_eq!(still.blend(&NO_DIRECTIONAL_BLUR, 1.0), NO_DIRECTIONAL_BLUR);
     }
 
     #[test]

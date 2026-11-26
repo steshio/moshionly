@@ -27,10 +27,11 @@ use crate::id::NodeId;
 use crate::index::{self, IndexError};
 use crate::model::{
     AnimationGroup, Artboard, Audio, BlurAnimation, BlurPreset, ClipTiming, Component,
-    CornerRadius, CornerRadiusAnimation, CounterAnimation, Direction, EllipseLayer, FadePreset,
-    Family, FillAnimation, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance,
-    InstantAnimation, LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, Offset,
-    OpacityAnimation, Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation,
+    CornerRadius, CornerRadiusAnimation, CounterAnimation, Direction, DirectionalBlurAnimation,
+    DirectionalBlurChange, EllipseLayer, FadePreset, Family, FillAnimation, GlowAnimation,
+    GlowChange, Group, GrowIn, GrowOut, ImageFit, ImageLayer, Instance, InstantAnimation,
+    LayerProps, MaskGroup, MoveAnimation, Node, NodeData, NodeType, NoiseAnimation, NoiseChange,
+    Offset, OpacityAnimation, Paint, PathData, PathLayer, RectLayer, ResizeAnchor, ResizeAnimation,
     RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn,
     ShrinkOut, SizeChange, SlidePreset, SpinPreset, StarLayer, StrokeAnimation, StrokeChange,
     TextAnimation, TextLayer, Timing, VideoLayer,
@@ -374,6 +375,34 @@ pub fn default_animation(ty: NodeType, target: &NodeId, start: f64) -> Option<No
                 x: Some(0.0),
                 y: Some(16.0),
                 blur: Some(32.0),
+            }),
+        }
+        .into(),
+        T::Glow => GlowAnimation {
+            timing,
+            from: None,
+            to: Some(GlowChange {
+                color: Some(Color::rgba(0x0D, 0x99, 0xFF, 0xCC)),
+                radius: Some(32.0),
+                spread: None,
+            }),
+        }
+        .into(),
+        T::Noise => NoiseAnimation {
+            timing,
+            from: None,
+            to: Some(NoiseChange {
+                amount: Some(0.3),
+                size: None,
+            }),
+        }
+        .into(),
+        T::DirectionalBlur => DirectionalBlurAnimation {
+            timing,
+            from: None,
+            to: Some(DirectionalBlurChange {
+                amount: Some(30.0),
+                angle: None,
             }),
         }
         .into(),
@@ -971,7 +1000,7 @@ pub fn group_animations(
 ///
 /// The children take the group's place among its siblings, in their order.
 /// Layers keep their place, turn and size on the artboard. What the group
-/// itself added is lost with it: its opacity, blur, shadow, clip and mask,
+/// itself added is lost with it: its opacity, effects, clip and mask,
 /// and the animations that targeted it.
 pub fn ungroup(document: &Document, id: &NodeId) -> Result<Vec<Edit>, BuildError> {
     let node = existing(document, id)?;

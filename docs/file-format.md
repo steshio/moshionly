@@ -9,7 +9,7 @@ The reference tables in the middle of this document are generated from the code 
 ```json
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null, "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -25,7 +25,7 @@ The reference tables in the middle of this document are generated from the code 
 | Field | Value | Meaning |
 |---|---|---|
 | `format` | `"moshionly"` | Says what the file is. Anything else is refused as "not a Moshionly project". |
-| `version` | whole number | The version of the format. This document describes version 3, which added video and sound (`video` and `audio`); version 2 added components (`component` and `instance`). Older files are read as they are. |
+| `version` | whole number | The version of the format. This document describes version 4, which added the `glow`, `noise` and `directional_blur` effects and their animations; version 3 added video and sound (`video` and `audio`), and version 2 components (`component` and `instance`). Older files are read as they are. |
 | `name` | string | The name of the project. May be left out. |
 | `nodes` | list of nodes | Everything in the project, as a flat list. |
 
@@ -106,6 +106,9 @@ When a file is loaded, a group of siblings whose indices are not valid or not al
 | `blend_mode` | [blend_mode](#blend_mode) | `"normal"` | How the layer combines with what is behind it. |
 | `blur` | number | `0` | Blur of the whole layer in pixels, 0 or more: twice the standard deviation of the Gaussian. |
 | `shadow` | [shadow](#shadow) | none | Drop shadow. |
+| `glow` | [glow](#glow) | none | Outer glow, behind the layer. |
+| `noise` | [noise](#noise) | none | Film grain over the layer's pixels. |
+| `directional_blur` | [directional_blur](#directional_blur) | none | Blur along one direction, on top of `blur`. |
 | `source_id` | string | none | Where an imported layer came from, for example `figma:<file key>:<node id>`. Re-importing a design matches layers by this value to keep their animations. |
 
 ### Layer types
@@ -350,6 +353,33 @@ Changes a layer's drop shadow: colour, offset and blur.
 | `from` | [shadow_change](#shadow_change) | none | Shadow at the start. Default: the shadow at that moment. |
 | `to` | [shadow_change](#shadow_change) | none | Shadow at the end. Default: the layer's resting shadow. |
 
+#### `glow`
+
+Changes a layer's outer glow: colour, radius and spread.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [glow_change](#glow_change) | none | Glow at the start. Default: the glow at that moment. |
+| `to` | [glow_change](#glow_change) | none | Glow at the end. Default: the layer's resting glow. |
+
+#### `noise`
+
+Changes the strength and grain size of a layer's film grain.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [noise_change](#noise_change) | none | Noise at the start. Default: the noise at that moment. |
+| `to` | [noise_change](#noise_change) | none | Noise at the end. Default: the layer's resting noise. |
+
+#### `directional_blur`
+
+Changes a layer's directional blur: its amount and angle.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [directional_blur_change](#directional_blur_change) | none | Directional blur at the start. Default: the directional blur at that moment. |
+| `to` | [directional_blur_change](#directional_blur_change) | none | Directional blur at the end. Default: the layer's resting directional blur. |
+
 ### Instant animations
 
 These happen at one moment and have no easing.
@@ -582,6 +612,9 @@ A folder that organises animations on the timeline; it does not change playback.
 | `corner_radius` | `group`, `rect`, `image`, `component`, `video` |
 | `blur` | every layer except `artboard` |
 | `shadow` | every layer except `artboard` |
+| `glow` | every layer except `artboard` |
+| `noise` | every layer except `artboard` |
+| `directional_blur` | every layer except `artboard` |
 | `show` | every layer except `artboard` |
 | `hide` | every layer except `artboard` |
 | `fade_in` | every layer except `artboard` |
@@ -637,6 +670,35 @@ A drop shadow behind a layer.
 | `x` | number | `0` | Horizontal offset in pixels, positive to the right. |
 | `y` | number | `4` | Vertical offset in pixels, positive downward. |
 | `blur` | number | `12` | Blur in pixels, 0 or more: twice the standard deviation of the Gaussian. |
+
+#### `glow`
+
+An outer glow: a soft halo of colour around what a layer draws, behind it.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `color` | colour | `"#0D99FFCC"` | Glow colour; its alpha is the glow's strength. |
+| `radius` | number | `20` | Softness in pixels, 0 or more: like `blur`, twice the standard deviation of the Gaussian. |
+| `spread` | number | `0` | How far the shape grows on every side before it is softened, in pixels, 0 or more. |
+
+#### `noise`
+
+Film grain over what a layer draws. It stays inside the layer's shape: the grain lightens and darkens the layer's pixels and keeps their alpha. The grain is the same every time the same frame is drawn: it depends only on the layer's id and, when it moves, the time.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | `0.2` | How strong the grain is, from 0 (none) to 1. |
+| `size` | number | `1` | Size of one grain in pixels, more than 0. |
+| `animated` | boolean | `true` | Whether the grain changes on every frame; when false it stays fixed. |
+
+#### `directional_blur`
+
+A blur along one direction only, like a fast movement smears a photo.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | `20` | Blur along the direction in pixels, 0 or more: like `blur`, twice the standard deviation of the Gaussian. |
+| `angle` | number | `0` | Direction of the smear in degrees, clockwise: 0 smears left and right, 90 up and down. |
 
 #### `paint`
 
@@ -933,6 +995,34 @@ The parts of a shadow, of which any may be left alone.
 | `y` | number | none | Vertical offset in pixels. Default: unchanged. |
 | `blur` | number | none | Blur in pixels, 0 or more. Default: unchanged. |
 
+#### `glow_change`
+
+The parts of a glow, of which any may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `color` | colour | none | Glow colour; its alpha is the strength. Default: unchanged. |
+| `radius` | number | none | Softness in pixels, 0 or more. Default: unchanged. |
+| `spread` | number | none | Growth of the shape in pixels, 0 or more. Default: unchanged. |
+
+#### `noise_change`
+
+The animatable parts of noise, of which either may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | none | Strength from 0 to 1. Default: unchanged. |
+| `size` | number | none | Size of one grain in pixels, more than 0. Default: unchanged. |
+
+#### `directional_blur_change`
+
+The parts of a directional blur, of which either may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | none | Blur along the direction in pixels, 0 or more. Default: unchanged. |
+| `angle` | number | none | Direction in degrees, clockwise from horizontal. Default: unchanged. |
+
 #### `direction`
 
 A direction of travel.
@@ -1014,11 +1104,13 @@ A layer at `opacity: 80` with an `opacity` animation from `0` (no `to`) between 
 What the values mean:
 
 - `scale` values multiply the layer's resting `scale`. `1` is the resting size.
-- `opacity`, sizes, colours, radii, blur and shadows are absolute values.
-- A `stroke` or `shadow` animation may name only some parts (`{ "width": 4 }`); the parts it does not name are treated like a missing value.
-- A layer without a stroke counts as having a stroke of width 0, and a layer without a shadow as having a fully transparent one, so both can be animated in.
+- `opacity`, sizes, colours, radii, blur and the effects are absolute values.
+- A `stroke`, `shadow`, `glow`, `noise` or `directional_blur` animation may name only some parts (`{ "width": 4 }`); the parts it does not name are treated like a missing value.
+- A layer without a stroke counts as having a stroke of width 0, a layer without a shadow as having a fully transparent one, without a glow as having the default glow fully transparent, without noise as having grain of amount 0, and without a directional blur as having one of amount 0 at angle 0, so all of them can be animated in.
+- A directional blur with no amount at one end of an animation takes the angle of the other end, so it grows or fades along one direction without turning.
+- Whether grain moves (`noise.animated`) is the layer's own and does not animate.
 
-An easing may carry a value past its target on the way (`overshoot`, `elastic`). Opacity, sizes, radii and blur are then limited to their valid range. Positions and rotation are not, and scale only stops at 0.
+An easing may carry a value past its target on the way (`overshoot`, `elastic`). Opacity, sizes, radii, blur and the effects' amounts, radii and spreads are then limited to their valid range. Positions and rotation are not, and scale only stops at 0.
 
 ### Show and hide
 
@@ -1137,14 +1229,28 @@ A `component` is a main component: a box of layers that can be shown again elsew
 What an instance shows at a moment is what the component's own type draws (its fill, stroke, corner radius and clip) and the layers inside it, with every animation that targets a layer inside it, as the component looks `time_offset` milliseconds earlier. So editing the component, its layers or their animations changes every instance, and instances with growing offsets play the same motion one after another. Before its offset has passed, an instance shows the component as it is before its animations start; a negative offset plays them earlier.
 
 - The animations of the layers inside a component live in the component's own artboard, like any animation; instances in other artboards play them too.
-- The component's own placement and effects (position, size, rotation, scale, opacity, blend mode, blur, shadow) and the animations that target the component itself belong to where the component is placed. They are not part of what instances show.
-- An instance is a layer of its own: its position, size, rotation, scale, opacity, blend mode, blur, shadow and the animations that target it are its own, and it is selected and moved as one layer.
+- The component's own placement and effects (position, size, rotation, scale, opacity, blend mode, blur, shadow, glow, noise, directional blur) and the animations that target the component itself belong to where the component is placed. They are not part of what instances show.
+- An instance is a layer of its own: its position, size, rotation, scale, opacity, blend mode, effects and the animations that target it are its own, and it is selected and moved as one layer.
 - When an instance's box is not the size of the component's, what it shows is scaled to fill its box: `width` divided by the component's width across, `height` divided by its height down. A `resize` animation on the instance changes its box the way it changes a group's: the component's fill, stroke and clip follow the box, and the layers keep the scale of the instance's resting `width` and `height`. When the editor or an agent's `update` resizes a component, an instance that was its size takes the new size in the same step, each side on its own, so what it shows is not squeezed; an instance resized by hand keeps its size.
 - Instances hold no layers, and there are no per-instance changes (overrides) yet.
 
 The rules: an instance's `component` must name a `component` layer; a component cannot be inside another component; and no component may show itself, by holding an instance of itself or of a component that shows it. Instances of other components inside a component are fine. Removing a component that instances still show is refused; the editor and the agents' `remove` first *detach* those instances, replacing each with a `group` that looks the same, with copies of the component's layers and of their animations (except that a group from an instance resized out of proportion keeps stroke widths and font sizes, and one from an instance with a negative `time_offset` squeezes the animations under way at 0 ms into what is left of them; the agents' tools warn when that happens). A `group` and a `component` have the same fields, so an update can turn one into the other by setting `type`.
 
-Version 2 of the format added `component` and `instance`, and version 3 added `video` and `audio`. An older file is read as it is and saved as version 3.
+Version 2 of the format added `component` and `instance`, version 3 added `video` and `audio`, and version 4 the effects `glow`, `noise` and `directional_blur`. An older file is read as it is and saved as the current version.
+
+## Effects
+
+Every layer but an artboard can have these, each at most once:
+
+- `blur`: the whole layer out of focus.
+- `shadow`: a copy of the layer's shape behind it, offset, softened and coloured.
+- `glow`: a soft halo of colour around the layer's shape, behind it. `spread` grows the shape before `radius` softens it.
+- `noise`: film grain over the layer's own pixels. Each grain is a square of `size` pixels that is lightened or darkened by up to `amount`; the layer's transparency is kept, so the grain stays inside its shape. With `animated` (the default) the grain changes on every frame. The grain depends only on the layer's id and the moment, so the same frame always looks the same and exporting twice gives the same file.
+- `directional_blur`: a smear along one direction, like fast movement in a photo. `angle` is in degrees, clockwise: 0 smears left and right, 90 up and down.
+
+They are drawn in this order, from the inside out: the layer's content; its grain; its shadow and then its glow behind it; the blur; the directional blur; then its clip or mask, blend mode and opacity. On a group they apply to everything in it, drawn together; on a text layer, to the whole text. Lengths are in the layer's own pixels, so effects turn and scale with it.
+
+Lottie exports keep the shadow, the glow (without its spread), the blur and the directional blur (across or down only); grain is left out. Each is named in the export's warnings.
 
 ## Images
 
@@ -1208,7 +1314,7 @@ This is `crates/moshionly-core/examples/demo.moshi`: a card that fades and slide
 ```json
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch day",
   "nodes": [
     {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},

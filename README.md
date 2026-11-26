@@ -26,7 +26,8 @@ There is nothing to keyframe and nothing breaks when you change the design later
 - **Video and sound**: drop in video clips and sound files, place and trim them on the timeline, hear them in sync while playing, and get the sound in MP4, WebM and ProRes exports (needs [ffmpeg](https://ffmpeg.org)).
 - **Components**: make a reusable piece once, place copies of it anywhere, and edit the main one to change every copy, animations included. Each copy can play the motion a little later, for staggered effects.
 - **Styling**: solid and gradient fills, strokes, corner radius, shadow, blur, blend modes.
-- **Actions**: move, scale, rotate, opacity, resize, colour and more, plus ready-made presets (fade, slide, grow, shrink, spin, blur, reveal) and text animations by letter, word or line.
+- **Effects**: glow, film grain and directional (motion-style) blur on any layer, each with an action to animate it. Video, GIF and PNG exports draw them all; Lottie keeps the glow and the blur.
+- **Actions**: move, scale, rotate, opacity, resize, colour, effects and more, plus ready-made presets (fade, slide, grow, shrink, spin, blur, reveal) and text animations by letter, word or line.
 - **Easing with one slider**: smooth, natural, slow down, accelerate, overshoot, elastic, bounce, or your own curve.
 - **Timeline** where each row is an action you can drag and stretch.
 - **Export** to MP4, GIF, PNG sequence, transparent video and Lottie, with sound in the video formats.
@@ -206,7 +207,7 @@ Next:
 - [ ] Publish the signed `.dmg` with each release, and open `.moshi` files by double-clicking them
 - [x] Components: reusable pieces whose copies follow the main one, animations included
 - [x] Video and audio layers: clips on the timeline, played in sync, with sound in MP4, WebM and ProRes exports (with ffmpeg)
-- [ ] Shader effects
+- [x] Shader effects: glow, film grain and directional blur, animatable and in every raster export
 - [ ] Linux and Windows builds
 
 ## Contributing

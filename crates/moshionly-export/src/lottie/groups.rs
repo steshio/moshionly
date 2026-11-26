@@ -16,7 +16,6 @@
 //! layer, with the rest of the children in a composition of their own just
 //! below it, shown where the mask is opaque.
 
-use moshionly_core::eval::{Property, PropertyValue};
 use moshionly_core::model::BlendMode;
 use moshionly_core::{Family, Node, NodeData, NodeId, Point};
 use serde_json::{Map, Value};
@@ -307,8 +306,8 @@ impl Converter<'_> {
     }
 
     /// Whether a group needs a composition of its own: when it fades,
-    /// blends, blurs, casts a shadow or clips, which apply to its children
-    /// drawn together.
+    /// blends, has effects or clips, which apply to its children drawn
+    /// together.
     fn isolated(&self, node: &Node, clip: bool, opacity: &Animated) -> bool {
         let blends = node
             .layer()
@@ -317,20 +316,6 @@ impl Converter<'_> {
             || self.has_reveal(&node.id)
             || *opacity != Animated::Static(vec![100.0])
             || self.has_effects(&node.id)
-    }
-
-    /// Whether a layer is ever blurred or casts a shadow.
-    pub fn has_effects(&self, id: &NodeId) -> bool {
-        let timeline = self.timeline;
-        self.survey.iter().any(|frame| {
-            let ms = timeline.clock.ms(*frame);
-            let blurred = timeline.number(id, Property::Blur, *frame) > 0.0;
-            let shadowed = matches!(
-                timeline.value(id, Property::Shadow, ms),
-                Some(PropertyValue::Shadow(Some(_)))
-            );
-            blurred || shadowed
-        })
     }
 
     /// Whether a reveal animation targets the layer.

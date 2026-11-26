@@ -623,6 +623,57 @@ fn components() {
     }
 }
 
+/// Effects: the dot with all five (a shadow, a blur, a warm glow, grain
+/// and a directional blur), selected, with the Effects section listing
+/// them. The window is tall enough to show the whole inspector, and
+/// narrow enough that the canvas's picture stays within the texture size
+/// every graphics adapter allows.
+#[test]
+fn effects() {
+    if !can_render() {
+        return;
+    }
+    let size = vec2(1280.0, 1300.0);
+    for variant in Variant::ALL {
+        let mut shell = demo_shell();
+        let editor = shell.editor_mut();
+        let dot = moshionly_core::NodeId::from("dot");
+        editor
+            .apply(
+                "Give the dot every effect",
+                &[moshionly_core::Edit::update(
+                    dot.clone(),
+                    [
+                        (
+                            "shadow",
+                            serde_json::json!({ "color": "#00000040", "y": 12, "blur": 24 }),
+                        ),
+                        ("blur", serde_json::json!(2)),
+                        (
+                            "glow",
+                            serde_json::json!({ "color": "#FFD60ACC", "radius": 36, "spread": 4 }),
+                        ),
+                        (
+                            "noise",
+                            serde_json::json!({ "amount": 0.35, "size": 2, "animated": false }),
+                        ),
+                        (
+                            "directional_blur",
+                            serde_json::json!({ "amount": 6, "angle": 30 }),
+                        ),
+                    ],
+                )],
+            )
+            .expect("the effects are set");
+        editor.selection.select(dot);
+        let (path, image) = snapshot("effects", size, variant, move |ui| {
+            shell.show(ui);
+        });
+        assert_rendered(&image, size, variant);
+        println!("wrote {}", path.display());
+    }
+}
+
 /// Made-up video frames, so the snapshot needs no `ffmpeg`: an evening
 /// gradient whose light drifts with the moment of the file.
 struct FakeFrames;

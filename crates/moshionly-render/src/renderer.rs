@@ -155,7 +155,9 @@ mod tests {
     fn renderer() -> Renderer {
         Renderer::new(FontLibrary::bundled(), AssetLoader::default())
     }
-    use moshionly_core::model::{BlendMode, GradientStop, ImageFit, Shadow};
+    use moshionly_core::model::{
+        BlendMode, DirectionalBlur, Glow, GradientStop, ImageFit, Noise, Shadow,
+    };
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
@@ -330,6 +332,9 @@ mod tests {
             blend_mode: BlendMode::Normal,
             blur: 0.0,
             shadow: None,
+            glow: None,
+            noise: None,
+            directional_blur: None,
             clip: None,
             mask: None,
             content,
@@ -522,6 +527,199 @@ mod tests {
         let frame = draw(vec![both]);
         assert_eq!(alpha(&frame, 21), 0);
         assert!(alpha(&frame, 11) > 0, "the blurred edge inside the clip");
+    }
+
+    #[test]
+    fn glows_surround_the_shape_behind_it() {
+        let red = Color::rgb(255, 0, 0);
+        let mut glowing = square("g", 16.0, 6.0, 8.0, Color::WHITE);
+        glowing.glow = Some(Glow {
+            color: red,
+            radius: 0.0,
+            spread: 3.0,
+        });
+        let frame = draw(vec![glowing.clone()]);
+        let pixel = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap();
+        assert_eq!(
+            pixel(&frame, 20, 10),
+            [255, 255, 255, 255],
+            "the layer on top"
+        );
+        assert_eq!(
+            pixel(&frame, 14, 10),
+            [255, 0, 0, 255],
+            "grown by the spread"
+        );
+        assert_eq!(pixel(&frame, 20, 4), [255, 0, 0, 255]);
+        assert_eq!(pixel(&frame, 11, 10), [0, 0, 0, 0], "past the spread");
+
+        // A radius softens it, and the glow covers a shadow below it.
+        glowing.glow = Some(Glow {
+            color: red,
+            radius: 6.0,
+            spread: 0.0,
+        });
+        glowing.shadow = Some(Shadow {
+            color: Color::BLACK,
+            x: 0.0,
+            y: 0.0,
+            blur: 0.0,
+        });
+        let frame = draw(vec![glowing]);
+        assert_eq!(pixel(&frame, 20, 10), [255, 255, 255, 255]);
+        let near = pixel(&frame, 14, 10);
+        let far = pixel(&frame, 11, 10);
+        assert!(near[0] > far[0] && far[0] > 0, "{near:?} {far:?}");
+        assert_eq!((near[1], near[2]), (0, 0), "red, not mixed with the shadow");
+    }
+
+    #[test]
+    fn grain_stays_inside_and_is_the_same_for_the_same_frame() {
+        let grey = Color::rgb(128, 128, 128);
+        let grainy = |id: &str, animated: bool| {
+            let mut node = square(id, 10.0, 0.0, 20.0, grey);
+            node.noise = Some(Noise {
+                amount: 1.0,
+                size: 1.0,
+                animated,
+            });
+            node
+        };
+        let at = |node: SceneNode, time_ms: f64| {
+            let mut scene = scene(None);
+            scene.time_ms = time_ms;
+            scene.nodes = vec![node];
+            renderer().render(&scene, &RenderOptions::new()).unwrap()
+        };
+        let frame = at(grainy("n", true), 40.0);
+        let mut shades = std::collections::HashSet::new();
+        for y in 0..20 {
+            for x in 0..40 {
+                let [r, g, b, a] = frame.premultiplied_pixel(x, y).unwrap();
+                let inside = (10..30).contains(&x);
+                assert_eq!(a, if inside { 255 } else { 0 }, "alpha kept at {x},{y}");
+                assert!(r == g && g == b, "grey grain");
+                if inside {
+                    shades.insert(r);
+                }
+            }
+        }
+        assert!(shades.len() > 100, "{} shades", shades.len());
+
+        let bytes = |frame: Frame| frame.into_premultiplied();
+        let first = bytes(at(grainy("n", true), 40.0));
+        assert_eq!(first, bytes(at(grainy("n", true), 40.0)), "same frame");
+        assert_ne!(first, bytes(at(grainy("n", true), 80.0)), "moving grain");
+        assert_ne!(
+            first,
+            bytes(at(grainy("other", true), 40.0)),
+            "another layer"
+        );
+        assert_eq!(
+            bytes(at(grainy("n", false), 40.0)),
+            bytes(at(grainy("n", false), 80.0)),
+            "still grain"
+        );
+    }
+
+    #[test]
+    fn grain_scales_with_the_layer() {
+        let mut grainy = square("n", 0.0, 0.0, 16.0, Color::rgb(128, 128, 128));
+        grainy.noise = Some(Noise {
+            amount: 1.0,
+            size: 4.0,
+            animated: false,
+        });
+        let mut scene = scene(None);
+        scene.nodes = vec![grainy];
+        let renderer = renderer();
+        let one = renderer.render(&scene, &RenderOptions::new()).unwrap();
+        let two = renderer
+            .render(&scene, &RenderOptions::new().with_scale(2.0))
+            .unwrap();
+        let mut differ = 0;
+        for cell_y in 0..4 {
+            for cell_x in 0..4 {
+                let small = one.premultiplied_pixel(cell_x * 4 + 2, cell_y * 4 + 2);
+                assert_eq!(small, one.premultiplied_pixel(cell_x * 4, cell_y * 4 + 3));
+                assert_eq!(
+                    small,
+                    two.premultiplied_pixel(cell_x * 8 + 5, cell_y * 8 + 3)
+                );
+                differ += usize::from(small != one.premultiplied_pixel(2, 2));
+            }
+        }
+        assert!(differ > 10, "cells differ from each other: {differ}");
+    }
+
+    #[test]
+    fn directional_blur_smears_along_its_angle() {
+        let smeared = |angle: f64| {
+            let mut node = square("d", 16.0, 6.0, 8.0, Color::BLACK);
+            node.directional_blur = Some(DirectionalBlur { amount: 8.0, angle });
+            draw(vec![node])
+        };
+        let alpha = |frame: &Frame, x, y| frame.premultiplied_pixel(x, y).unwrap()[3];
+        let across = smeared(0.0);
+        assert!(alpha(&across, 13, 10) > 20, "{}", alpha(&across, 13, 10));
+        assert!(alpha(&across, 26, 10) > 20, "{}", alpha(&across, 26, 10));
+        assert_eq!(alpha(&across, 20, 3), 0, "nothing above");
+        assert!(alpha(&across, 20, 10) < 255, "the middle thins out");
+        let down = smeared(90.0);
+        assert!(alpha(&down, 20, 3) > 20, "{}", alpha(&down, 20, 3));
+        assert!(alpha(&down, 20, 16) > 20, "{}", alpha(&down, 20, 16));
+        assert_eq!(alpha(&down, 13, 10), 0, "nothing beside");
+        // Opposite directions smear alike, give or take rounding.
+        let opposite = smeared(180.0);
+        let alike = opposite
+            .premultiplied()
+            .iter()
+            .zip(across.premultiplied())
+            .all(|(a, b)| a.abs_diff(*b) <= 2);
+        assert!(alike, "180 degrees is 0");
+    }
+
+    #[test]
+    fn bounds_reach_as_far_as_the_effects() {
+        let renderer = renderer();
+        let scene = scene(None);
+        let bounds = |node: SceneNode| {
+            let mut scene = scene.clone();
+            scene.nodes = vec![node];
+            renderer.bounds_of(&scene, &NodeId::from("e")).unwrap()
+        };
+        let plain = square("e", 10.0, 0.0, 10.0, Color::BLACK);
+        assert_eq!(
+            bounds(plain.clone()).visual,
+            Some(Rect::new(10.0, 0.0, 10.0, 10.0))
+        );
+        let mut glowing = plain.clone();
+        glowing.glow = Some(Glow {
+            color: Color::WHITE,
+            radius: 4.0,
+            spread: 0.0,
+        });
+        assert_eq!(
+            bounds(glowing).visual,
+            Some(Rect::new(4.0, -6.0, 22.0, 22.0)),
+            "the blur the glow is made from, sigma 2, spreads 6"
+        );
+        let mut grainy = plain.clone();
+        grainy.noise = Some(Noise::default());
+        assert_eq!(
+            bounds(grainy).visual,
+            Some(Rect::new(10.0, 0.0, 10.0, 10.0))
+        );
+        let mut smeared = plain;
+        smeared.directional_blur = Some(DirectionalBlur {
+            amount: 4.0,
+            angle: 0.0,
+        });
+        assert_eq!(
+            bounds(smeared).visual,
+            Some(Rect::new(4.0, 0.0, 22.0, 10.0)),
+            "along the angle only"
+        );
     }
 
     #[test]

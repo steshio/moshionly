@@ -47,7 +47,9 @@ pub(crate) static EVALUATE: ToolDef = ToolDef {
     run,
 };
 
-const PROPERTY_NAMES: [&str; 14] = [
+/// The names of core's [`Property::ALL`], in its order, as the schema's
+/// enum needs them.
+const PROPERTY_NAMES: [&str; Property::ALL.len()] = [
     "x",
     "y",
     "width",
@@ -61,6 +63,9 @@ const PROPERTY_NAMES: [&str; 14] = [
     "corner_radius",
     "blur",
     "shadow",
+    "glow",
+    "noise",
+    "directional_blur",
     "content",
 ];
 const DEFAULT_PROPERTIES: [&str; 5] = ["x", "y", "scale", "rotation", "opacity"];
@@ -189,6 +194,8 @@ fn properties(args: &Args) -> Result<Vec<Property>, ToolError> {
                 "radius" => "corner_radius",
                 "text" => "content",
                 "color" | "colour" => "fill",
+                "grain" => "noise",
+                "motion_blur" => "directional_blur",
                 other => other,
             };
             Property::parse(wanted).ok_or_else(|| {
@@ -209,17 +216,13 @@ fn properties(args: &Args) -> Result<Vec<Property>, ToolError> {
         .collect()
 }
 
-/// A value as it goes into the result, numbers rounded to two decimals.
+/// A value as it goes into the result, every part written out, numbers
+/// rounded to two decimals.
 fn to_json(value: PropertyValue) -> Value {
-    let mut value = match value {
-        PropertyValue::Number(number) => return self::number(number),
-        PropertyValue::Flag(flag) => json!(flag),
-        PropertyValue::Text(text) => json!(text),
-        PropertyValue::Paint(paint) => serde_json::to_value(paint).unwrap_or_default(),
-        PropertyValue::Stroke(stroke) => serde_json::to_value(stroke).unwrap_or_default(),
-        PropertyValue::CornerRadius(radius) => serde_json::to_value(radius).unwrap_or_default(),
-        PropertyValue::Shadow(shadow) => serde_json::to_value(shadow).unwrap_or_default(),
-    };
+    if let PropertyValue::Number(number) = value {
+        return self::number(number);
+    }
+    let mut value = value.to_value();
     round_numbers(&mut value);
     value
 }
@@ -239,7 +242,10 @@ fn round_numbers(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
+    use moshionly_core::eval::Property;
     use serde_json::json;
+
+    use super::PROPERTY_NAMES;
 
     use crate::tools::testing::{call, call_error, demo_tools};
 
@@ -282,6 +288,53 @@ mod tests {
         assert_eq!(title["fill"], json!(["#111111"]));
         assert_eq!(title["visible"], json!([true]));
         assert_eq!(title["content"], json!(["Launch day"]));
+    }
+
+    #[test]
+    fn the_property_names_are_cores() {
+        let core: Vec<&str> = Property::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(PROPERTY_NAMES.to_vec(), core);
+    }
+
+    #[test]
+    fn effects_come_as_values() {
+        use crate::host::Host;
+        use crate::session::{Session, SessionHandle};
+        use crate::tools::Tools;
+        let document = moshionly_core::io::parse(
+            r##"{"format":"moshionly","version":1,"name":"Glow","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","width":400,"height":300},
+            {"id":"r","parent":"ab","index":"a0","type":"rect","glow":{"color":"#FFFFFF","radius":10},
+             "noise":{"amount":0.5,"animated":false}},
+            {"id":"g","parent":"ab","index":"a0","type":"glow","target":"r","start":0,"end":1000,
+             "to":{"radius":30},"easing":{"type":"linear"}},
+            {"id":"d","parent":"ab","index":"a1","type":"directional_blur","target":"r","start":0,
+             "end":1000,"to":{"amount":10,"angle":90},"easing":{"type":"linear"}}
+            ]}"##,
+        )
+        .unwrap();
+        let tools = Tools::new(SessionHandle::new(Session::new(document)), Host::new());
+        let result = call(
+            &tools,
+            "evaluate",
+            json!({ "layers": ["r"], "properties": ["glow", "grain", "motion_blur"],
+                    "times": [0, 500] }),
+        );
+        let row = &result["layers"][0];
+        assert_eq!(
+            row["glow"],
+            json!([
+                { "color": "#FFFFFF", "radius": 10, "spread": 0 },
+                { "color": "#FFFFFF", "radius": 20, "spread": 0 }
+            ])
+        );
+        let noise = json!({ "amount": 0.5, "size": 1, "animated": false });
+        assert_eq!(row["noise"], json!([noise, noise]));
+        assert_eq!(
+            row["directional_blur"],
+            json!([null, { "amount": 5, "angle": 90 }]),
+            "a blur growing from none smears one way all along"
+        );
     }
 
     #[test]

@@ -38,6 +38,8 @@
 //!   trimming them.
 //! - [`describe`]: the names nodes are shown with.
 //! - [`inspect`]: reading properties across a selection, mixed or not.
+//! - [`effects`]: a layer's shadow, blur, glow, grain and directional
+//!   blur, added, changed and removed layer by layer.
 
 pub mod actions;
 pub mod assets;
@@ -47,6 +49,7 @@ pub mod components;
 pub mod create;
 pub mod describe;
 pub mod drag;
+pub mod effects;
 pub mod inspect;
 pub mod media;
 pub mod motion;

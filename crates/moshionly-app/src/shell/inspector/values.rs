@@ -14,7 +14,7 @@
 //! a written one has its own × to leave it out again.
 
 use egui::{Align, Layout, Ui};
-use moshionly_core::eval::{Property, PropertyValue, value_at};
+use moshionly_core::eval::{Property, PropertyValue, effects_at, value_at};
 use moshionly_core::text::find_number;
 use moshionly_core::{Color, Document, Edit, Node, NodeType};
 use serde_json::{Value, json};
@@ -29,6 +29,7 @@ use crate::{
 };
 
 use super::design::{hex, rgba};
+use crate::editor::effects::MIN_GRAIN;
 
 /// The two ends of an action's change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +157,29 @@ pub(super) fn parts(ty: NodeType) -> &'static [Part] {
         number(Some("y"), "Y", "px", -BIG, BIG),
         number(Some("blur"), "Blur", "px", 0.0, 1000.0),
     ];
+    const GLOW: [Part; 3] = [
+        Part::Color {
+            key: Some("color"),
+            label: "Colour",
+        },
+        number(Some("radius"), "Radius", "px", 0.0, 1000.0),
+        number(Some("spread"), "Spread", "px", 0.0, BIG),
+    ];
+    const NOISE: [Part; 2] = [
+        Part::Number {
+            key: Some("amount"),
+            label: "Amount",
+            unit: "%",
+            scale: 100.0,
+            min: 0.0,
+            max: 100.0,
+        },
+        number(Some("size"), "Size", "px", MIN_GRAIN, 1000.0),
+    ];
+    const DIRECTIONAL_BLUR: [Part; 2] = [
+        number(Some("amount"), "Amount", "px", 0.0, 1000.0),
+        number(Some("angle"), "Angle", "°", -BIG, BIG),
+    ];
     const COUNTER: [Part; 1] = [number(None, "Number", "", -1e12, 1e12)];
     match ty {
         T::Move => &MOVE,
@@ -168,6 +192,9 @@ pub(super) fn parts(ty: NodeType) -> &'static [Part] {
         T::CornerRadius => &RADIUS,
         T::Blur => &BLUR,
         T::Shadow => &SHADOW,
+        T::Glow => &GLOW,
+        T::Noise => &NOISE,
+        T::DirectionalBlur => &DIRECTIONAL_BLUR,
         T::Counter => &COUNTER,
         _ => &[],
     }
@@ -177,7 +204,15 @@ pub(super) fn parts(ty: NodeType) -> &'static [Part] {
 /// then standing for the layer's own value. The parts of a move may not:
 /// a missing one is no offset, which is what 0 shows.
 pub(super) fn parts_optional(ty: NodeType) -> bool {
-    matches!(ty, NodeType::Resize | NodeType::Stroke | NodeType::Shadow)
+    matches!(
+        ty,
+        NodeType::Resize
+            | NodeType::Stroke
+            | NodeType::Shadow
+            | NodeType::Glow
+            | NodeType::Noise
+            | NodeType::DirectionalBlur
+    )
 }
 
 /// `value` with the part at `key` left out, as an edit writes it: an edit
@@ -282,6 +317,25 @@ pub(super) fn resolved(document: &Document, node: &Node, slot: Slot) -> Option<V
             }),
             _ => json!({ "color": "#00000000", "x": 0.0, "y": 0.0, "blur": 0.0 }),
         },
+        // The effect as the engine counts it, also when it cannot be seen
+        // (a layer without one has an invisible one), so that a faded glow
+        // keeps its size and a faded directional blur its angle.
+        NodeType::Glow => {
+            let (glow, _, _) = effects_at(document, target, time)?;
+            json!({
+                "color": glow.color.to_hex(),
+                "radius": glow.radius,
+                "spread": glow.spread,
+            })
+        }
+        NodeType::Noise => {
+            let (_, noise, _) = effects_at(document, target, time)?;
+            json!({ "amount": noise.amount, "size": noise.size })
+        }
+        NodeType::DirectionalBlur => {
+            let (_, _, blur) = effects_at(document, target, time)?;
+            json!({ "amount": blur.amount, "angle": blur.angle })
+        }
         NodeType::Counter => match get(Property::Content)? {
             PropertyValue::Text(text) => json!(find_number(&text).map_or(0.0, |n| n.value)),
             _ => return None,
@@ -626,6 +680,117 @@ mod tests {
         );
         assert_eq!(resolve("r", Slot::From), json!(12.0));
         assert_eq!(resolve("count", Slot::To), json!(1250.0));
+    }
+
+    #[test]
+    fn effects_start_from_what_the_layer_shows_or_from_nothing() {
+        let document = io::parse(
+            r##"{"format":"moshionly","version":4,"name":"T","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":4000},
+            {"id":"lit","parent":"ab","index":"a0","type":"rect",
+             "glow":{"color":"#FF0000","radius":12},"noise":{"amount":0.5,"size":2}},
+            {"id":"bare","parent":"ab","index":"a1","type":"rect"},
+            {"id":"g","parent":"ab","index":"a0","type":"glow","target":"lit","start":0,"end":500},
+            {"id":"n","parent":"ab","index":"a1","type":"noise","target":"lit","start":0,"end":500,
+             "to":{"amount":0.25}},
+            {"id":"later","parent":"ab","index":"a2","type":"noise","target":"lit","start":1000,"end":1500},
+            {"id":"d","parent":"ab","index":"a3","type":"directional_blur","target":"bare","start":0,"end":500},
+            {"id":"bg","parent":"ab","index":"a4","type":"glow","target":"bare","start":0,"end":500}
+            ]}"##,
+        )
+        .unwrap();
+        let resolve = |id: &str, slot: Slot| {
+            let node = document.get(&NodeId::from(id)).unwrap();
+            resolved(&document, node, slot).unwrap()
+        };
+        // The design's glow, every part written out.
+        assert_eq!(
+            resolve("g", Slot::To),
+            json!({"color": "#FF0000", "radius": 12.0, "spread": 0.0})
+        );
+        // Grain left at a quarter by the first action starts the second.
+        assert_eq!(
+            resolve("later", Slot::From),
+            json!({"amount": 0.25, "size": 2.0})
+        );
+        assert_eq!(
+            resolve("later", Slot::To),
+            json!({"amount": 0.5, "size": 2.0})
+        );
+        // Without the effect, the action starts from an invisible one.
+        assert_eq!(
+            resolve("bg", Slot::From),
+            json!({"color": "#0D99FF00", "radius": 20.0, "spread": 0.0})
+        );
+        assert_eq!(
+            resolve("d", Slot::From),
+            json!({"amount": 0.0, "angle": 0.0})
+        );
+        // Each part of an effect can be left out and stand for the layer's.
+        for ty in [NodeType::Glow, NodeType::Noise, NodeType::DirectionalBlur] {
+            assert!(parts_optional(ty), "{ty}");
+        }
+        let keys = |ty| -> Vec<&str> {
+            parts(ty)
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Number { key, .. } | Part::Color { key, .. } => *key,
+                })
+                .collect()
+        };
+        assert_eq!(keys(NodeType::Glow), ["color", "radius", "spread"]);
+        assert_eq!(keys(NodeType::Noise), ["amount", "size"]);
+        assert_eq!(keys(NodeType::DirectionalBlur), ["amount", "angle"]);
+        // Grain is shown in percent.
+        assert!(matches!(
+            parts(NodeType::Noise)[0],
+            Part::Number {
+                scale: 100.0,
+                max: 100.0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn effects_that_cannot_be_seen_start_from_their_own_parts() {
+        // A directional blur faded out by one action and brought back by
+        // another, grain at 0% and a transparent glow: none can be seen,
+        // but each keeps its size and angle, and so does what starts from
+        // it.
+        let document = io::parse(
+            r##"{"format":"moshionly","version":4,"name":"T","nodes":[
+            {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":4000},
+            {"id":"r","parent":"ab","index":"a0","type":"rect",
+             "directional_blur":{"amount":20,"angle":90},"noise":{"amount":0,"size":4},
+             "glow":{"color":"#FF000000","radius":30,"spread":6}},
+            {"id":"out","parent":"ab","index":"a0","type":"directional_blur","target":"r",
+             "start":0,"end":500,"to":{"amount":0}},
+            {"id":"back","parent":"ab","index":"a1","type":"directional_blur","target":"r",
+             "start":1000,"end":1500,"to":{"amount":30}},
+            {"id":"grain","parent":"ab","index":"a2","type":"noise","target":"r",
+             "start":0,"end":500,"to":{"amount":0.5}},
+            {"id":"glow","parent":"ab","index":"a3","type":"glow","target":"r",
+             "start":0,"end":500,"to":{"color":"#FF0000"}}
+            ]}"##,
+        )
+        .unwrap();
+        let resolve = |id: &str, slot: Slot| {
+            let node = document.get(&NodeId::from(id)).unwrap();
+            resolved(&document, node, slot).unwrap()
+        };
+        assert_eq!(
+            resolve("back", Slot::From),
+            json!({"amount": 0.0, "angle": 90.0})
+        );
+        assert_eq!(
+            resolve("grain", Slot::From),
+            json!({"amount": 0.0, "size": 4.0})
+        );
+        assert_eq!(
+            resolve("glow", Slot::From),
+            json!({"color": "#FF000000", "radius": 30.0, "spread": 6.0})
+        );
     }
 
     #[test]

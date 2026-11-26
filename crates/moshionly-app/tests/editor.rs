@@ -708,7 +708,9 @@ fn the_inspector_edits_text_appearance_and_effects() {
         moshionly_app::editor::inspect::text_of(document.get(&NodeId::from("title")).unwrap())
             .unwrap();
     assert_eq!(text.font_size, 80.0);
-    // A shadow is added and its blur set.
+    // A shadow is added from the Effects section's menu and its blur set.
+    harness.get_by_label("Add effect").click_accesskit();
+    harness.run();
     harness.get_by_label("Add shadow").click_accesskit();
     harness.run();
     type_into(&mut harness, "Shadow blur", "20");

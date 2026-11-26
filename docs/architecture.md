@@ -31,7 +31,7 @@ A document is a flat list of nodes. The tree is assembled from `parent`.
 ```json
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch teaser",
   "nodes": [
     { "id": "ab12", "parent": null,   "index": "a0", "type": "artboard", "name": "Scene 1",
@@ -65,7 +65,7 @@ A `component` is a main component: it has the fields of a `group` and is drawn l
 
 A `video` is drawn like an `image` while its clip plays (see [Video and sound](#video-and-sound)).
 
-Shared layer properties: `name`, `x`, `y`, `width`, `height`, `rotation`, `scale`, `opacity`, `hidden`, `locked`, `blend_mode`, `blur`, `shadow`, `source_id`. Shapes add `fill`, `stroke` and, where it applies, `corner_radius`. A paint is a colour string or a linear or radial gradient object. `source_id` records where an imported layer came from (for example `figma:<file key>:<node id>`) so a design can be re-imported without losing its animations.
+Shared layer properties: `name`, `x`, `y`, `width`, `height`, `rotation`, `scale`, `opacity`, `hidden`, `locked`, `blend_mode`, `blur`, `shadow`, `glow`, `noise`, `directional_blur`, `source_id`. Shapes add `fill`, `stroke` and, where it applies, `corner_radius`. A paint is a colour string or a linear or radial gradient object. The effects (`blur`, `shadow`, `glow`, `noise`, `directional_blur`) are set on any layer but an artboard; each optional one is a single value rather than an item in a list, so a merge patch or an animation can change one without touching the others. `source_id` records where an imported layer came from (for example `figma:<file key>:<node id>`) so a design can be re-imported without losing its animations.
 
 ### Animations
 
@@ -73,7 +73,7 @@ Every animation has `target`, `start`, `end` and, unless it is instantaneous, `e
 
 | Family | Types |
 |---|---|
-| Property | `move`, `rotate`, `scale`, `opacity`, `resize`, `fill`, `stroke`, `corner_radius`, `blur`, `shadow` |
+| Property | `move`, `rotate`, `scale`, `opacity`, `resize`, `fill`, `stroke`, `corner_radius`, `blur`, `shadow`, `glow`, `noise`, `directional_blur` |
 | Instant | `show`, `hide` |
 | Presets | `fade_in`/`fade_out`, `slide_in`/`slide_out`, `grow_in`/`grow_out`, `shrink_in`/`shrink_out`, `spin_in`/`spin_out`, `blur_in`/`blur_out`, `reveal_in`/`reveal_out` |
 | Text | `text_in`, `text_out`, `counter` |
@@ -89,7 +89,7 @@ For one property of one layer, animations are sorted by `start` and combined by 
 - **Additive** (`move`, `rotate`): each animation contributes a delta that is added to the resting value. Two moves add up. A missing `from` is a delta of zero.
 - **Replacing** (everything else): the value is the resting value until the first animation, and from then on the most recently started animation decides. A missing `from` is the value at the moment the animation starts. A missing `to` is the resting value. If the first animation has a `from`, that value also applies before it starts, which is how "fade in" keeps a layer invisible until its cue.
 
-`scale` values are multipliers of the layer's resting scale. `opacity`, sizes, colours, radii and blur are absolute.
+`scale` values are multipliers of the layer's resting scale. `opacity`, sizes, colours, radii and blur are absolute. The `from` and `to` of `shadow`, `glow`, `noise` and `directional_blur` name only the parts that change; the rest is the value at that moment (for `from`) or at rest (for `to`), and a layer without the effect counts as having an invisible one, so it can fade in.
 
 ### Video and sound
 
@@ -136,7 +136,15 @@ Text needs fonts to be measured, and fonts belong to the renderer. Core therefor
 
 The renderer decodes no video. A `VideoFrames` provider, carried by the `AssetLoader` (`AssetLoader::with_video`), gives the frame of a file at a moment of it, and the frame is drawn like an image, without mipmaps. The request names the file resolved next to the project and the size the box is drawn at, so a provider can read smaller frames for small boxes. The provider in `moshionly-export::media`, `VideoDecoder`, reads frames through long-lived `ffmpeg` processes, one or two per file and size, streaming forward and starting again a little before a moment they have passed or that is far ahead, and keeps recent frames within a memory budget. The frame shown at a moment is the last one whose timestamp (as written in the file) is at or before it, so the same request gives the same frame in any order and from any thread, as export's parallel rendering needs. Without a provider, or a frame, a placeholder is drawn with a `MissingVideo` warning.
 
-Effect order for a layer, innermost first: content, shadow, blur, mask and clip, blend mode, opacity.
+Effect order for a layer, innermost first: content, film grain (`noise`), then the shadow and the glow behind it (the glow over the shadow), the blur, the directional blur, then mask and clip, blend mode, opacity. Grain comes first so that the glow and the shadow, which follow the shape's alpha, stay smooth; the blurs come after them so that they soften everything the layer shows, as a camera would. Text gets its effects as a whole layer, not letter by letter.
+
+How the effects are drawn on the CPU, each about 30 to 60 ms on a whole 1920 by 1080 layer on an Apple M-series machine (`cargo run --release -p moshionly-render --example benchmark -- effects`):
+
+- **Glow**: one blur of the layer's alpha and an alpha curve that grows it by the spread (for a straight edge the blurred alpha tells how far the edge is), painted in the glow's colour and merged behind the layer. Skia's exact dilate costs about 55 ms per pixel of spread on such a layer; this costs one blur whatever the spread, and grows very thin parts a little less.
+- **Grain**: an SkSL shader gives each grain cell (`size` in the layer's units) a value, and the painter draws it over the layer's content with `SrcATop`, moving pixels toward white or black and keeping their alpha. The value is a hash of the cell, the layer's id and, when `animated`, the scene's time, in exact integer arithmetic held in floats (squares modulo 4093, no `sin`), so the same frame gets the same grain on every machine and every export gives the same bytes.
+- **Directional blur**: the painter turns the canvas so that the direction is across, blurs a layer across only and draws the content turned back into it.
+
+Every offscreen layer is bounded by what the layer draws plus how far its effects reach (`hit.rs` and `draw/effects.rs`), which also gives `bounds_of`.
 
 ## Export
 
@@ -146,7 +154,7 @@ Video exports carry sound. When the artboard has sound in the stretch exported a
 
 Every format runs as the same `ExportJob`: `plan()` checks the settings without writing anything, `run()` reports progress and stops when its `CancelToken` is cancelled, and the file is written under a temporary name and renamed into place only when it is complete. The editor's Export dialog, the agents' `export` tool and `moshionly export` all use it.
 
-Lottie export converts the scene model, not pixels. It works on a copy of the document in which every instance is detached (`build::without_instances`), since Lottie has no instances. Layers become Lottie layers, text becomes outlines made with the renderer's own fonts, and animations become keyframes: linear and Bézier-shaped easings exactly, others fitted with a few curve pieces and checked against core's values. Anything Lottie cannot show exactly is reported as a warning that names the layer. `crates/moshionly-export/README.md` has the details.
+Lottie export converts the scene model, not pixels. It works on a copy of the document in which every instance is detached (`build::without_instances`), since Lottie has no instances. Layers become Lottie layers, text becomes outlines made with the renderer's own fonts, and animations become keyframes: linear and Bézier-shaped easings exactly, others fitted with a few curve pieces and checked against core's values. Shadows, glows, blurs and directional blurs become Lottie effects; film grain has none and is left out. Anything Lottie cannot show exactly is reported as a warning that names the layer. `crates/moshionly-export/README.md` has the details.
 
 ## Agents
 
@@ -191,6 +199,8 @@ Artboards are drawn by evaluating and rendering on worker threads and showing th
 Components work like the rest of the editor, through core's build helpers. Create component (⌥⌘K) turns the selection into a main component; Insert instance, or a row of the Components tab beside Layers (click, or drag it onto the canvas), places an instance, which is drawn by core and selected, moved and resized as one layer. Editing the main redraws every artboard that shows it, and resizing it resizes the instances that were its size in the same undo step (`build::instances_follow_mains`, which the agents' `update` uses too). Detach instance (⌥⌘B) turns an instance into a plain group, and deleting a main detaches its instances first and says how many.
 
 Video and sound come in through Import video or sound… (⌥⌘I) or by dropping files on the canvas, only when ffmpeg is found: each file is copied into `assets/` (the agents' `import_media`), probed, and added as a `video` layer or an `audio` item starting at the playhead, growing the artboard if needed, in one undo step. The canvas gets frames from the export crate's ffmpeg frame provider, installed on the editor's asset loader. While playing, the artboard's sound is mixed in the background (the export crate's `SoundDecoder`) and played through the speakers (`cpal`, behind a small `AudioOut` trait with a silent stand-in for tests); while sound is heard, the playhead follows the sound so picture and sound stay together. Clips show as bars on the timeline: dragging moves a clip, its left edge trims the file's start and its right edge moves its end.
+
+The Design tab's Effects section lists a layer's shadow, blur, glow, noise and directional blur as blocks, each with its settings and a remove button, and a + menu offers the effects the selection does not have yet. Edits go to each selected layer's own value (`editor::effects`), so several layers keep their own colours and sizes; artboards get no effects. The Animate tab's Add action menu offers Glow, Noise and Directional blur actions beside Shadow.
 
 The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 

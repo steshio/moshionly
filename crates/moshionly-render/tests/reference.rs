@@ -260,6 +260,41 @@ fn layer_blur() {
 }
 
 #[test]
+fn glows_with_spread_and_a_shadow() {
+    check("glow", &scene("glow"), 0.0, 1.0, SHAPES);
+}
+
+#[test]
+fn noise_still_and_moving() {
+    let first = check("noise_0", &scene("noise"), 0.0, 1.0, SHAPES);
+    let later = check("noise_500", &scene("noise"), 500.0, 1.0, SHAPES);
+    // The pixels of a region of the frame, as drawn.
+    let region = |frame: &Frame, x0: u32, x1: u32| -> Vec<[u8; 4]> {
+        (20..120)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .map(|(x, y)| frame.premultiplied_pixel(x, y).unwrap())
+            .collect()
+    };
+    // "Moving" (left) has new grain at another time; "Still" keeps its grain.
+    assert_ne!(region(&first, 20, 120), region(&later, 20, 120));
+    assert_eq!(region(&first, 140, 240), region(&later, 140, 240));
+    // Drawing the same moment again gives the same grain.
+    let again = check("noise_0", &scene("noise"), 0.0, 1.0, SHAPES);
+    assert_eq!(first.premultiplied(), again.premultiplied());
+}
+
+#[test]
+fn directional_blur_across_down_and_slanted() {
+    check(
+        "directional_blur",
+        &scene("directional_blur"),
+        0.0,
+        1.0,
+        SHAPES,
+    );
+}
+
+#[test]
 fn text_alignment_spacing_and_case() {
     let frame = check("text_align", &scene("text_align"), 0.0, 1.0, TEXT);
     assert!(frame.warnings().is_empty(), "{:?}", frame.warnings());

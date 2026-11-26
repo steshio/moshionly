@@ -1,6 +1,6 @@
 {
   "format": "moshionly",
-  "version": 3,
+  "version": 4,
   "name": "Launch day",
   "nodes": [
     {"id":"scene","parent":null,"index":"a0","type":"artboard","name":"Launch day","width":1080,"height":1080,"fill":"#F2F3F5"},

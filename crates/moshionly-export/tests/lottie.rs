@@ -766,6 +766,144 @@ fn shadows_and_blurs_become_effects() {
 }
 
 #[test]
+fn glows_and_directional_blurs_become_effects_and_grain_is_named() {
+    let nodes = r##",{"id":"card","parent":"board","index":"a0","type":"rect","name":"Card",
+            "width":200,"height":100,"fill":"#FFFFFF","blur":6,
+            "glow":{"color":"#FF000080","radius":12,"spread":4},
+            "shadow":{"color":"#00000040","y":16,"blur":40},
+            "directional_blur":{"amount":30,"angle":30},
+            "noise":{"amount":0.3}}
+        ,{"id":"bar","parent":"board","index":"a1","type":"rect","name":"Bar",
+            "x":300,"width":100,"height":100,"fill":"#0D99FF",
+            "directional_blur":{"amount":12,"angle":90}}
+        ,{"id":"halo","parent":"board","index":"a2","type":"ellipse","name":"Halo",
+            "x":600,"width":100,"height":100,"fill":"#0D99FF"}
+        ,{"id":"in","parent":"board","index":"a0","type":"glow","target":"halo",
+            "start":0,"end":500,"to":{"color":"#FFFFFF","radius":20}}"##;
+    let (lottie, exported) = export_document(document(1000.0, nodes), Settings::default());
+    let values = |effect: &Value| -> Vec<Value> {
+        effect["ef"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["v"]["k"].clone())
+            .collect()
+    };
+    let kinds = |layer: &Value| -> Vec<(i64, String)> {
+        layer["ef"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| {
+                let name = effect["nm"].as_str().unwrap().to_owned();
+                (effect["ty"].as_i64().unwrap(), name)
+            })
+            .collect()
+    };
+    let card = layer(&lottie["layers"], "Card");
+    assert_eq!(
+        kinds(card),
+        [
+            (25, "Glow".to_owned()),
+            (25, "Drop Shadow".to_owned()),
+            (29, "Gaussian Blur".to_owned()),
+            (29, "Directional Blur".to_owned())
+        ]
+    );
+    let effects = card["ef"].as_array().unwrap();
+    // The glow: half-transparent red, no distance, softness twice its radius.
+    let glow = values(&effects[0]);
+    assert_eq!(glow[0], serde_json::json!([1, 0, 0, 1]));
+    assert_eq!(
+        glow[1..],
+        [
+            Value::from(128),
+            Value::from(180),
+            Value::from(0),
+            Value::from(24)
+        ]
+    );
+    // The directional blur at 30 degrees is mostly across: dimension 2.
+    let smear = values(&effects[3]);
+    assert_eq!(
+        (smear[0].clone(), smear[1].clone()),
+        (Value::from(50), Value::from(2))
+    );
+    assert_eq!(values(&effects[2])[1], 1, "the plain blur goes both ways");
+    let bar = layer(&lottie["layers"], "Bar");
+    assert_eq!(
+        values(&bar["ef"][0])[1],
+        3,
+        "a blur at 90 degrees goes down"
+    );
+    // A glow that only an animation brings is there, fading in.
+    let halo = layer(&lottie["layers"], "Halo");
+    assert_eq!(kinds(halo), [(25, "Glow".to_owned())]);
+    assert!(
+        halo["ef"][0]["ef"][1]["v"]["a"] == 1,
+        "the opacity is animated"
+    );
+
+    let said = exported.warnings.join("\n");
+    for expected in [
+        "\"Card\" has film grain (noise), which Lottie cannot show; it is left out.",
+        "\"Card\" has a glow with a spread",
+        "\"Card\" has a glow and a shadow",
+        "\"Card\" has a directional blur at 30 degrees, but Lottie blurs only across or down; \
+         it is drawn across.",
+    ] {
+        assert!(said.contains(expected), "{expected}\n{said}");
+    }
+    assert_eq!(exported.warnings.len(), 4, "{said}");
+}
+
+#[test]
+fn grain_is_named_on_every_kind_of_layer() {
+    // Neither the picture nor the group has an effect Lottie draws, so
+    // neither goes through the layer effects: the grain is named anyway.
+    let nodes = format!(
+        r##",{{"id":"pic","parent":"board","index":"a0","type":"image","name":"Photo",
+            "width":200,"height":100,"source":"{}","noise":{{"amount":0.5}}}}
+        ,{{"id":"set","parent":"board","index":"a1","type":"group","name":"Set",
+            "x":300,"width":200,"height":100,"noise":{{"amount":0.5}}}}
+        ,{{"id":"dot","parent":"set","index":"a0","type":"ellipse","name":"Dot",
+            "width":50,"height":50,"fill":"#0D99FF"}}
+        ,{{"id":"box","parent":"board","index":"a2","type":"rect","name":"Box",
+            "x":600,"width":100,"height":100,"fill":"#0D99FF","noise":{{"amount":0.5}}}}"##,
+        png_uri(40, 30)
+    );
+    let (_, exported) = export_document(document(1000.0, &nodes), Settings::default());
+    let said = exported.warnings.join("\n");
+    for name in ["Photo", "Set", "Box"] {
+        let expected =
+            format!("\"{name}\" has film grain (noise), which Lottie cannot show; it is left out.");
+        let times = exported
+            .warnings
+            .iter()
+            .filter(|warning| **warning == expected)
+            .count();
+        assert_eq!(times, 1, "{expected}\n{said}");
+    }
+    assert_eq!(exported.warnings.len(), 3, "{said}");
+}
+
+#[test]
+fn a_glow_with_a_reveal_is_warned_about_like_a_shadow() {
+    let nodes = r##",{"id":"halo","parent":"board","index":"a0","type":"ellipse","name":"Halo",
+            "width":100,"height":100,"fill":"#0D99FF","glow":{"radius":20}}
+        ,{"id":"wipe","parent":"board","index":"a0","type":"reveal_in","target":"halo",
+            "start":0,"end":500,"direction":"down"}"##;
+    let (_, exported) = export_document(document(1000.0, nodes), Settings::default());
+    assert_eq!(
+        exported.warnings,
+        [
+            "\"Halo\" has a glow and a reveal; Lottie players differ in whether the reveal also \
+          cuts the glow, as Moshionly does, so some show the glow past the edge that wipes."
+        ]
+    );
+}
+
+#[test]
 fn what_cannot_be_exported_exactly_is_said_layer_by_layer() {
     let nodes = r##",{"id":"star","parent":"board","index":"a0","type":"star","name":"Badge",
             "width":200,"height":100,"stroke":{"paint":"#000000","width":4,"position":"inside"},
