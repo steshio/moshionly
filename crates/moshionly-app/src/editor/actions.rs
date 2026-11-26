@@ -69,7 +69,7 @@ impl MenuSection {
 }
 
 /// Every action type the add menu offers, with its section, in menu order.
-pub const MENU: [(MenuSection, NodeType); 29] = {
+pub const MENU: [(MenuSection, NodeType); 32] = {
     use MenuSection as S;
     use NodeType as T;
     [
@@ -97,6 +97,9 @@ pub const MENU: [(MenuSection, NodeType); 29] = {
         (S::Change, T::CornerRadius),
         (S::Change, T::Blur),
         (S::Change, T::Shadow),
+        (S::Change, T::Glow),
+        (S::Change, T::Noise),
+        (S::Change, T::DirectionalBlur),
         (S::Visibility, T::Show),
         (S::Visibility, T::Hide),
         (S::Text, T::TextIn),
@@ -703,13 +706,6 @@ mod tests {
         // Every animation type except folders and sound is somewhere in
         // the menu.
         for ty in NodeType::ALL {
-            // TODO: the effect actions arrive with the editor's effects work.
-            if matches!(
-                ty,
-                NodeType::Glow | NodeType::Noise | NodeType::DirectionalBlur
-            ) {
-                continue;
-            }
             let listed = MENU.iter().any(|(_, entry)| entry == ty);
             let action = ty.family() == Family::Animation
                 && !matches!(ty, NodeType::AnimationGroup | NodeType::Audio);
