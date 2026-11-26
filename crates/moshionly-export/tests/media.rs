@@ -264,6 +264,41 @@ fn frames_asked_for_out_of_order_equal_frames_asked_for_in_order() {
 
 #[test]
 #[cfg(unix)]
+fn videos_drawn_on_every_frame_keep_their_processes() {
+    let Some(tools) = tools("videos_drawn_on_every_frame_keep_their_processes") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let video = counting_video(&tools, dir.path());
+    let clips: Vec<PathBuf> = (0..8)
+        .map(|clip| {
+            let path = dir.path().join(format!("clip-{clip}.mp4"));
+            std::fs::copy(&video, &path).unwrap();
+            path
+        })
+        .collect();
+    // Writes a line for every frame reader started.
+    let log = dir.path().join("starts.log");
+    let script = format!(
+        "case \" $* \" in *\" -fps_mode \"*) echo start >> '{}' ;; esac",
+        log.display()
+    );
+    let bin = tempfile::tempdir().unwrap();
+    let decoder = VideoDecoder::new(wrapped(&tools, bin.path(), &script));
+    // An export at 30 frames a second drawing eight videos on each frame.
+    for frame in 0..30 {
+        let time = f64::from(frame) * 1000.0 / 30.0;
+        for clip in &clips {
+            let image = decoder.frame_at(clip, time, 32.0, 16.0).unwrap();
+            assert_eq!(frame_number(&image), (time / 100.0).floor() as i64);
+        }
+    }
+    let starts = std::fs::read_to_string(&log).unwrap().lines().count();
+    assert_eq!(starts, clips.len(), "one ffmpeg for each video");
+}
+
+#[test]
+#[cfg(unix)]
 fn an_ffmpeg_too_old_to_read_frames_is_said_to_be() {
     let Some(tools) = tools("an_ffmpeg_too_old_to_read_frames_is_said_to_be") else {
         return;

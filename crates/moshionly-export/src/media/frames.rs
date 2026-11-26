@@ -24,10 +24,16 @@
 //! often as it still covers the box (never more than 16 times). A few
 //! sizes at most, so a scale animation does not restart decoding every
 //! frame.
+//!
+//! Processes keep reading every file and size asked for lately, so an
+//! export or playback that draws many videos on every frame reads each
+//! with its own; those not asked for in a while stop when another file
+//! needs one.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use moshionly_render::skia_safe as sk;
 use moshionly_render::{VideoFrames, VideoRequest};
@@ -43,9 +49,17 @@ pub const DEFAULT_FRAME_BUDGET: usize = 256 << 20;
 /// How many `ffmpeg` processes read one file at one size.
 const STREAMS_PER_FILE: usize = 2;
 
-/// How many files (at one size each) have processes reading them; the
-/// least recently used one stops for another.
+/// How many files (at one size each) keep processes reading them even when
+/// they have not been asked for in a while.
 const FILES: usize = 6;
+
+/// How many files (at one size each) may have processes reading them at
+/// most; past this, the one asked for least recently stops for another.
+const MAX_FILES: usize = 32;
+
+/// How long a file (at one size) goes unasked for before its processes may
+/// stop for another's, when more than [`FILES`] have some.
+const IDLE: Duration = Duration::from_secs(5);
 
 /// How far ahead of a process a moment may be for it to read on to it
 /// rather than start again there, in microseconds.
@@ -74,11 +88,11 @@ pub struct VideoDecoder {
     cache: Mutex<FrameCache>,
 }
 
-/// The processes reading each file at each size.
+/// The processes reading each file at each size, and when each was last
+/// asked for a frame.
 #[derive(Default)]
 struct Files {
-    readers: HashMap<Arc<StreamKey>, (Arc<Mutex<Readers>>, u64)>,
-    clock: u64,
+    readers: HashMap<Arc<StreamKey>, (Arc<Mutex<Readers>>, Instant)>,
 }
 
 /// The processes reading one file at one size.
@@ -144,10 +158,13 @@ impl VideoDecoder {
             height,
         });
         let time = micros(time_ms);
-        if let Some(image) = lock(&self.cache).lookup(&key, time) {
+        let kept = lock(&self.cache).lookup(&key, time);
+        if let Some(image) = kept {
+            // Asked for, even if kept frames answered.
+            lock(&self.files).used(&key, Instant::now());
             return Ok(image);
         }
-        let readers = self.readers(&key);
+        let readers = lock(&self.files).readers(&key, Instant::now());
         let mut readers = lock(&readers);
         // Another thread may have read it while this one waited.
         if let Some(image) = lock(&self.cache).lookup(&key, time) {
@@ -160,31 +177,43 @@ impl VideoDecoder {
                 message,
             })
     }
+}
 
-    /// The processes reading `key`, made room for when they are new.
-    fn readers(&self, key: &Arc<StreamKey>) -> Arc<Mutex<Readers>> {
-        let mut files = lock(&self.files);
-        files.clock += 1;
-        let clock = files.clock;
-        if let Some((readers, used)) = files.readers.get_mut(key) {
-            *used = clock;
+impl Files {
+    /// Notes that `key` was asked for at `now`.
+    fn used(&mut self, key: &StreamKey, now: Instant) {
+        if let Some((_, used)) = self.readers.get_mut(key) {
+            *used = now;
+        }
+    }
+
+    /// The processes reading `key`, asked for at `now`, made room for when
+    /// they are new.
+    fn readers(&mut self, key: &Arc<StreamKey>, now: Instant) -> Arc<Mutex<Readers>> {
+        if let Some((readers, used)) = self.readers.get_mut(key) {
+            *used = now;
             return Arc::clone(readers);
         }
-        if files.readers.len() >= FILES {
-            // The processes stop once whoever is using them is done.
-            let oldest = files
+        // Past FILES, those not asked for in a while stop, least recently
+        // asked for first; those asked for lately keep reading, up to
+        // MAX_FILES. The processes stop once whoever is using them is done.
+        while self.readers.len() >= FILES {
+            let Some((oldest, used)) = self
                 .readers
                 .iter()
                 .min_by_key(|(_, (_, used))| *used)
-                .map(|(key, _)| Arc::clone(key));
-            if let Some(oldest) = oldest {
-                files.readers.remove(&oldest);
+                .map(|(key, (_, used))| (Arc::clone(key), *used))
+            else {
+                break;
+            };
+            if self.readers.len() < MAX_FILES && now.saturating_duration_since(used) < IDLE {
+                break;
             }
+            self.readers.remove(&oldest);
         }
         let readers = Arc::new(Mutex::default());
-        files
-            .readers
-            .insert(Arc::clone(key), (Arc::clone(&readers), clock));
+        self.readers
+            .insert(Arc::clone(key), (Arc::clone(&readers), now));
         readers
     }
 }
@@ -371,6 +400,69 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(name: usize) -> Arc<StreamKey> {
+        Arc::new(StreamKey {
+            path: format!("/clips/{name}.mp4").into(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            width: 32,
+            height: 16,
+        })
+    }
+
+    fn kept(files: &Files) -> Vec<usize> {
+        let mut kept: Vec<usize> = files
+            .readers
+            .keys()
+            .map(|key| {
+                key.path
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        kept.sort_unstable();
+        kept
+    }
+
+    #[test]
+    fn files_asked_for_lately_keep_their_processes() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut files = Files::default();
+        // Eight files asked for in turn, over and over: none stops.
+        for second in 0..3 {
+            for name in 0..8 {
+                files.readers(&key(name), at(second) + Duration::from_millis(name as u64));
+            }
+        }
+        assert_eq!(kept(&files), (0..8).collect::<Vec<_>>());
+        // Asked for from kept frames counts too.
+        files.used(&key(0), at(9));
+        // A while later, a new file: those not asked for lately stop, the
+        // least recently asked for first, down to FILES.
+        files.readers(&key(8), at(10));
+        assert_eq!(kept(&files), [0, 4, 5, 6, 7, 8]);
+        // Much later, another new file takes the place of the least recently
+        // asked for only: FILES stay, even when none was asked for lately.
+        files.readers(&key(9), at(100));
+        assert_eq!(kept(&files), [0, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn past_the_ceiling_the_least_recently_asked_for_stops() {
+        let start = Instant::now();
+        let mut files = Files::default();
+        for name in 0..MAX_FILES + 2 {
+            files.readers(&key(name), start + Duration::from_millis(name as u64));
+        }
+        assert_eq!(files.readers.len(), MAX_FILES);
+        assert!(!kept(&files).contains(&0) && !kept(&files).contains(&1));
+        assert!(kept(&files).contains(&(MAX_FILES + 1)));
+    }
 
     #[test]
     fn small_boxes_get_frames_halved_as_often_as_they_still_cover() {
