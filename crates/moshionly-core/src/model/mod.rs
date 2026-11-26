@@ -15,11 +15,12 @@ pub mod text;
 
 pub use animation::{
     AnimationGroup, AnimationKind, BlurAnimation, BlurPreset, CornerRadiusAnimation,
-    CounterAnimation, Direction, FadePreset, FillAnimation, GrowIn, GrowOut, InstantAnimation,
-    MoveAnimation, Offset, OpacityAnimation, ResizeAnchor, ResizeAnimation, RevealPreset,
-    RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn, ShrinkOut,
-    SizeChange, SlidePreset, SpinPreset, StrokeAnimation, StrokeChange, TextAnimation, TextEffect,
-    TextOrder, TextSplit, Timing,
+    CounterAnimation, Direction, DirectionalBlurAnimation, DirectionalBlurChange, FadePreset,
+    FillAnimation, GlowAnimation, GlowChange, GrowIn, GrowOut, InstantAnimation, MoveAnimation,
+    NoiseAnimation, NoiseChange, Offset, OpacityAnimation, ResizeAnchor, ResizeAnimation,
+    RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation, ShadowChange, ShrinkIn,
+    ShrinkOut, SizeChange, SlidePreset, SpinPreset, StrokeAnimation, StrokeChange, TextAnimation,
+    TextEffect, TextOrder, TextSplit, Timing,
 };
 pub use effect::{DirectionalBlur, Glow, Noise};
 pub use layer::{

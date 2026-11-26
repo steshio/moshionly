@@ -8,10 +8,10 @@ use serde_json::Value;
 
 use super::animation::{
     AnimationGroup, AnimationKind, BlurAnimation, BlurPreset, CornerRadiusAnimation,
-    CounterAnimation, FadePreset, FillAnimation, GrowIn, GrowOut, InstantAnimation, MoveAnimation,
-    OpacityAnimation, ResizeAnimation, RevealPreset, RotateAnimation, ScaleAnimation,
-    ShadowAnimation, ShrinkIn, ShrinkOut, SlidePreset, SpinPreset, StrokeAnimation, TextAnimation,
-    Timing,
+    CounterAnimation, DirectionalBlurAnimation, FadePreset, FillAnimation, GlowAnimation, GrowIn,
+    GrowOut, InstantAnimation, MoveAnimation, NoiseAnimation, OpacityAnimation, ResizeAnimation,
+    RevealPreset, RotateAnimation, ScaleAnimation, ShadowAnimation, ShrinkIn, ShrinkOut,
+    SlidePreset, SpinPreset, StrokeAnimation, TextAnimation, Timing,
 };
 use super::layer::{
     Artboard, Component, EllipseLayer, Group, ImageLayer, Instance, LayerProps, MaskGroup,
@@ -99,6 +99,12 @@ pub enum NodeData {
     Blur(BlurAnimation),
     /// Changes a layer's drop shadow.
     Shadow(ShadowAnimation),
+    /// Changes a layer's outer glow.
+    Glow(GlowAnimation),
+    /// Changes a layer's noise.
+    Noise(NoiseAnimation),
+    /// Changes a layer's directional blur.
+    DirectionalBlur(DirectionalBlurAnimation),
 
     /// Makes a layer visible at one moment.
     Show(InstantAnimation),
@@ -240,6 +246,9 @@ node_types! {
     CornerRadius, "corner_radius", property, "Changes the corner rounding of a rect, group or image.";
     Blur, "blur", property, "Changes how blurred a layer is.";
     Shadow, "shadow", property, "Changes a layer's drop shadow: colour, offset and blur.";
+    Glow, "glow", property, "Changes a layer's outer glow: colour, radius and spread.";
+    Noise, "noise", property, "Changes the strength and grain size of a layer's film grain.";
+    DirectionalBlur, "directional_blur", property, "Changes a layer's directional blur: its amount and angle.";
 
     Show, "show", instant, "Makes a layer visible at one moment; the layer is hidden before the first show.";
     Hide, "hide", instant, "Makes a layer invisible at one moment.";
@@ -338,6 +347,9 @@ impl NodeData {
             NodeData::CornerRadius(_) => NodeType::CornerRadius,
             NodeData::Blur(_) => NodeType::Blur,
             NodeData::Shadow(_) => NodeType::Shadow,
+            NodeData::Glow(_) => NodeType::Glow,
+            NodeData::Noise(_) => NodeType::Noise,
+            NodeData::DirectionalBlur(_) => NodeType::DirectionalBlur,
             NodeData::Show(_) => NodeType::Show,
             NodeData::Hide(_) => NodeType::Hide,
             NodeData::FadeIn(_) => NodeType::FadeIn,
@@ -464,6 +476,9 @@ impl NodeData {
             NodeData::CornerRadius(n) => Some(&n.timing),
             NodeData::Blur(n) => Some(&n.timing),
             NodeData::Shadow(n) => Some(&n.timing),
+            NodeData::Glow(n) => Some(&n.timing),
+            NodeData::Noise(n) => Some(&n.timing),
+            NodeData::DirectionalBlur(n) => Some(&n.timing),
             NodeData::FadeIn(n) | NodeData::FadeOut(n) => Some(&n.timing),
             NodeData::SlideIn(n) | NodeData::SlideOut(n) => Some(&n.timing),
             NodeData::GrowIn(n) => Some(&n.timing),
@@ -492,6 +507,9 @@ impl NodeData {
             NodeData::CornerRadius(n) => Some(&mut n.timing),
             NodeData::Blur(n) => Some(&mut n.timing),
             NodeData::Shadow(n) => Some(&mut n.timing),
+            NodeData::Glow(n) => Some(&mut n.timing),
+            NodeData::Noise(n) => Some(&mut n.timing),
+            NodeData::DirectionalBlur(n) => Some(&mut n.timing),
             NodeData::FadeIn(n) | NodeData::FadeOut(n) => Some(&mut n.timing),
             NodeData::SlideIn(n) | NodeData::SlideOut(n) => Some(&mut n.timing),
             NodeData::GrowIn(n) => Some(&mut n.timing),
@@ -654,6 +672,9 @@ node_data_from! {
     CornerRadiusAnimation => CornerRadius,
     BlurAnimation => Blur,
     ShadowAnimation => Shadow,
+    GlowAnimation => Glow,
+    NoiseAnimation => Noise,
+    DirectionalBlurAnimation => DirectionalBlur,
     GrowIn => GrowIn,
     GrowOut => GrowOut,
     ShrinkIn => ShrinkIn,
@@ -874,6 +895,9 @@ mod tests {
             json!({ "type": "mask_group", "rotation": 45, "opacity": 50 }),
             json!({ "type": "rect", "hidden": true, "locked": true, "blend_mode": "multiply", "blur": 4,
                     "shadow": { "y": 8 }, "source_id": "figma:abc:1:2" }),
+            json!({ "type": "rect", "glow": { "color": "#FF00FF80", "radius": 12, "spread": 3 },
+                    "noise": { "amount": 0.5, "size": 2, "animated": false },
+                    "directional_blur": { "amount": 8, "angle": 45 } }),
             json!({ "type": "ellipse", "start_angle": 90, "sweep": 180, "inner_radius": 0.5 }),
             json!({ "type": "star", "points": 7, "inner_radius": 0.6, "scale": 2 }),
             json!({ "type": "path", "path": { "subpaths": [{ "anchors": [{ "point": [0, 0] }, { "point": [1, 1] }] }] } }),
@@ -1014,6 +1038,9 @@ mod tests {
             json!({ "type": "corner_radius", "from": 0, "to": [8, 8, 0, 0] }),
             json!({ "type": "blur", "from": 24, "to": 0 }),
             json!({ "type": "shadow", "from": { "blur": 0 }, "to": { "color": "#00000080", "x": 2, "y": 12, "blur": 30 } }),
+            json!({ "type": "glow", "from": { "radius": 0 }, "to": { "color": "#FFD60A", "radius": 40, "spread": 4 } }),
+            json!({ "type": "noise", "from": { "amount": 0 }, "to": { "amount": 0.6, "size": 3 } }),
+            json!({ "type": "directional_blur", "from": { "amount": 0, "angle": 30 }, "to": { "amount": 24 } }),
             json!({ "type": "show" }),
             json!({ "type": "hide", "name": "Cut" }),
             json!({ "type": "fade_in" }),
@@ -1228,6 +1255,6 @@ mod tests {
             !NodeType::TextIn.is_entrance(),
             "text animations are their own kind"
         );
-        assert_eq!(NodeType::ALL.len(), 43);
+        assert_eq!(NodeType::ALL.len(), 46);
     }
 }

@@ -368,6 +368,108 @@ pub struct ShadowChange {
     pub blur: Option<f64>,
 }
 
+/// `glow`: changes the layer's outer glow. Replacing.
+///
+/// A layer without a glow at rest is treated as having the default glow,
+/// fully transparent, so a glow can fade in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GlowAnimation {
+    /// Target, time span and easing.
+    #[serde(flatten)]
+    pub timing: Timing,
+    /// Glow at the start. Default: the glow at that moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<GlowChange>,
+    /// Glow at the end. Default: the layer's resting glow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<GlowChange>,
+}
+
+/// The parts of a glow, of which any may be left alone.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GlowChange {
+    /// Glow colour; its alpha is the strength. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Color>,
+    /// Softness in pixels, 0 or more. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub radius: Option<f64>,
+    /// Growth of the shape in pixels, 0 or more. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub spread: Option<f64>,
+}
+
+/// `noise`: changes the strength and grain size of the layer's noise.
+/// Replacing.
+///
+/// A layer without noise at rest is treated as having the default noise
+/// with an amount of 0, so grain can fade in. Whether the grain moves is
+/// the layer's own `noise.animated` and does not animate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoiseAnimation {
+    /// Target, time span and easing.
+    #[serde(flatten)]
+    pub timing: Timing,
+    /// Noise at the start. Default: the noise at that moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<NoiseChange>,
+    /// Noise at the end. Default: the layer's resting noise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<NoiseChange>,
+}
+
+/// The animatable parts of noise, of which either may be left alone.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoiseChange {
+    /// Strength from 0 to 1. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub amount: Option<f64>,
+    /// Size of one grain in pixels, more than 0. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub size: Option<f64>,
+}
+
+/// `directional_blur`: changes the layer's directional blur. Replacing.
+///
+/// A layer without a directional blur at rest is treated as having one of
+/// amount 0 at angle 0, so the blur can grow in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DirectionalBlurAnimation {
+    /// Target, time span and easing.
+    #[serde(flatten)]
+    pub timing: Timing,
+    /// Directional blur at the start. Default: the directional blur at that
+    /// moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<DirectionalBlurChange>,
+    /// Directional blur at the end. Default: the layer's resting
+    /// directional blur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<DirectionalBlurChange>,
+}
+
+/// The parts of a directional blur, of which either may be left alone.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DirectionalBlurChange {
+    /// Blur along the direction in pixels, 0 or more. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub amount: Option<f64>,
+    /// Direction in degrees, clockwise from horizontal. Default: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
+}
+
 /// `show` and `hide`: switch the layer's visibility at one moment.
 ///
 /// A layer with a `show` is hidden until the first one happens; a layer with

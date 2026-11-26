@@ -353,6 +353,33 @@ Changes a layer's drop shadow: colour, offset and blur.
 | `from` | [shadow_change](#shadow_change) | none | Shadow at the start. Default: the shadow at that moment. |
 | `to` | [shadow_change](#shadow_change) | none | Shadow at the end. Default: the layer's resting shadow. |
 
+#### `glow`
+
+Changes a layer's outer glow: colour, radius and spread.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [glow_change](#glow_change) | none | Glow at the start. Default: the glow at that moment. |
+| `to` | [glow_change](#glow_change) | none | Glow at the end. Default: the layer's resting glow. |
+
+#### `noise`
+
+Changes the strength and grain size of a layer's film grain.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [noise_change](#noise_change) | none | Noise at the start. Default: the noise at that moment. |
+| `to` | [noise_change](#noise_change) | none | Noise at the end. Default: the layer's resting noise. |
+
+#### `directional_blur`
+
+Changes a layer's directional blur: its amount and angle.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `from` | [directional_blur_change](#directional_blur_change) | none | Directional blur at the start. Default: the directional blur at that moment. |
+| `to` | [directional_blur_change](#directional_blur_change) | none | Directional blur at the end. Default: the layer's resting directional blur. |
+
 ### Instant animations
 
 These happen at one moment and have no easing.
@@ -585,6 +612,9 @@ A folder that organises animations on the timeline; it does not change playback.
 | `corner_radius` | `group`, `rect`, `image`, `component`, `video` |
 | `blur` | every layer except `artboard` |
 | `shadow` | every layer except `artboard` |
+| `glow` | every layer except `artboard` |
+| `noise` | every layer except `artboard` |
+| `directional_blur` | every layer except `artboard` |
 | `show` | every layer except `artboard` |
 | `hide` | every layer except `artboard` |
 | `fade_in` | every layer except `artboard` |
@@ -964,6 +994,34 @@ The parts of a shadow, of which any may be left alone.
 | `x` | number | none | Horizontal offset in pixels. Default: unchanged. |
 | `y` | number | none | Vertical offset in pixels. Default: unchanged. |
 | `blur` | number | none | Blur in pixels, 0 or more. Default: unchanged. |
+
+#### `glow_change`
+
+The parts of a glow, of which any may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `color` | colour | none | Glow colour; its alpha is the strength. Default: unchanged. |
+| `radius` | number | none | Softness in pixels, 0 or more. Default: unchanged. |
+| `spread` | number | none | Growth of the shape in pixels, 0 or more. Default: unchanged. |
+
+#### `noise_change`
+
+The animatable parts of noise, of which either may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | none | Strength from 0 to 1. Default: unchanged. |
+| `size` | number | none | Size of one grain in pixels, more than 0. Default: unchanged. |
+
+#### `directional_blur_change`
+
+The parts of a directional blur, of which either may be left alone.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | none | Blur along the direction in pixels, 0 or more. Default: unchanged. |
+| `angle` | number | none | Direction in degrees, clockwise from horizontal. Default: unchanged. |
 
 #### `direction`
 
