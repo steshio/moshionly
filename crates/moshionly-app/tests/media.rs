@@ -344,8 +344,9 @@ fn type_into(harness: &mut Harness<'_, Shell>, name: &str, text: &str) {
     harness.run();
 }
 
-#[test]
-fn the_inspector_sets_when_a_video_and_a_sound_play() {
+/// The editor on a scene with a video and a sound whose files are not
+/// there, without ffmpeg.
+fn scene_harness() -> Harness<'static, Shell> {
     let document = moshionly_core::io::parse(
         r##"{"format":"moshionly","version":3,"name":"Media","nodes":[
         {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000},
@@ -373,6 +374,35 @@ fn the_inspector_sets_when_a_video_and_a_sound_play() {
             shell,
         );
     harness.run();
+    harness
+}
+
+#[test]
+fn the_export_dialog_offers_sound_where_it_can_go() {
+    let mut harness = scene_harness();
+    harness.state_mut().open_export_dialog();
+    harness.run();
+    let choose = |harness: &mut Harness<'_, Shell>, format| {
+        let setup = harness.state_mut().export_setup_mut().unwrap();
+        setup.choices.set_format(format);
+        harness.run();
+    };
+    choose(&mut harness, moshionly_export::Format::Mp4);
+    assert!(harness.query_by_label("Include sound").is_some());
+    assert!(harness.query_by_label_contains("with sound").is_some());
+    // Unticked, the MP4 is silent.
+    harness.get_by_label("Include sound").click();
+    harness.run();
+    assert!(!harness.state().export_setup().unwrap().choices.sound);
+    assert!(harness.query_by_label_contains("with sound").is_none());
+    // A GIF holds no sound: nothing to choose.
+    choose(&mut harness, moshionly_export::Format::Gif);
+    assert!(harness.query_by_label("Include sound").is_none());
+}
+
+#[test]
+fn the_inspector_sets_when_a_video_and_a_sound_play() {
+    let mut harness = scene_harness();
     let clip = |harness: &Harness<'_, Shell>, id: &str| {
         *harness
             .state()

@@ -369,7 +369,8 @@ pub fn settings_for(options: &ExportOptions) -> Result<Settings, HostError> {
     let mut settings = Settings::default()
         .with_scale(options.scale)
         .with_frame_rate(rate)
-        .with_still(options.time_ms);
+        .with_still(options.time_ms)
+        .with_sound(options.sound);
     if options.transparent {
         settings = settings.with_background(Background::Transparent);
     }
@@ -540,6 +541,13 @@ mod tests {
         assert_eq!(settings.frame_rate, FrameRate::FPS_24);
         assert_eq!(settings.still_ms, Some(500.0));
         assert_eq!(settings.background, Background::Transparent);
+        assert!(settings.sound);
+        let quiet = settings_for(&ExportOptions {
+            sound: false,
+            ..ExportOptions::default()
+        })
+        .unwrap();
+        assert!(!quiet.sound, "an agent can leave the sound out");
         let bad = settings_for(&ExportOptions {
             fps: -1.0,
             ..ExportOptions::default()

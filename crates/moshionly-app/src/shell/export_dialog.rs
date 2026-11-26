@@ -382,6 +382,13 @@ fn choosing(
         }
     });
 
+    if format.supports_sound() && has_sound(document, &setup.artboard) {
+        ui.checkbox(
+            &mut setup.choices.sound,
+            RichText::new("Include sound").font(theme.body()),
+        );
+    }
+
     if format.is_animated() {
         let length = moshionly_core::eval::duration_of(document, &setup.artboard).unwrap_or(0.0);
         let mut part = setup.range.is_some();
@@ -443,6 +450,9 @@ fn choosing(
                     duration / 1000.0
                 ));
             }
+            if plan.sound {
+                summary.push_str(" · with sound");
+            }
             ui.label(
                 RichText::new(summary)
                     .font(theme.body())
@@ -470,6 +480,12 @@ fn choosing(
         }
     });
     action
+}
+
+/// Whether sound plays anywhere on the timeline of `artboard`.
+fn has_sound(document: &moshionly_core::Document, artboard: &NodeId) -> bool {
+    let length = moshionly_core::eval::duration_of(document, artboard).unwrap_or(0.0);
+    !moshionly_core::eval::sounds(document, artboard, 0.0, length).is_empty()
 }
 
 /// The progress bar with Cancel.

@@ -4,7 +4,7 @@
 //! ```text
 //! moshionly [file.moshi]
 //! moshionly mcp [--save] [file.moshi]
-//! moshionly export <file.moshi> --out <path> [--format ...] [--artboard ...] [--fps ...] [--scale ...]
+//! moshionly export <file.moshi> --out <path> [--format ...] [--artboard ...] [--fps ...] [--scale ...] [--no-sound]
 //! ```
 //!
 //! [`parse`] reads the arguments into a [`Command`] and is tested on its
@@ -70,6 +70,8 @@ pub struct ExportArgs {
     pub fps: Option<f64>,
     /// The size, as a multiple of the artboard's size.
     pub scale: Option<f64>,
+    /// Leave the sound out of MP4, WebM and ProRes files.
+    pub no_sound: bool,
 }
 
 /// Arguments that do not make a command, with what is wrong.
@@ -136,9 +138,11 @@ Options:
   -a, --artboard <name>    The artboard's name or id. Default: the first.
       --fps <number>       Frames per second. Default: 30.
       --scale <number>     Size as a multiple of the artboard's. Default: 1.
+      --no-sound           Leave the sound out of MP4, WebM and ProRes files.
+                           Default: they carry the artboard's sound.
   -h, --help               Show this text
 
-WebM and ProRes need ffmpeg to be installed.
+WebM and ProRes need ffmpeg to be installed, and so do video and sound.
 ";
 
 /// Reads `moshionly`'s arguments, without the program's own name.
@@ -227,6 +231,7 @@ fn parse_export(args: &[String]) -> Result<Command, UsageError> {
             "-a" | "--artboard" => parsed.artboard = Some(value("a name")?),
             "--fps" => parsed.fps = Some(number(value("a number")?, "a positive number")?),
             "--scale" => parsed.scale = Some(number(value("a number")?, "a positive number")?),
+            "--no-sound" => parsed.no_sound = true,
             option if option.starts_with('-') => {
                 return Err(fail(format!("unknown option {option}")));
             }
@@ -334,6 +339,7 @@ pub fn export_job(args: &ExportArgs, document: Arc<Document>) -> Result<ExportJo
     if let Some(scale) = args.scale {
         settings = settings.with_scale(scale);
     }
+    settings = settings.with_sound(!args.no_sound);
     Ok(ExportJob::new(document, artboard, format, args.out.clone())
         .with_settings(settings)
         .with_project_file(std::path::absolute(&args.file).unwrap_or(args.file.clone())))
@@ -483,6 +489,12 @@ mod tests {
             panic!("an export");
         };
         assert_eq!(args.format, Some(Format::Mp4), "--format wins");
+        assert!(!args.no_sound);
+        let Ok(Command::Export(args)) = parse_words("export d.moshi -o a.webm --no-sound") else {
+            panic!("an export");
+        };
+        assert!(args.no_sound);
+        assert!(EXPORT_USAGE.contains("--no-sound"));
     }
 
     #[test]
@@ -530,8 +542,20 @@ mod tests {
             artboard: Some(name),
             fps: Some(25.0),
             scale: Some(0.5),
+            no_sound: false,
         };
         let job = export_job(&args, Arc::clone(&document)).unwrap();
+        assert!(job.settings.sound);
+        let quiet = ExportArgs {
+            no_sound: true,
+            ..args.clone()
+        };
+        assert!(
+            !export_job(&quiet, Arc::clone(&document))
+                .unwrap()
+                .settings
+                .sound
+        );
         assert_eq!(job.format, Format::Gif);
         assert_eq!(job.artboard, NodeId::from("scene"));
         assert_eq!(job.settings.frame_rate, FrameRate::FPS_25);
