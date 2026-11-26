@@ -16,8 +16,8 @@ use crate::ffmpeg::last_words;
 pub struct MediaInfo {
     /// How long the file plays, in milliseconds, when it says.
     pub duration_ms: Option<f64>,
-    /// Width of the picture in pixels as it is shown (turned upright); 0
-    /// without video.
+    /// Width of the picture in pixels as it is shown (in square pixels,
+    /// turned upright); 0 without video.
     pub width: u32,
     /// Height of the picture in pixels as it is shown; 0 without video.
     pub height: u32,
@@ -146,13 +146,21 @@ fn parse(json: &Value) -> Probed {
     let sound = streams.iter().find(|stream| kind(stream, "audio"));
     let (mut width, mut height) = video.map_or((0, 0), |video| {
         let side = |name: &str| video[name].as_u64().unwrap_or(0).min(u64::from(u32::MAX)) as u32;
-        (side("width"), side("height"))
+        // Pixels that are not square (HDV, DV) are shown wider or narrower
+        // than they are stored: frames are read at the size shown.
+        let stored = side("width");
+        let stretch = ratio(&video["sample_aspect_ratio"], ':').unwrap_or(1.0);
+        let shown = (f64::from(stored) * stretch)
+            .round()
+            .min(f64::from(u32::MAX)) as u32;
+        (shown.max(stored.min(1)), side("height"))
     });
+    // Turned upright after being stretched, as players show it.
     if video.is_some_and(|video| rotation(video).rem_euclid(180) == 90) {
         (width, height) = (height, width);
     }
     let frame_rate = video.and_then(|video| {
-        ratio(&video["avg_frame_rate"]).or_else(|| ratio(&video["r_frame_rate"]))
+        ratio(&video["avg_frame_rate"], '/').or_else(|| ratio(&video["r_frame_rate"], '/'))
     });
     let duration_ms = number(&json["format"]["duration"])
         .or_else(|| {
@@ -204,9 +212,10 @@ fn number(value: &Value) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
-/// A rate written as `"30000/1001"`; `None` for `"0/0"` and the like.
-fn ratio(value: &Value) -> Option<f64> {
-    let (top, bottom) = value.as_str()?.split_once('/')?;
+/// A ratio written as `"30000/1001"` (with `separator` between), above 0;
+/// `None` for `"0/0"`, `"0:1"`, `"N/A"` and the like.
+fn ratio(value: &Value, separator: char) -> Option<f64> {
+    let (top, bottom) = value.as_str()?.split_once(separator)?;
     let rate = top.trim().parse::<f64>().ok()? / bottom.trim().parse::<f64>().ok()?;
     (rate.is_finite() && rate > 0.0).then_some(rate)
 }
@@ -257,6 +266,32 @@ mod tests {
     }
 
     #[test]
+    fn video_with_pixels_that_are_not_square_is_as_wide_as_it_is_shown() {
+        let size = |video: Value| {
+            let probed = parse(&json!({ "streams": [video], "format": {} }));
+            (probed.info.width, probed.info.height)
+        };
+        // HDV: stored 1440 wide, shown 16:9.
+        let hdv = json!({ "codec_type": "video", "width": 1440, "height": 1080,
+                          "sample_aspect_ratio": "4:3", "display_aspect_ratio": "16:9" });
+        assert_eq!(size(hdv), (1920, 1080));
+        // NTSC DV, pixels narrower than they are tall.
+        let dv = json!({ "codec_type": "video", "width": 720, "height": 480,
+                         "sample_aspect_ratio": "8:9" });
+        assert_eq!(size(dv), (640, 480));
+        // Stretched first, then turned upright.
+        let turned = json!({ "codec_type": "video", "width": 1440, "height": 1080,
+                             "sample_aspect_ratio": "4:3", "tags": { "rotate": "90" } });
+        assert_eq!(size(turned), (1080, 1920));
+        // Unknown ratios change nothing.
+        for unknown in ["0:1", "N/A", "1:0", "x"] {
+            let video = json!({ "codec_type": "video", "width": 640, "height": 480,
+                                "sample_aspect_ratio": unknown });
+            assert_eq!(size(video), (640, 480), "{unknown}");
+        }
+    }
+
+    #[test]
     fn cover_art_is_not_video() {
         let song = parse(&json!({
             "streams": [
@@ -270,7 +305,7 @@ mod tests {
         assert_eq!((song.info.width, song.info.height), (0, 0));
         assert_eq!(song.info.duration_ms, Some(3500.0));
         assert_eq!(song.info.frame_rate, None);
-        assert_eq!(ratio(&json!("0/0")), None);
+        assert_eq!(ratio(&json!("0/0"), '/'), None);
     }
 
     #[test]

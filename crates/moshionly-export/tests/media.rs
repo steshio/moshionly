@@ -170,6 +170,27 @@ fn probing_says_what_a_file_holds() {
     let duration = info.duration_ms.unwrap();
     assert!((duration - 2000.0).abs() < 100.0, "{duration}");
 
+    // Pixels half again as wide as they are tall: shown 72 wide.
+    let wide = make(
+        &tools,
+        dir.path(),
+        "wide.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=48x32:rate=10:duration=1,setsar=3/2",
+            "-c:v",
+            "mpeg4",
+        ],
+    );
+    let info = tools.probe(&wide).unwrap();
+    assert_eq!((info.width, info.height), (72, 32));
+    let frame = VideoDecoder::new(tools.clone())
+        .frame_at(&wide, 0.0, 72.0, 32.0)
+        .unwrap();
+    assert_eq!((frame.width(), frame.height()), (72, 32));
+
     let sound = tools.probe(&ramp(&tools, dir.path())).unwrap();
     assert!(!sound.has_video && sound.has_sound);
     assert_eq!((sound.width, sound.height), (0, 0));

@@ -174,9 +174,9 @@ installed `ffmpeg` and `ffprobe`, like the WebM and ProRes exports, and
 everything in it is optional at run time.
 
 - `MediaTools::locate()` finds both programs; `probe(path)` (or
-  `MediaTools::probe`) says how long a file is, the size of its picture
-  turned upright, and whether it has video and sound. Cover art in a sound
-  file is not video.
+  `MediaTools::probe`) says how long a file is, the size of its picture as
+  shown (in square pixels, turned upright), and whether it has video and
+  sound. Cover art in a sound file is not video.
 - `VideoDecoder` is the renderer's `VideoFrames` provider (install it with
   `AssetLoader::with_video`). For each file and frame size, one or two
   long-lived `ffmpeg` processes decode forward to raw RGBA; a request they
