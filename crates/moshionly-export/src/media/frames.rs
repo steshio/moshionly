@@ -72,6 +72,13 @@ const IDLE: Duration = Duration::from_secs(5);
 /// to ask for [`MAX_FILES`] files in between.
 const IDLE_REQUESTS: u64 = (MAX_WORKERS * MAX_FILES) as u64;
 
+/// How long a file (at one size) goes unasked for before its processes may
+/// stop however few requests came in between (when more than [`FILES`]
+/// have some): far above a first round of slow starts, so files drawn on
+/// every frame never look idle, but short enough that sizes no longer
+/// drawn after a zoom stop while the editor is paused and draws rarely.
+const LONG_IDLE: Duration = Duration::from_secs(60);
+
 /// How far ahead of a process a moment may be for it to read on to it
 /// rather than start again there, in microseconds.
 const READ_ON: i64 = 2_000_000;
@@ -121,8 +128,9 @@ impl Asked {
     /// Whether, at `now`, this was long enough ago, in time and in
     /// requests, for the processes to stop.
     fn idle(self, now: Asked) -> bool {
-        now.at.saturating_duration_since(self.at) >= IDLE
-            && now.request.saturating_sub(self.request) >= IDLE_REQUESTS
+        let quiet = now.at.saturating_duration_since(self.at);
+        quiet >= LONG_IDLE
+            || (quiet >= IDLE && now.request.saturating_sub(self.request) >= IDLE_REQUESTS)
     }
 }
 
@@ -564,6 +572,31 @@ mod tests {
             }
         }
         assert_eq!(kept(&files), (14..21).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn sizes_no_longer_drawn_stop_while_the_editor_is_paused() {
+        // A zoom while paused: ten renders over two seconds, the size
+        // changing every two renders, seven videos each time.
+        let start = Instant::now();
+        let mut files = Files::default();
+        for render in 0..10u64 {
+            let at = start + Duration::from_millis(render * 200);
+            for video in 0..7 {
+                files.readers(&key((render / 2) as usize * 7 + video), at);
+            }
+        }
+        assert!(files.readers.len() > 7);
+        // Then an edit every three seconds, drawn at the last size from
+        // kept frames: far fewer requests than `IDLE_REQUESTS`.
+        let last = 4 * 7..5 * 7;
+        for edit in 1..=25u64 {
+            let at = start + Duration::from_secs(2 + edit * 3);
+            for video in last.clone() {
+                files.used(&key(video), at);
+            }
+        }
+        assert_eq!(kept(&files), last.collect::<Vec<_>>());
     }
 
     #[test]
