@@ -535,11 +535,20 @@ pub(crate) const NO_DIRECTIONAL_BLUR: DirectionalBlur = DirectionalBlur {
     angle: 0.0,
 };
 
+/// A blur with no amount smears nowhere, so its angle means nothing: while
+/// one end has no amount, the blur keeps the other end's angle. A blur
+/// fading in or out then smears one way all along instead of turning, as a
+/// colour fading from transparent keeps the other end's hue.
 impl Blend for DirectionalBlur {
     fn blend(&self, other: &Self, t: f64) -> Self {
+        let (from, to) = match (self.amount == 0.0, other.amount == 0.0) {
+            (true, false) => (other.angle, other.angle),
+            (false, true) => (self.angle, self.angle),
+            _ => (self.angle, other.angle),
+        };
         DirectionalBlur {
             amount: mix(self.amount, other.amount, t).max(0.0),
-            angle: mix(self.angle, other.angle, t),
+            angle: mix(from, to, t),
         }
     }
 }
@@ -1018,7 +1027,7 @@ mod tests {
         let step = ChangeStep {
             span: Span::new(0.0, 100.0, Easing::Linear),
             from: Some(DirectionalBlurChange {
-                amount: None,
+                amount: Some(10.0),
                 angle: Some(90.0),
             }),
             to: Some(DirectionalBlurChange {
@@ -1030,7 +1039,7 @@ mod tests {
         assert_eq!(
             half,
             DirectionalBlur {
-                amount: 15.0,
+                amount: 20.0,
                 angle: 45.0
             }
         );
@@ -1041,6 +1050,41 @@ mod tests {
             0.0,
             "never negative"
         );
+    }
+
+    #[test]
+    fn directional_blurs_fade_in_and_out_without_turning() {
+        let down = DirectionalBlurChange {
+            amount: Some(30.0),
+            angle: Some(90.0),
+        };
+        let fade = |from, to| ChangeStep {
+            span: Span::new(0.0, 100.0, Easing::Linear),
+            from,
+            to,
+        };
+        let smear_down = DirectionalBlur {
+            amount: 15.0,
+            angle: 90.0,
+        };
+        let fading_in = fade(None, Some(down));
+        assert_eq!(
+            replacing(&NO_DIRECTIONAL_BLUR, &[fading_in], 50.0),
+            smear_down
+        );
+        let fading_out = fade(Some(down), None);
+        assert_eq!(
+            replacing(&NO_DIRECTIONAL_BLUR, &[fading_out], 50.0),
+            smear_down
+        );
+        // With no amount at either end there is nothing to keep: the angle
+        // goes where it is asked to.
+        let still = DirectionalBlur {
+            amount: 0.0,
+            angle: 90.0,
+        };
+        assert_eq!(still.blend(&NO_DIRECTIONAL_BLUR, 0.5).angle, 45.0);
+        assert_eq!(still.blend(&NO_DIRECTIONAL_BLUR, 1.0), NO_DIRECTIONAL_BLUR);
     }
 
     #[test]

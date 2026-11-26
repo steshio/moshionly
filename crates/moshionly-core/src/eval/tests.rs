@@ -450,10 +450,11 @@ fn glow_noise_and_directional_blur_animate() {
         { "id": "n", "type": "noise", "target": "r", "start": 0, "end": 1000,
           "to": { "amount": 0.5, "size": 3 }, "easing": linear() },
         { "id": "d", "type": "directional_blur", "target": "r", "start": 1000, "end": 2000,
-          "from": { "angle": 90 }, "to": { "amount": 40, "angle": 0 }, "easing": linear() }
+          "from": { "amount": 20, "angle": 90 }, "to": { "amount": 40, "angle": 0 },
+          "easing": linear() }
     ]));
     // Before anything runs: the resting glow, no grain, and the directional
-    // blur's `from` already holds, but with no amount there is nothing to draw.
+    // blur's `from` already holds.
     let start = at(&document, 0.0);
     let rect = node(&start, "r");
     assert_eq!(
@@ -464,7 +465,16 @@ fn glow_noise_and_directional_blur_animate() {
             spread: 0.0
         })
     );
-    assert_eq!((rect.noise, rect.directional_blur), (None, None));
+    assert_eq!(
+        (rect.noise, rect.directional_blur),
+        (
+            None,
+            Some(DirectionalBlur {
+                amount: 20.0,
+                angle: 90.0
+            })
+        )
+    );
 
     let half = at(&document, 500.0);
     let rect = node(&half, "r");
@@ -491,7 +501,7 @@ fn glow_noise_and_directional_blur_animate() {
     assert_eq!(
         rect.directional_blur,
         Some(DirectionalBlur {
-            amount: 20.0,
+            amount: 30.0,
             angle: 45.0
         })
     );

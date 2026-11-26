@@ -332,7 +332,8 @@ mod tests {
         assert_eq!(row["noise"], json!([noise, noise]));
         assert_eq!(
             row["directional_blur"],
-            json!([null, { "amount": 5, "angle": 45 }])
+            json!([null, { "amount": 5, "angle": 90 }]),
+            "a blur growing from none smears one way all along"
         );
     }
 

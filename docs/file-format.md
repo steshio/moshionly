@@ -1107,6 +1107,7 @@ What the values mean:
 - `opacity`, sizes, colours, radii, blur and the effects are absolute values.
 - A `stroke`, `shadow`, `glow`, `noise` or `directional_blur` animation may name only some parts (`{ "width": 4 }`); the parts it does not name are treated like a missing value.
 - A layer without a stroke counts as having a stroke of width 0, a layer without a shadow as having a fully transparent one, without a glow as having the default glow fully transparent, without noise as having grain of amount 0, and without a directional blur as having one of amount 0 at angle 0, so all of them can be animated in.
+- A directional blur with no amount at one end of an animation takes the angle of the other end, so it grows or fades along one direction without turning.
 - Whether grain moves (`noise.animated`) is the layer's own and does not animate.
 
 An easing may carry a value past its target on the way (`overshoot`, `elastic`). Opacity, sizes, radii, blur and the effects' amounts, radii and spreads are then limited to their valid range. Positions and rotation are not, and scale only stops at 0.
