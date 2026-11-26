@@ -62,8 +62,8 @@ struct Shared {
     since: Option<Instant>,
     /// When the device last asked for samples.
     last_call: Option<Instant>,
-    /// The device reported an error, for example it was unplugged: it is
-    /// opened again at the next play.
+    /// The device reported an error that stopped the sound, for example
+    /// it was unplugged: it is opened again at the next play.
     broken: bool,
     /// While the scene loops, how long the loop is, in milliseconds: the
     /// track starts over from the beginning there.
@@ -314,12 +314,21 @@ where
                 };
                 fill(&mut shared, out, channels, Instant::now(), latency);
             },
-            move |_error| {
-                lock(&errors).broken = true;
-            },
+            move |error: cpal::Error| note_error(&mut lock(&errors), &error),
             None,
         )
         .map_err(|error| error.to_string())
+}
+
+/// Takes note of an error the device reported. Only one that stopped the
+/// sound breaks the output: after an xrun, a change of the default output
+/// (headphones plugged in) or a refused real-time thread the sound goes on,
+/// and the device's timestamps already count the new route's delay.
+fn note_error(shared: &mut Shared, error: &cpal::Error) {
+    use cpal::ErrorKind::{DeviceChanged, RealtimeDenied, Xrun};
+    if !matches!(error.kind(), Xrun | DeviceChanged | RealtimeDenied) {
+        shared.broken = true;
+    }
 }
 
 /// Fills `out`, `channels` samples per frame, with the track from the
@@ -624,6 +633,32 @@ mod tests {
         shared.loop_ms = Some(3.0 * ms);
         let heard = left(&mut shared, 8, Instant::now(), Duration::ZERO);
         assert_eq!(heard, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn only_errors_that_stop_the_sound_break_the_output() {
+        use cpal::{Error, ErrorKind};
+        // The sound goes on after these, on the new route for a change of
+        // output: the device's clock is still good.
+        for kind in [
+            ErrorKind::Xrun,
+            ErrorKind::DeviceChanged,
+            ErrorKind::RealtimeDenied,
+        ] {
+            let mut shared = playing(vec![0.0; 4]);
+            note_error(&mut shared, &Error::new(kind));
+            assert!(!shared.broken, "{kind}");
+        }
+        // These stop it: the device is opened again at the next play.
+        for kind in [
+            ErrorKind::DeviceNotAvailable,
+            ErrorKind::StreamInvalidated,
+            ErrorKind::BackendError,
+        ] {
+            let mut shared = playing(vec![0.0; 4]);
+            note_error(&mut shared, &Error::new(kind));
+            assert!(shared.broken, "{kind}");
+        }
     }
 
     #[test]
