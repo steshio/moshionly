@@ -6,24 +6,27 @@
 use egui::Ui;
 use moshionly_core::build::instances_follow_mains;
 use moshionly_core::model::{
-    BlendMode, Gradient, GradientStop, LayerProps, LinearGradient, NodeData, Paint, RadialGradient,
-    Shadow, Stroke, StrokePosition,
+    BlendMode, DirectionalBlur, Glow, Gradient, GradientStop, LayerProps, LinearGradient, NodeData,
+    Noise, Paint, RadialGradient, Shadow, Stroke, StrokePosition,
 };
-use moshionly_core::{Color, Edit, Node, NodeType, schema};
+use moshionly_core::{Color, Edit, Node, NodeId, NodeType, schema};
 use serde_json::{Value, json};
 
 use super::{Bind, component, media, numeric, text};
 use crate::{
     editor::{
+        effects::{self, Effect},
         inspect::{
-            Inspected, artboard_of, resize_all, set_all, shared, stretch_contents, text_of, tidy,
+            Inspected, Shared, artboard_of, resize_all, set_all, shared, stretch_contents, text_of,
+            tidy,
         },
         settle::{Frame, is_auto_sized, settle_edit},
     },
     theme::icons,
     widgets::{
-        ColorField, ColorResponse, Dropdown, IconButton, NumericResponse, Rgba, control_row, pair,
-        property_row, section, slider_with_value_mixed,
+        ColorField, ColorResponse, Dropdown, IconButton, MenuItem, NumericResponse, Rgba,
+        control_row, pair, popup_frame, property_row, section, segmented_mixed,
+        slider_with_value_mixed,
     },
 };
 
@@ -922,233 +925,388 @@ fn stroke_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
     }
 }
 
-/// A change to a shadow or a blur.
+/// A change to one of the selected layers' effects.
 enum EffectChange {
-    AddShadow,
-    RemoveShadow,
-    ShadowColor(ColorResponse, Rgba),
-    Shadow(NumericResponse, &'static str, f64),
-    AddBlur,
-    RemoveBlur,
-    Blur(NumericResponse, f64),
+    /// The effect was chosen in the add menu.
+    Add(Effect),
+    /// The effect's remove button was clicked.
+    Remove(Effect),
+    /// The colour of a shadow or a glow moved.
+    Color(Effect, ColorResponse, Rgba),
+    /// A number field of the effect moved: the part (`None` for the
+    /// blur, which is one number) and the number shown.
+    Number(Effect, Option<&'static str>, NumericResponse, f64),
+    /// Whether grain moves was chosen.
+    Moving(bool),
 }
 
-/// Shadow and blur.
+/// Grain that moves or stays still, as the Noise rows offer it.
+const GRAIN: [(bool, &str); 2] = [(true, "Moving"), (false, "Still")];
+
+/// The effects of the selected layers: shadow, blur, glow, noise and
+/// directional blur, one block each, with an add menu of those the
+/// selection does not have yet. Values are shown and changed across the
+/// layers that have the effect; each keeps its own other parts.
 fn effects_section(ui: &mut Ui, bind: &mut Bind<'_>, inspected: &Inspected<'_>) {
-    let ids = inspected.ids_where(|node| node.node_type() != NodeType::Artboard);
-    let layers: Vec<(&moshionly_core::NodeId, &LayerProps)> = inspected
-        .nodes()
-        .iter()
-        .filter(|node| ids.contains(&node.id))
-        .filter_map(|node| Some((&node.id, node.layer()?)))
-        .collect();
+    let layers = effects::layers(inspected.nodes());
     if layers.is_empty() {
         return;
     }
-    // A shadow's or a blur's values are changed on the layers that have
-    // one; the + buttons give one to the layers that have none.
-    let with = |has: fn(&LayerProps) -> bool| -> (Vec<moshionly_core::NodeId>, Vec<moshionly_core::NodeId>) {
-        let (yes, no): (Vec<_>, Vec<_>) = layers.iter().partition(|(_, layer)| has(layer));
-        (
-            yes.into_iter().map(|(id, _)| (*id).clone()).collect(),
-            no.into_iter().map(|(id, _)| (*id).clone()).collect(),
-        )
-    };
-    let (shadowed, unshadowed) = with(|layer| layer.shadow.is_some());
-    let (blurred, unblurred) = with(|layer| layer.blur > 0.0);
-    let shadow: Option<Shadow> = layers.iter().find_map(|(_, l)| l.shadow);
-    let shadow_part = |read: fn(&Shadow) -> f64| {
-        shared(
-            layers
-                .iter()
-                .filter_map(|(_, l)| l.shadow.as_ref().map(read)),
-        )
-    };
-    let shadow_colors = shared(
-        layers
-            .iter()
-            .filter_map(|(_, l)| l.shadow.as_ref().map(|s| s.color)),
-    );
-    let blur = shared(layers.iter().map(|(_, l)| l.blur).filter(|b| *b > 0.0));
+    let addable = effects::addable(&layers);
+    let present = effects::present(&layers);
     let mut changes: Vec<EffectChange> = Vec::new();
-    let mut add_menu = (false, false);
+    let mut added = None;
     let mut open = bind.state.open.effects;
     section(
         ui,
         "Effects",
         &mut open,
         |ui| {
-            if !unshadowed.is_empty()
-                && ui
-                    .add(
-                        IconButton::new(icons::PLUS)
-                            .dimmed(true)
-                            .tooltip("Add shadow"),
-                    )
-                    .clicked()
-            {
-                add_menu.0 = true;
+            if addable.is_empty() {
+                return;
             }
-            if !unblurred.is_empty()
-                && ui
-                    .add(
-                        IconButton::new(icons::DROP)
-                            .dimmed(true)
-                            .tooltip("Add blur"),
-                    )
-                    .clicked()
-            {
-                add_menu.1 = true;
-            }
+            let response = ui.add(
+                IconButton::new(icons::PLUS)
+                    .dimmed(true)
+                    .tooltip("Add effect"),
+            );
+            added = add_effect_menu(ui, &response, &addable);
         },
         |ui| {
-            if let Some(shadow) = &shadow {
-                property_row(ui, "Shadow", |ui| {
-                    ui.horizontal(|ui| {
-                        let mut picked = rgba(shadow.color);
-                        let response = ColorField::new(&mut picked, "Shadow colour")
-                            .width((ui.available_width() - 32.0).max(80.0))
-                            .mixed(shadow_colors.as_ref().is_some_and(|c| c.is_mixed()))
-                            .show(ui);
-                        changes.push(EffectChange::ShadowColor(response, picked));
-                        if ui
-                            .add(
-                                IconButton::new(icons::MINUS)
-                                    .dimmed(true)
-                                    .tooltip("Remove shadow"),
-                            )
-                            .clicked()
-                        {
-                            changes.push(EffectChange::RemoveShadow);
-                        }
-                    });
-                });
-                let parts: [(
-                    &'static str,
-                    &'static str,
-                    Option<crate::editor::inspect::Shared<f64>>,
-                ); 3] = [
-                    ("x", "X", shadow_part(|s| s.x)),
-                    ("y", "Y", shadow_part(|s| s.y)),
-                    ("blur", "Blur", shadow_part(|s| s.blur)),
-                ];
-                let (mut first, mut second, mut third) = (None, None, None);
-                control_row(ui, |ui| {
-                    pair(
-                        ui,
-                        |ui| {
-                            if let Some(value) = &parts[0].2 {
-                                first = Some(numeric(ui, value, "Shadow X", |f| {
-                                    f.label("X").silent_unit("px")
-                                }));
-                            }
-                        },
-                        |ui| {
-                            if let Some(value) = &parts[1].2 {
-                                second = Some(numeric(ui, value, "Shadow Y", |f| {
-                                    f.label("Y").silent_unit("px")
-                                }));
-                            }
-                        },
-                    );
-                });
-                control_row(ui, |ui| {
-                    pair(
-                        ui,
-                        |ui| {
-                            if let Some(value) = &parts[2].2 {
-                                third = Some(numeric(ui, value, "Shadow blur", |f| {
-                                    f.icon(icons::DROP)
-                                        .silent_unit("px")
-                                        .range(0.0..=f64::INFINITY)
-                                }));
-                            }
-                        },
-                        |_| {},
-                    );
-                });
-                for ((field, ..), result) in parts.iter().zip([first, second, third]) {
-                    if let Some((response, value)) = result {
-                        changes.push(EffectChange::Shadow(response, field, value));
-                    }
+            for effect in &present {
+                if effect_header(ui, *effect) {
+                    changes.push(EffectChange::Remove(*effect));
+                }
+                match effect {
+                    Effect::Shadow => shadow_rows(ui, &layers, &mut changes),
+                    Effect::Blur => blur_rows(ui, &layers, &mut changes),
+                    Effect::Glow => glow_rows(ui, &layers, &mut changes),
+                    Effect::Noise => noise_rows(ui, &layers, &mut changes),
+                    Effect::DirectionalBlur => directional_blur_rows(ui, &layers, &mut changes),
                 }
             }
-            if let Some(blur) = &blur {
-                property_row(ui, "Blur", |ui| {
-                    ui.horizontal(|ui| {
-                        let width = (ui.available_width() - 32.0).max(60.0);
-                        let (response, value) = numeric(ui, blur, "Layer blur", |f| {
-                            f.icon(icons::DROP)
-                                .silent_unit("px")
-                                .range(0.0..=f64::INFINITY)
-                                .width(width)
-                        });
-                        changes.push(EffectChange::Blur(response, value));
-                        if ui
-                            .add(
-                                IconButton::new(icons::MINUS)
-                                    .dimmed(true)
-                                    .tooltip("Remove blur"),
-                            )
-                            .clicked()
-                        {
-                            changes.push(EffectChange::RemoveBlur);
-                        }
-                    });
-                });
-            }
-            if shadow.is_none() && blur.is_none() {
-                let theme = crate::theme::Theme::of(ui);
-                ui.add_space(theme.space.xs);
-                ui.label(
-                    egui::RichText::new("No shadow or blur.")
-                        .font(theme.body())
-                        .color(theme.color.text_secondary),
-                );
-                ui.add_space(theme.space.xs);
+            if present.is_empty() {
+                quiet_note(ui, "No effects.");
             }
         },
     );
     bind.state.open.effects = open;
-    if add_menu.0 {
-        changes.push(EffectChange::AddShadow);
-    }
-    if add_menu.1 {
-        changes.push(EffectChange::AddBlur);
-    }
+    changes.extend(added.map(EffectChange::Add));
     for change in changes {
         match change {
-            EffectChange::AddShadow => {
+            EffectChange::Add(effect) => {
+                // What was added is shown, even if the section was closed.
+                bind.state.open.effects = true;
                 bind.apply(
-                    "Add shadow",
-                    &set_all(&unshadowed, "shadow", value_of(&Shadow::default())),
+                    &format!("Add {}", effect.lowercase()),
+                    &effects::add(effect, &layers),
                 );
             }
-            EffectChange::RemoveShadow => {
-                bind.apply("Remove shadow", &set_all(&ids, "shadow", Value::Null));
-            }
-            EffectChange::ShadowColor(response, color) => {
-                bind.color(&response, "Change shadow", || {
-                    set_all(&shadowed, "shadow", json!({ "color": hex(color) }))
-                })
-            }
-            EffectChange::Shadow(response, field, value) => {
-                let value = if field == "blur" {
-                    value.max(0.0)
-                } else {
-                    value
-                };
-                bind.field(&response, "Change shadow", || {
-                    set_all(&shadowed, "shadow", json!({ field: tidy(value) }))
+            EffectChange::Remove(effect) => bind.apply(
+                &format!("Remove {}", effect.lowercase()),
+                &effects::remove(effect, &layers),
+            ),
+            EffectChange::Color(effect, response, color) => {
+                bind.color(&response, &format!("Change {}", effect.lowercase()), || {
+                    effects::set_part(effect, &layers, Some("color"), hex(color))
                 });
             }
-            EffectChange::AddBlur => bind.apply("Add blur", &set_all(&unblurred, "blur", 4.0)),
-            EffectChange::RemoveBlur => bind.apply("Remove blur", &set_all(&ids, "blur", 0.0)),
-            EffectChange::Blur(response, value) => bind.field(&response, "Change blur", || {
-                set_all(&blurred, "blur", tidy(value.max(0.0)))
-            }),
+            EffectChange::Number(effect, part, response, shown) => {
+                let value = effects::stored_part(effect, part, shown);
+                bind.field(&response, &format!("Change {}", effect.lowercase()), || {
+                    effects::set_part(effect, &layers, part, json!(value))
+                });
+            }
+            EffectChange::Moving(moving) => bind.apply(
+                "Change noise",
+                &effects::set_part(Effect::Noise, &layers, Some("animated"), json!(moving)),
+            ),
         }
     }
+}
+
+/// The menu of effects that opens under the add button. Returns the
+/// effect chosen.
+fn add_effect_menu(ui: &Ui, response: &egui::Response, addable: &[Effect]) -> Option<Effect> {
+    let theme = crate::theme::Theme::of(ui);
+    let mut chosen = None;
+    egui::Popup::menu(response)
+        .frame(popup_frame(ui))
+        .gap(theme.space.xs)
+        .width(theme.size.menu_width)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::new(0.0, 1.0);
+            for effect in addable {
+                let name = format!("Add {}", effect.lowercase());
+                let item = MenuItem::new(effect.label())
+                    .icon(effect.icon())
+                    .accessible_name(&name);
+                if ui.add(item).clicked() {
+                    chosen = Some(*effect);
+                    // Closed here too, for a choice made without a pointer.
+                    ui.close();
+                }
+            }
+        });
+    chosen
+}
+
+/// The first line of an effect's block: its icon and name, and a button
+/// that removes it. Returns whether that button was clicked.
+fn effect_header(ui: &mut Ui, effect: Effect) -> bool {
+    let theme = crate::theme::Theme::of(ui);
+    let remove = format!("Remove {}", effect.lowercase());
+    control_row(ui, |ui| {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(theme.size.icon, theme.size.control),
+            egui::Sense::hover(),
+        );
+        icons::paint(
+            ui.painter(),
+            rect.center(),
+            effect.icon(),
+            theme.size.icon,
+            theme.color.text_secondary,
+        );
+        ui.label(
+            egui::RichText::new(effect.label())
+                .font(theme.body())
+                .color(theme.color.text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(IconButton::new(icons::MINUS).dimmed(true).tooltip(&remove))
+                .clicked()
+        })
+        .inner
+    })
+}
+
+/// A part of an effect read from every layer that has the effect: the
+/// same everywhere, or mixed.
+fn effect_part(
+    layers: &[(&NodeId, &LayerProps)],
+    read: impl Fn(&LayerProps) -> Option<f64>,
+) -> Option<Shared<f64>> {
+    shared(layers.iter().filter_map(|(_, layer)| read(layer)))
+}
+
+/// One number field of an effect: the part it edits (`None` for the blur,
+/// which is one number), its value across the layers that have the
+/// effect, its name and how it looks.
+struct EffectField {
+    effect: Effect,
+    part: Option<&'static str>,
+    value: Shared<f64>,
+    name: &'static str,
+    look: NumberLook,
+}
+
+/// How an effect's number field looks: its label or icon, unit and range.
+#[derive(Clone, Copy)]
+enum NumberLook {
+    /// A blur's softness in pixels, 0 or more, marked with a drop.
+    Softness,
+    /// Pixels, 0 or more, with a short label.
+    Length(&'static str),
+    /// Pixels that may be negative, with a short label.
+    Offset(&'static str),
+    /// Percent from 0 to 100, with a short label.
+    Percent(&'static str),
+    /// Degrees, with a short label.
+    Angle(&'static str),
+}
+
+/// Two number fields side by side, each shown when the layers have its
+/// value; what they did is added to `changes`.
+fn number_pair(
+    ui: &mut Ui,
+    changes: &mut Vec<EffectChange>,
+    first: Option<EffectField>,
+    second: Option<EffectField>,
+) {
+    let mut out = (None, None);
+    control_row(ui, |ui| {
+        pair(
+            ui,
+            |ui| out.0 = first.map(|field| effect_number(ui, field)),
+            |ui| out.1 = second.map(|field| effect_number(ui, field)),
+        );
+    });
+    changes.extend(out.0);
+    changes.extend(out.1);
+}
+
+/// One number field of an effect, and what it did.
+fn effect_number(ui: &mut Ui, field: EffectField) -> EffectChange {
+    let (response, shown) = numeric(ui, &field.value, field.name, |f| match field.look {
+        NumberLook::Softness => f
+            .icon(icons::DROP)
+            .silent_unit("px")
+            .range(0.0..=f64::INFINITY),
+        NumberLook::Length(label) => f.label(label).silent_unit("px").range(0.0..=f64::INFINITY),
+        NumberLook::Offset(label) => f.label(label).silent_unit("px"),
+        NumberLook::Percent(label) => f.label(label).unit("%").range(0.0..=100.0).decimals(0),
+        NumberLook::Angle(label) => f.label(label).unit("°"),
+    });
+    EffectChange::Number(field.effect, field.part, response, shown)
+}
+
+/// A shadow's colour, offset and blur.
+fn shadow_rows(ui: &mut Ui, layers: &[(&NodeId, &LayerProps)], changes: &mut Vec<EffectChange>) {
+    let shadows: Vec<&Shadow> = layers
+        .iter()
+        .filter_map(|(_, layer)| layer.shadow.as_ref())
+        .collect();
+    let Some(colors) = shared(shadows.iter().map(|shadow| shadow.color)) else {
+        return;
+    };
+    let mut picked = rgba(*colors.value());
+    let response = control_row(ui, |ui| {
+        ColorField::new(&mut picked, "Shadow colour")
+            .mixed(colors.is_mixed())
+            .show(ui)
+    });
+    changes.push(EffectChange::Color(Effect::Shadow, response, picked));
+    let field = |part, read: fn(&Shadow) -> f64, name, look| {
+        Some(EffectField {
+            effect: Effect::Shadow,
+            part: Some(part),
+            value: shared(shadows.iter().map(|shadow| read(shadow)))?,
+            name,
+            look,
+        })
+    };
+    number_pair(
+        ui,
+        changes,
+        field("x", |s| s.x, "Shadow X", NumberLook::Offset("X")),
+        field("y", |s| s.y, "Shadow Y", NumberLook::Offset("Y")),
+    );
+    number_pair(
+        ui,
+        changes,
+        field("blur", |s| s.blur, "Shadow blur", NumberLook::Softness),
+        None,
+    );
+}
+
+/// The blur of the whole layer.
+fn blur_rows(ui: &mut Ui, layers: &[(&NodeId, &LayerProps)], changes: &mut Vec<EffectChange>) {
+    let blur = effect_part(layers, |layer| (layer.blur > 0.0).then_some(layer.blur));
+    let field = blur.map(|value| EffectField {
+        effect: Effect::Blur,
+        part: None,
+        value,
+        name: "Layer blur",
+        look: NumberLook::Softness,
+    });
+    number_pair(ui, changes, field, None);
+}
+
+/// A glow's colour, softness and spread.
+fn glow_rows(ui: &mut Ui, layers: &[(&NodeId, &LayerProps)], changes: &mut Vec<EffectChange>) {
+    let Some(colors) = shared(layers.iter().filter_map(|(_, l)| Some(l.glow?.color))) else {
+        return;
+    };
+    let mut picked = rgba(*colors.value());
+    let response = control_row(ui, |ui| {
+        ColorField::new(&mut picked, "Glow colour")
+            .mixed(colors.is_mixed())
+            .show(ui)
+    });
+    changes.push(EffectChange::Color(Effect::Glow, response, picked));
+    let field = |part, read: fn(&Glow) -> f64, name, look| {
+        Some(EffectField {
+            effect: Effect::Glow,
+            part: Some(part),
+            value: effect_part(layers, |layer| layer.glow.as_ref().map(read))?,
+            name,
+            look,
+        })
+    };
+    number_pair(
+        ui,
+        changes,
+        field(
+            "radius",
+            |g| g.radius,
+            "Glow radius",
+            NumberLook::Length("Radius"),
+        ),
+        field(
+            "spread",
+            |g| g.spread,
+            "Glow spread",
+            NumberLook::Length("Spread"),
+        ),
+    );
+}
+
+/// Grain's strength and size, and whether it moves.
+fn noise_rows(ui: &mut Ui, layers: &[(&NodeId, &LayerProps)], changes: &mut Vec<EffectChange>) {
+    let field = |part, read: fn(&Noise) -> f64, name, look| {
+        Some(EffectField {
+            effect: Effect::Noise,
+            part: Some(part),
+            value: effect_part(layers, |layer| layer.noise.as_ref().map(read))?,
+            name,
+            look,
+        })
+    };
+    number_pair(
+        ui,
+        changes,
+        field(
+            "amount",
+            |n| n.amount * 100.0,
+            "Noise amount",
+            NumberLook::Percent("Amount"),
+        ),
+        field("size", |n| n.size, "Noise size", NumberLook::Length("Size")),
+    );
+    let Some(moving) = shared(layers.iter().filter_map(|(_, l)| Some(l.noise?.animated))) else {
+        return;
+    };
+    let mut chosen = *moving.value();
+    property_row(ui, "Grain", |ui| {
+        if segmented_mixed(ui, &mut chosen, &GRAIN, moving.is_mixed()).changed() {
+            changes.push(EffectChange::Moving(chosen));
+        }
+    });
+}
+
+/// A directional blur's strength and angle.
+fn directional_blur_rows(
+    ui: &mut Ui,
+    layers: &[(&NodeId, &LayerProps)],
+    changes: &mut Vec<EffectChange>,
+) {
+    let field = |part, read: fn(&DirectionalBlur) -> f64, name, look| {
+        Some(EffectField {
+            effect: Effect::DirectionalBlur,
+            part: Some(part),
+            value: effect_part(layers, |layer| layer.directional_blur.as_ref().map(read))?,
+            name,
+            look,
+        })
+    };
+    number_pair(
+        ui,
+        changes,
+        field(
+            "amount",
+            |b| b.amount,
+            "Directional blur amount",
+            NumberLook::Length("Amount"),
+        ),
+        field(
+            "angle",
+            |b| b.angle,
+            "Directional blur angle",
+            NumberLook::Angle("Angle"),
+        ),
+    );
 }
 
 #[cfg(test)]
