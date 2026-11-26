@@ -16,7 +16,9 @@
 //! the end of the loop, so no silence is heard between loops. The moment
 //! heard then keeps rising through the loops, and is folded back into the
 //! scene when the editor asks for it: the start of the next loop is on its
-//! way to the speakers while the end of this one is still heard.
+//! way to the speakers while the end of this one is still heard. When the
+//! loop changes, the laps gone round are taken off the moments heard, and
+//! the end of the old loop still on its way is told as such.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
@@ -69,9 +71,14 @@ struct Shared {
     /// track starts over from the beginning there.
     loop_ms: Option<f64>,
     /// How far round the loop the track has gone since playback last
-    /// started or jumped, in milliseconds. The moments heard, and
-    /// [`floor_ms`](Self::floor_ms), count these on top of the timeline.
+    /// started or jumped, or the loop changed, in milliseconds. The moments
+    /// heard, and [`floor_ms`](Self::floor_ms), count these on top of the
+    /// timeline.
     laps_ms: f64,
+    /// How long the loop was before it last changed, while playing: the
+    /// moments heard before 0 are the end of that loop, still on its way
+    /// to the speakers when the track had already started over.
+    old_loop_ms: Option<f64>,
 }
 
 impl Default for DeviceAudio {
@@ -138,6 +145,7 @@ impl DeviceAudio {
 fn count_from(shared: &mut Shared, ms: f64) {
     shared.floor_ms = ms;
     shared.laps_ms = 0.0;
+    shared.old_loop_ms = None;
     shared.heard = None;
     shared.since = Some(Instant::now());
 }
@@ -165,13 +173,26 @@ impl AudioOut for DeviceAudio {
         if shared.loop_ms == loop_ms {
             return;
         }
-        shared.loop_ms = loop_ms;
-        // The laps gone round the old loop would fold the moments heard
-        // wrongly: count afresh from where the device is, which goes on
-        // playing from there.
+        let old = std::mem::replace(&mut shared.loop_ms, loop_ms);
         if shared.laps_ms > 0.0 {
-            let ms = shared.cursor * 1000.0 / f64::from(SAMPLE_RATE);
-            count_from(&mut shared, ms);
+            match shared.heard {
+                // The laps gone round the old loop would fold the moments
+                // heard wrongly: take them off, keeping the moment heard.
+                // What was handed over before the track last started over
+                // falls before 0, and is told as the end of the old loop.
+                Some((ms, at)) => {
+                    shared.heard = Some((ms - shared.laps_ms, at));
+                    shared.floor_ms -= shared.laps_ms;
+                    shared.laps_ms = 0.0;
+                    shared.old_loop_ms = old;
+                }
+                // Nothing is heard: count afresh from where the device
+                // plays next.
+                None => {
+                    let ms = shared.cursor * 1000.0 / f64::from(SAMPLE_RATE);
+                    count_from(&mut shared, ms);
+                }
+            }
         }
     }
 
@@ -200,10 +221,16 @@ impl AudioOut for DeviceAudio {
 }
 
 /// The moment of the timeline that `heard`, counted on through the loops,
-/// stands for. Without a loop there are no laps to take off: a new loop
-/// length counts afresh.
+/// stands for. Without a loop there are no laps to take off: changing the
+/// loop takes off those gone round, and moments before 0 are then the end
+/// of the loop as it was.
 fn folded(shared: &Shared, heard: f64) -> f64 {
-    match shared.loop_ms {
+    let length = if heard < 0.0 {
+        shared.old_loop_ms
+    } else {
+        shared.loop_ms
+    };
+    match length {
         Some(length) if length > 0.0 => heard.rem_euclid(length),
         _ => heard,
     }
@@ -577,8 +604,9 @@ mod tests {
             shared.laps_ms = 3000.0;
             shared.cursor = 0.2 * f64::from(SAMPLE_RATE);
         }
-        // The loop's length changes, or the loop is turned off: the laps
-        // gone round the old loop no longer count.
+        // The loop's length changes, or the loop is turned off, while
+        // nothing is heard: the laps gone round the old loop no longer
+        // count, from where the device plays next.
         out.set_loop(Some(1500.0));
         let shared = lock(&out.shared);
         assert_eq!(shared.loop_ms, Some(1500.0));
@@ -592,6 +620,91 @@ mod tests {
         lock(&out.shared).laps_ms = 2000.0;
         out.seek(500.0);
         assert_eq!(lock(&out.shared).laps_ms, 0.0);
+    }
+
+    #[test]
+    fn a_new_loop_length_keeps_the_moment_heard() {
+        // A second-long looping scene whose sound tells its own moment (on
+        // the left, in seconds), played with 150 ms of delay in the output
+        // and 512-frame buffers.
+        let rate = f64::from(SAMPLE_RATE);
+        let ramp: Arc<[f32]> = (0..SAMPLE_RATE)
+            .flat_map(|frame| [(f64::from(frame) / rate) as f32, 0.0])
+            .collect();
+        let latency = Duration::from_millis(150);
+        let buffer = Duration::from_secs_f64(512.0 / rate);
+        // The loop is turned off, or made longer, after the first lap: 1.3 s
+        // in, while the second lap is heard, and 2.01 s and 2.05 s in, when
+        // the device has started the third lap but the end of the second is
+        // still on its way to the speakers.
+        for change in [None, Some(1500.0)] {
+            for at_buffer in [122, 188, 192] {
+                let mut out = DeviceAudio::new();
+                let start = Instant::now();
+                {
+                    let mut shared = lock(&out.shared);
+                    shared.track = Some(Arc::clone(&ramp));
+                    shared.playing = true;
+                    shared.loop_ms = Some(1000.0);
+                    shared.since = Some(start);
+                }
+                // When each buffer is heard from, and its left samples.
+                let mut heard: Vec<(Instant, Vec<f32>)> = Vec::new();
+                for index in 0..at_buffer + 30 {
+                    let now = start + buffer * index;
+                    if index == at_buffer {
+                        out.set_loop(change);
+                    }
+                    let mut shared = lock(&out.shared);
+                    if index >= at_buffer {
+                        check(&shared, &heard, now, rate);
+                    }
+                    heard.push((now + latency, left(&mut shared, 512, now, latency)));
+                    if index >= at_buffer {
+                        check(&shared, &heard, now + buffer / 2, rate);
+                    }
+                }
+            }
+        }
+
+        /// The moment told at `now` is the one heard then, within 1 ms.
+        fn check(shared: &Shared, heard: &[(Instant, Vec<f32>)], now: Instant, rate: f64) {
+            let told = folded(shared, heard_at(shared, now).unwrap());
+            let (from, samples) = heard
+                .iter()
+                .rev()
+                .find(|(from, _)| *from <= now)
+                .expect("something is heard");
+            let frame = (now.duration_since(*from).as_secs_f64() * rate) as usize;
+            let truth = f64::from(samples[frame]) * 1000.0;
+            // A moment within a frame of the loop's end is also its start.
+            let error = (told - truth).abs();
+            let error = error.min((error - 1000.0).abs());
+            assert!(error < 1.0, "told {told} ms, heard {truth} ms");
+        }
+
+        // Played from 900 ms in, the loop turned off when the track has
+        // started over but before even that start is heard: nothing earlier
+        // than where playback started is told.
+        let mut out = DeviceAudio::new();
+        let start = Instant::now();
+        {
+            let mut shared = lock(&out.shared);
+            shared.track = Some(Arc::clone(&ramp));
+            shared.playing = true;
+            shared.loop_ms = Some(1000.0);
+            shared.since = Some(start);
+            shared.cursor = 0.9 * rate;
+            shared.floor_ms = 900.0;
+            for index in 0..10 {
+                left(&mut shared, 512, start + buffer * index, latency);
+            }
+            assert!(shared.laps_ms > 0.0, "started over");
+        }
+        out.set_loop(None);
+        let shared = lock(&out.shared);
+        let told = folded(&shared, heard_at(&shared, start + buffer * 10).unwrap());
+        assert!((told - 900.0).abs() < 1e-9, "{told}");
     }
 
     #[test]
