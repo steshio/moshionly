@@ -605,3 +605,38 @@ fn dragging_an_action_of_a_video_leaves_its_clip_where_it_is() {
         "picked, so moved"
     );
 }
+
+#[test]
+fn scrubbing_a_clip_time_back_to_where_it_began_puts_the_clip_back() {
+    let mut harness = scene_harness();
+    let film = |harness: &Harness<'_, Shell>| {
+        let document = harness.state().editor().document();
+        let clip = document
+            .get(&NodeId::from("film"))
+            .unwrap()
+            .data
+            .clip()
+            .unwrap();
+        (clip.start, clip.end)
+    };
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("film"));
+    harness.run();
+    for name in ["Start", "End"] {
+        let center = field(&harness, name).rect().center();
+        harness.hover_at(center);
+        harness.drag_at(center);
+        harness.run();
+        for x in [10.0, 20.0, 10.0, 5.0, 0.0] {
+            harness.hover_at(center + vec2(x, 0.0));
+            harness.run();
+        }
+        assert_eq!(film(&harness), (1000.0, 3000.0), "{name} during the scrub");
+        harness.drop_at(center);
+        harness.run();
+        assert_eq!(film(&harness), (1000.0, 3000.0), "{name} after the scrub");
+    }
+}

@@ -96,12 +96,21 @@ fn with_time(clip: &ClipTiming, field: ClipField, ms: f64) -> ClipTiming {
     }
 }
 
-/// The edits that set `field` to `ms` on the clips of `ids` in `document`.
-fn time_edits(document: &Document, ids: &[NodeId], field: ClipField, ms: f64) -> Vec<Edit> {
+/// The edits that set `field` to `ms` on the clips of `ids`. The new
+/// timing comes from the clips in `began`, as they were when the edit
+/// began; the edits change the clips in `now`, as they are, so that a scrub
+/// that comes back to where it began puts the clips back too.
+fn time_edits(
+    began: &Document,
+    now: &Document,
+    ids: &[NodeId],
+    field: ClipField,
+    ms: f64,
+) -> Vec<Edit> {
     ids.iter()
         .filter_map(|id| {
-            let clip = document.get(id)?.data.clip()?;
-            clip_edit(document, id, &with_time(clip, field, ms))
+            let clip = began.get(id)?.data.clip()?;
+            clip_edit(now, id, &with_time(clip, field, ms))
         })
         .collect()
 }
@@ -153,8 +162,9 @@ fn clip_rows(ui: &mut Ui, values: &ClipValues) -> ClipChanges {
 fn apply_clip_changes(bind: &mut Bind<'_>, ids: &[NodeId], changes: ClipChanges) {
     let began = bind.began();
     for (field, response, ms) in changes.times {
+        let now = std::sync::Arc::clone(bind.editor.document());
         bind.field(&response, field.summary(), || {
-            time_edits(&began, ids, field, ms)
+            time_edits(&began, &now, ids, field, ms)
         });
     }
     if let Some((response, percent)) = changes.volume {
@@ -348,7 +358,7 @@ mod tests {
         let ids = [NodeId::from("a"), NodeId::from("b")];
         let mut moved = doc.clone();
         moved
-            .apply(&time_edits(&doc, &ids, ClipField::Start, 2000.0))
+            .apply(&time_edits(&doc, &doc, &ids, ClipField::Start, 2000.0))
             .unwrap();
         assert_eq!(
             clip(&moved, "a"),
@@ -360,21 +370,41 @@ mod tests {
         assert_eq!(clip(&moved, "b"), ClipTiming::new(2000.0, 2500.0));
         let mut ended = doc.clone();
         ended
-            .apply(&time_edits(&doc, &ids, ClipField::End, 2500.0))
+            .apply(&time_edits(&doc, &doc, &ids, ClipField::End, 2500.0))
             .unwrap();
         assert_eq!(clip(&ended, "a").end, 2500.0);
         assert_eq!(clip(&ended, "b").end, 2500.0);
         // An end before the start leaves the shortest clip.
-        let short = time_edits(&doc, &ids[..1], ClipField::End, 0.0);
+        let short = time_edits(&doc, &doc, &ids[..1], ClipField::End, 0.0);
         let mut shortened = doc.clone();
         shortened.apply(&short).unwrap();
         assert!(clip(&shortened, "a").end > 1000.0);
-        let trimmed = time_edits(&doc, &ids[..1], ClipField::TrimStart, 1200.0);
+        let trimmed = time_edits(&doc, &doc, &ids[..1], ClipField::TrimStart, 1200.0);
         let mut later = doc.clone();
         later.apply(&trimmed).unwrap();
         assert_eq!(clip(&later, "a").trim_start, 1200.0);
         // Nothing changes, nothing is edited.
-        assert!(time_edits(&doc, &ids[..1], ClipField::Start, 1000.0).is_empty());
+        assert!(time_edits(&doc, &doc, &ids[..1], ClipField::Start, 1000.0).is_empty());
+    }
+
+    #[test]
+    fn a_scrub_back_to_where_it_began_puts_the_clip_back() {
+        let began = document();
+        let ids = [NodeId::from("a")];
+        let mut now = began.clone();
+        now.apply(&time_edits(&began, &now, &ids, ClipField::Start, 1250.0))
+            .unwrap();
+        assert_eq!(clip(&now, "a").start, 1250.0);
+        let back = time_edits(&began, &now, &ids, ClipField::Start, 1000.0);
+        assert!(!back.is_empty());
+        now.apply(&back).unwrap();
+        assert_eq!(clip(&now, "a"), clip(&began, "a"));
+        // The same for End, worked out from the clip as it began.
+        now.apply(&time_edits(&began, &now, &ids, ClipField::End, 3200.0))
+            .unwrap();
+        now.apply(&time_edits(&began, &now, &ids, ClipField::End, 3000.0))
+            .unwrap();
+        assert_eq!(clip(&now, "a"), clip(&began, "a"));
     }
 
     #[test]
