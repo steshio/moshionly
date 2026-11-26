@@ -110,6 +110,10 @@ pub struct Shell {
     shown_selection: Vec<NodeId>,
     /// The selected actions as of the last frame, to notice changes.
     shown_actions: Vec<NodeId>,
+    /// The actions and the videos last picked together on the timeline:
+    /// while those actions stay selected, those videos' clips show as
+    /// selected with them.
+    picked_clips: (Vec<NodeId>, Vec<NodeId>),
     /// Scroll the layer list to this row on the next frame.
     reveal_row: Option<NodeId>,
     /// The layer row being renamed, with the name typed so far.
@@ -272,6 +276,7 @@ impl Shell {
             layer_query: String::new(),
             shown_selection: Vec::new(),
             shown_actions: Vec::new(),
+            picked_clips: (Vec::new(), Vec::new()),
             reveal_row: None,
             renaming: None,
             list_drag: None,
@@ -936,7 +941,13 @@ impl Shell {
                 .single()
                 .map(|id| Key::new(id.as_str()))
         });
-        // The clips of selected videos show as selected too.
+        // A selected video's clip shows as selected, and is dragged with
+        // the selection, while no action is selected, or when it was picked
+        // on the timeline with the actions selected now: dragging an action
+        // of a video leaves the video's clip where it is.
+        if self.picked_clips.0 != self.editor.actions() {
+            self.picked_clips = (Vec::new(), Vec::new());
+        }
         let selected_bars: Vec<Key> = self
             .editor
             .actions()
@@ -944,7 +955,8 @@ impl Shell {
             .map(|id| Key::new(id.as_str()))
             .chain(self.editor.selection.ids().iter().filter_map(|id| {
                 let node = document.get(id)?;
-                (node.node_type() == moshionly_core::NodeType::Video)
+                let picked = self.editor.actions().is_empty() || self.picked_clips.1.contains(id);
+                (node.node_type() == moshionly_core::NodeType::Video && picked)
                     .then(|| clip_key(id, node.node_type()))
             }))
             .collect();
@@ -1087,6 +1099,7 @@ impl Shell {
             }
         }
         self.editor.set_actions(actions);
+        self.picked_clips = (self.editor.actions().to_vec(), videos.clone());
         let mut layers = targets_of(&document, self.editor.actions());
         for video in videos {
             if !layers.contains(&video) {

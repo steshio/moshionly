@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use egui::{Key, Modifiers, vec2};
+use egui::{Key, Modifiers, Pos2, vec2};
 use egui_kittest::{
     Harness,
     kittest::{NodeT as _, Queryable as _},
@@ -22,6 +22,7 @@ use moshionly_app::{
     settings::Settings,
     shell::{Shell, untitled_session},
     theme,
+    timeline::rows,
 };
 use moshionly_core::{NodeId, NodeType, eval::duration_of};
 use moshionly_export::media::MediaTools;
@@ -347,15 +348,22 @@ fn type_into(harness: &mut Harness<'_, Shell>, name: &str, text: &str) {
 /// The editor on a scene with a video and a sound whose files are not
 /// there, without ffmpeg.
 fn scene_harness() -> Harness<'static, Shell> {
-    let document = moshionly_core::io::parse(
-        r##"{"format":"moshionly","version":3,"name":"Media","nodes":[
-        {"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000},
-        {"id":"film","parent":"ab","index":"a0","type":"video","source":"/no/film.mp4",
-         "width":320,"height":180,"start":1000,"end":3000,"trim_start":500},
-        {"id":"song","parent":"ab","index":"a0","type":"audio","source":"/no/song.mp3",
-         "start":0,"end":2000}
-        ]}"##,
-    )
+    scene_harness_with("")
+}
+
+/// [`scene_harness`] with more nodes, written as JSON objects each
+/// followed by a comma.
+fn scene_harness_with(more: &str) -> Harness<'static, Shell> {
+    let document = moshionly_core::io::parse(&format!(
+        r##"{{"format":"moshionly","version":3,"name":"Media","nodes":[
+        {more}
+        {{"id":"ab","parent":null,"index":"a0","type":"artboard","duration":5000}},
+        {{"id":"film","parent":"ab","index":"a0","type":"video","source":"/no/film.mp4",
+         "width":320,"height":180,"start":1000,"end":3000,"trim_start":500}},
+        {{"id":"song","parent":"ab","index":"a0","type":"audio","source":"/no/song.mp3",
+         "start":0,"end":2000}}
+        ]}}"##
+    ))
     .unwrap();
     let renderer = Renderer::new(FontLibrary::bundled(), AssetLoader::default());
     let shell = Shell::headless(
@@ -455,5 +463,145 @@ fn the_inspector_sets_when_a_video_and_a_sound_play() {
     assert_eq!(
         harness.state().editor().undo_label().as_deref(),
         Some("Undo Change end")
+    );
+}
+
+/// The middle of the timeline bar `key` on screen.
+fn bar_center(harness: &Harness<'_, Shell>, key: &str) -> Pos2 {
+    let shell = harness.state();
+    let document = shell.editor().document();
+    let artboard = shell.editor().artboard().unwrap().clone();
+    let groups = timeline_groups(document, &artboard, &HashSet::new());
+    let (row, bar) = rows(&groups)
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| match *row {
+            moshionly_app::timeline::Row::Bar(g, b) if groups[g].bars[b].key == key => {
+                Some((index, groups[g].bars[b].clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no bar {key}"));
+    let layout = shell.timeline_layout().expect("the timeline was drawn");
+    layout.bar_rect(row, bar.start, bar.end).center()
+}
+
+/// Presses at `from`, moves to `to` in a few steps and lets go.
+fn drag(harness: &mut Harness<'_, Shell>, from: Pos2, to: Pos2) {
+    harness.hover_at(from);
+    harness.drag_at(from);
+    for step in 1..=4 {
+        let t = step as f32 / 4.0;
+        harness.hover_at(from + (to - from) * t);
+        harness.run();
+    }
+    harness.drop_at(to);
+    harness.run();
+}
+
+#[test]
+fn dragging_an_action_of_a_video_leaves_its_clip_where_it_is() {
+    let mut harness = scene_harness_with(
+        r##"{"id":"fade","parent":"ab","index":"a1","type":"fade_in","target":"film",
+         "start":1000,"end":1500},"##,
+    );
+    let times = |harness: &Harness<'_, Shell>, id: &str| {
+        let document = harness.state().editor().document();
+        let node = document.get(&NodeId::from(id)).unwrap();
+        match node.data.clip() {
+            Some(clip) => (clip.start, clip.end),
+            None => node.data.span().unwrap(),
+        }
+    };
+    let shift = |harness: &mut Harness<'_, Shell>, key: &str, ms: f64| {
+        let from = bar_center(harness, key);
+        let layout = harness.state().timeline_layout().unwrap();
+        let to = from + vec2(layout.scale.points_per_ms * ms as f32, 0.0);
+        drag(harness, from, to);
+    };
+    // The video picked on the canvas, then its fade on the timeline.
+    harness
+        .state_mut()
+        .editor_mut()
+        .selection
+        .select(NodeId::from("film"));
+    harness.run();
+    let fade = bar_center(&harness, "fade");
+    harness.hover_at(fade);
+    harness.drag_at(fade);
+    harness.drop_at(fade);
+    harness.run();
+    assert_eq!(
+        harness.state().editor().actions(),
+        [NodeId::from("fade")].as_slice()
+    );
+    assert_eq!(
+        harness.state().editor().selection.ids(),
+        [NodeId::from("film")].as_slice()
+    );
+    shift(&mut harness, "fade", 400.0);
+    assert_eq!(times(&harness, "fade"), (1400.0, 1900.0));
+    assert_eq!(times(&harness, "film"), (1000.0, 3000.0), "the clip stayed");
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Move action")
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // The same with the fade chosen in the Animate tab.
+    harness
+        .state_mut()
+        .editor_mut()
+        .set_actions([NodeId::from("fade")]);
+    harness.run();
+    shift(&mut harness, "fade", 400.0);
+    assert_eq!(times(&harness, "fade"), (1400.0, 1900.0));
+    assert_eq!(times(&harness, "film"), (1000.0, 3000.0), "the clip stayed");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // With no action chosen, the selected video's clip is dragged.
+    harness.state_mut().editor_mut().set_actions([]);
+    harness.run();
+    shift(&mut harness, "film/clip", 400.0);
+    assert_eq!(times(&harness, "film"), (1400.0, 3400.0));
+    assert_eq!(times(&harness, "fade"), (1000.0, 1500.0));
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Move clip")
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+
+    // A clip picked together with the fade moves with it.
+    let clip = bar_center(&harness, "film/clip");
+    harness.hover_at(clip);
+    harness.drag_at(clip);
+    harness.drop_at(clip);
+    harness.run();
+    let fade = bar_center(&harness, "fade");
+    harness.hover_at(fade);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: fade,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::SHIFT,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run();
+    assert_eq!(
+        harness.state().editor().actions(),
+        [NodeId::from("fade")].as_slice()
+    );
+    shift(&mut harness, "fade", 400.0);
+    assert_eq!(times(&harness, "fade"), (1400.0, 1900.0));
+    assert_eq!(
+        times(&harness, "film"),
+        (1400.0, 3400.0),
+        "picked, so moved"
     );
 }
