@@ -1128,8 +1128,22 @@ impl Shell {
         }
     }
 
-    /// Carries out a command on the selected actions.
+    /// Carries out a command on the selected actions. A video's clip is
+    /// not an action: with only clips selected, Delete removes their
+    /// videos.
     fn action_command(&mut self, command: BarCommand) {
+        if command == BarCommand::Delete && self.editor.actions().is_empty() {
+            let document = std::sync::Arc::clone(self.editor.document());
+            let videos = self.editor.selection.ids().iter().all(|id| {
+                document
+                    .get(id)
+                    .is_some_and(|node| node.node_type() == moshionly_core::NodeType::Video)
+            });
+            if videos {
+                self.delete_selection();
+            }
+            return;
+        }
         let result = match command {
             BarCommand::Duplicate => self.editor.duplicate_actions().map(drop),
             BarCommand::Delete => self.editor.delete_actions().map(drop),
@@ -1927,6 +1941,23 @@ mod tests {
         // Delete then takes the sound away.
         assert!(shell.run(&Context::default(), CommandId::Delete));
         assert!(!shell.editor().document().contains(&NodeId::from("song")));
+    }
+
+    #[test]
+    fn deleting_a_clip_from_the_timeline_deletes_its_video() {
+        let mut shell = media_shell();
+        shell.timeline_event(TimelineEvent::SelectionChanged {
+            bars: vec![Key::new("film/clip")],
+        });
+        shell.timeline_event(TimelineEvent::Command {
+            command: BarCommand::Delete,
+        });
+        assert!(!shell.editor().document().contains(&NodeId::from("film")));
+        // With nothing selected, nothing goes.
+        shell.timeline_event(TimelineEvent::Command {
+            command: BarCommand::Delete,
+        });
+        assert!(shell.editor().document().contains(&NodeId::from("song")));
     }
 
     #[test]
