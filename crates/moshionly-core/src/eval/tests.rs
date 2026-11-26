@@ -533,6 +533,51 @@ fn glow_noise_and_directional_blur_animate() {
 }
 
 #[test]
+fn effects_that_cannot_be_seen_keep_their_size_and_angle() {
+    let document = document(json!([
+        { "id": "r", "type": "rect", "directional_blur": { "amount": 20, "angle": 90 },
+          "noise": { "amount": 0, "size": 4 },
+          "glow": { "color": "#FF000000", "radius": 30, "spread": 6 } },
+        { "id": "out", "type": "directional_blur", "target": "r", "start": 0, "end": 500,
+          "to": { "amount": 0 }, "easing": linear() }
+    ]));
+    // Nothing to see...
+    for property in [Property::Glow, Property::Noise, Property::DirectionalBlur] {
+        let value = value_at(&document, &id("r"), property, 750.0);
+        assert!(
+            matches!(
+                value,
+                Some(
+                    PropertyValue::Glow(None)
+                        | PropertyValue::Noise(None)
+                        | PropertyValue::DirectionalBlur(None)
+                )
+            ),
+            "{value:?}"
+        );
+    }
+    // ...but each effect still has its parts, for an action to start from.
+    let (glow, noise, blur) = effects_at(&document, &id("r"), 750.0).unwrap();
+    assert_eq!(
+        blur,
+        DirectionalBlur {
+            amount: 0.0,
+            angle: 90.0
+        }
+    );
+    assert_eq!((noise.amount, noise.size), (0.0, 4.0));
+    assert_eq!(
+        glow,
+        Glow {
+            color: Color::rgba(255, 0, 0, 0),
+            radius: 30.0,
+            spread: 6.0
+        }
+    );
+    assert_eq!(effects_at(&document, &id("nowhere"), 0.0), None);
+}
+
+#[test]
 fn a_glow_fades_in_and_out_on_a_layer_without_one() {
     let document = document(json!([
         { "id": "r", "type": "rect", "noise": { "amount": 0.4, "animated": false } },

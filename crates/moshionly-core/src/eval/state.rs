@@ -194,6 +194,20 @@ impl Channels {
         Some(counted.unwrap_or_else(|| text.content.clone()))
     }
 
+    /// The glow, grain and directional blur of `layer` at `time`, also when
+    /// they cannot be seen: a layer without one has an invisible one.
+    pub(crate) fn effects(&self, layer: &LayerProps, time: f64) -> (Glow, Noise, DirectionalBlur) {
+        (
+            replacing(&layer.glow.unwrap_or_else(no_glow), &self.glows, time),
+            replacing(&layer.noise.unwrap_or_else(no_noise), &self.noises, time),
+            replacing(
+                &layer.directional_blur.unwrap_or(NO_DIRECTIONAL_BLUR),
+                &self.directional_blurs,
+                time,
+            ),
+        )
+    }
+
     /// Resolves every property of `node` at `time`.
     pub(crate) fn resolve(&self, node: &Node, time: f64) -> Option<LayerState> {
         let layer = node.layer()?;
@@ -224,13 +238,7 @@ impl Channels {
             .map(|rest| replacing(&rest.radii(), &self.radii, time).map(|radius| radius.max(0.0)));
         let blur = replacing(&layer.blur, &self.blurs, time).max(0.0);
         let shadow = replacing(&layer.shadow.unwrap_or(NO_SHADOW), &self.shadows, time);
-        let glow = replacing(&layer.glow.unwrap_or_else(no_glow), &self.glows, time);
-        let noise = replacing(&layer.noise.unwrap_or_else(no_noise), &self.noises, time);
-        let directional_blur = replacing(
-            &layer.directional_blur.unwrap_or(NO_DIRECTIONAL_BLUR),
-            &self.directional_blurs,
-            time,
-        );
+        let (glow, noise, directional_blur) = self.effects(layer, time);
 
         let pose_opacity = replacing(&1.0, &self.pose_opacity.steps, time).clamp(0.0, 1.0);
         let pose_scale = replacing(&1.0, &self.pose_scale.steps, time).max(0.0);

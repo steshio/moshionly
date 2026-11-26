@@ -337,6 +337,24 @@ pub fn value_at(
     })
 }
 
+/// A layer's glow, grain and directional blur at `time_ms`, with every
+/// animation that targets the layer applied, also when they cannot be
+/// seen: a transparent glow, grain of amount 0 and a directional blur of
+/// amount 0 keep their other parts, and a layer without one of them has an
+/// invisible one, as an animation counts it. [`value_at`] reports those as
+/// `None`; this is the value an animation without a `from` starts from.
+///
+/// `None` when `layer` is not a layer.
+pub fn effects_at(
+    document: &Document,
+    layer: &NodeId,
+    time_ms: f64,
+) -> Option<(Glow, Noise, DirectionalBlur)> {
+    let node = document.get(layer)?;
+    let animations = document.animations_targeting(layer);
+    Some(Channels::of(animations).effects(node.layer()?, clean_time(time_ms)))
+}
+
 /// Evaluates an artboard at a time into a scene.
 ///
 /// `time_ms` is in milliseconds from the start of the artboard. Times past
