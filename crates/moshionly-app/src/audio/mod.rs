@@ -50,12 +50,19 @@ impl Track {
 ///
 /// The editor calls these in the order things happen: [`play`](Self::play)
 /// when playback starts, [`seek`](Self::seek) when the playhead jumps while
-/// playing (a click on the ruler, a loop starting over), and
-/// [`stop`](Self::stop) when playback stops. The track can change at any
-/// time, for example when a clip is moved while playing.
+/// playing (a click on the ruler, a loop starting over when the output
+/// cannot say what is heard), and [`stop`](Self::stop) when playback stops.
+/// The track and the loop can change at any time, for example when a clip
+/// is moved while playing.
 pub trait AudioOut {
     /// The sound to play from now on, or `None` for silence.
     fn set_track(&mut self, track: Option<Track>);
+    /// While the scene loops, `Some` of the loop's length in milliseconds:
+    /// at that moment the track starts over from the beginning of the
+    /// timeline by itself, with no gap, and [`position`](Self::position)
+    /// says where in the loop the sound heard is. `None`, as at first,
+    /// plays on to the end of the track.
+    fn set_loop(&mut self, loop_ms: Option<f64>);
     /// Starts playing at `from_ms` on the timeline.
     fn play(&mut self, from_ms: f64);
     /// Goes on playing from `to_ms` on the timeline.
@@ -74,6 +81,8 @@ pub trait AudioOut {
 pub enum AudioCall {
     /// A track of this many milliseconds, or silence.
     Track(Option<f64>),
+    /// A loop this many milliseconds long, or none.
+    Loop(Option<f64>),
     /// Play from this time.
     Play(f64),
     /// Jump to this time.
@@ -120,6 +129,10 @@ impl AudioOut for SilentAudio {
         self.note(AudioCall::Track(track.map(|track| track.duration_ms())));
     }
 
+    fn set_loop(&mut self, loop_ms: Option<f64>) {
+        self.note(AudioCall::Loop(loop_ms));
+    }
+
     fn play(&mut self, from_ms: f64) {
         self.note(AudioCall::Play(from_ms));
     }
@@ -154,6 +167,7 @@ mod tests {
         let log = out.clone();
         out.play(250.0);
         out.set_track(Some(Track::new(vec![0.0; 96])));
+        out.set_loop(Some(4000.0));
         out.seek(1000.0);
         out.stop();
         assert_eq!(out.position(), None);
@@ -162,6 +176,7 @@ mod tests {
             [
                 AudioCall::Play(250.0),
                 AudioCall::Track(Some(1.0)),
+                AudioCall::Loop(Some(4000.0)),
                 AudioCall::Seek(1000.0),
                 AudioCall::Stop
             ]

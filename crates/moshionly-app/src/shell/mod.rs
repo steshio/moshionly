@@ -1507,8 +1507,10 @@ impl Shell {
     ///
     /// While sound is heard, the playhead follows the sound rather than
     /// the window's clock, so the two stay in step; the sound jumps with
-    /// the playhead when something else moves it (a click on the ruler) or
-    /// the loop starts over.
+    /// the playhead when something else moves it (a click on the ruler).
+    /// While looping, the sound starts over by itself at the end of the
+    /// scene, so the loop has no gap; it jumps with the playhead when the
+    /// window's clock starts the loop over (nothing is heard yet).
     ///
     /// Only the Animate tab shows the animation on the canvas; the Design
     /// tab shows the design at rest. Leaving the Animate tab (with M or the
@@ -1528,15 +1530,15 @@ impl Shell {
         if moved {
             self.soundtrack.seek(playhead);
         }
+        let length = self.scene_length();
+        self.soundtrack.set_loop(self.looping.then_some(length));
         // What is heard is where the scene is, unless the playhead was just
         // moved and the sound has yet to follow.
         let from = match self.soundtrack.position() {
             Some(heard) if !moved => heard,
             _ => playhead,
         };
-        let tick = self
-            .playback
-            .tick(self.now, from, self.scene_length(), self.looping);
+        let tick = self.playback.tick(self.now, from, length, self.looping);
         if !tick.playing {
             self.soundtrack.stop();
         } else if tick.time < from {
@@ -1816,22 +1818,26 @@ mod tests {
         assert!(!shell.is_playing());
         shell.prepare_to_quit();
         let calls = out.calls();
-        assert_eq!(calls.len(), 7, "{calls:?}");
+        assert_eq!(calls.len(), 8, "{calls:?}");
         assert_eq!(
-            calls[..3],
+            calls[..4],
             [
                 AudioCall::Play(0.0),
                 // The demo has no sound: its track is silence.
                 AudioCall::Track(None),
+                // It loops, and the sound starts over with it.
+                AudioCall::Loop(Some(4000.0)),
                 AudioCall::Seek(2000.0),
             ]
         );
+        // Silent output cannot say what is heard, so the window's clock
+        // starts the loop over, and the sound jumps with it.
         assert!(
-            matches!(calls[3], AudioCall::Seek(at) if (at - 300.0).abs() < 1e-6),
+            matches!(calls[4], AudioCall::Seek(at) if (at - 300.0).abs() < 1e-6),
             "{calls:?}"
         );
         assert_eq!(
-            calls[4..],
+            calls[5..],
             [AudioCall::Stop, AudioCall::Play(1000.0), AudioCall::Stop]
         );
     }

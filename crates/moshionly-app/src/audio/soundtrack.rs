@@ -59,6 +59,8 @@ pub struct Soundtrack {
     /// Warnings already shown, so a missing file is said once.
     warned: HashSet<String>,
     playing: bool,
+    /// The loop the output plays round, as last given to it.
+    loop_ms: Option<f64>,
 }
 
 impl Default for Soundtrack {
@@ -79,6 +81,7 @@ impl Soundtrack {
             next: None,
             warned: HashSet::new(),
             playing: false,
+            loop_ms: None,
         }
     }
 
@@ -87,6 +90,10 @@ impl Soundtrack {
     pub fn set_output(&mut self, out: Box<dyn AudioOut>, playhead: f64) {
         self.out.stop();
         self.out = out;
+        // A new output plays no loop until it is told one.
+        if self.loop_ms.is_some() {
+            self.out.set_loop(self.loop_ms);
+        }
         self.current = None;
         if self.playing {
             self.out.play(playhead);
@@ -250,6 +257,17 @@ impl Soundtrack {
         self.job.is_none() && self.next.is_none() && self.current.is_some()
     }
 
+    /// Plays the sound round a loop `loop_ms` long, from the start of the
+    /// timeline, while the scene loops; `None` plays on to its end. The
+    /// output starts the sound over by itself, so a loop has no gap. Cheap
+    /// when nothing changed; call it every frame while playing.
+    pub fn set_loop(&mut self, loop_ms: Option<f64>) {
+        if self.loop_ms != loop_ms {
+            self.loop_ms = loop_ms;
+            self.out.set_loop(loop_ms);
+        }
+    }
+
     /// Starts playing at `from_ms`.
     pub fn play(&mut self, from_ms: f64) {
         self.playing = true;
@@ -319,6 +337,27 @@ mod tests {
             ]
         );
         assert_eq!(soundtrack.position(), None);
+    }
+
+    #[test]
+    fn the_loop_reaches_the_output_when_it_changes() {
+        let first = SilentAudio::recording();
+        let mut soundtrack = Soundtrack::new(Box::new(first.clone()));
+        soundtrack.set_loop(Some(2000.0));
+        soundtrack.set_loop(Some(2000.0));
+        soundtrack.set_loop(None);
+        assert_eq!(
+            first.calls(),
+            [AudioCall::Loop(Some(2000.0)), AudioCall::Loop(None)]
+        );
+        // A new output is told the loop there is, if any.
+        let second = SilentAudio::recording();
+        soundtrack.set_output(Box::new(second.clone()), 0.0);
+        assert!(second.calls().is_empty());
+        soundtrack.set_loop(Some(3000.0));
+        let third = SilentAudio::recording();
+        soundtrack.set_output(Box::new(third.clone()), 0.0);
+        assert_eq!(third.calls(), [AudioCall::Loop(Some(3000.0))]);
     }
 
     #[test]
