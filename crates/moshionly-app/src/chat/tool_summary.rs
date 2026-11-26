@@ -22,6 +22,7 @@ pub fn title(name: &str) -> String {
         "get_schema" => "Read the format",
         "list_fonts" => "Fonts",
         "import_image" => "Import image",
+        "import_media" => "Import video or sound",
         "export" => "Export",
         "undo_last_agent_change" => "Undo",
         _ => return generic_title(name),
@@ -51,7 +52,9 @@ pub fn describe_with(name: &str, input: &Value, name_of: NameOf<'_>) -> String {
         "get_node" => node("id").unwrap_or_default(),
         "get_schema" => string(input, "type").map(str::to_owned).unwrap_or_default(),
         "list_fonts" => string(input, "query").map(quoted).unwrap_or_default(),
-        "import_image" => string(input, "source").map(file_name).unwrap_or_default(),
+        "import_image" | "import_media" => {
+            string(input, "source").map(file_name).unwrap_or_default()
+        }
         "export" => export(input, name_of),
         "get_overview" | "undo_last_agent_change" => String::new(),
         _ => generic(input),
@@ -407,6 +410,13 @@ mod tests {
                 &json!({ "source": "/Users/me/Pictures/logo.png" })
             ),
             "logo.png"
+        );
+        assert_eq!(
+            describe(
+                "import_media",
+                &json!({ "source": "/Users/me/Movies/beach.mov" })
+            ),
+            "beach.mov"
         );
         assert_eq!(
             describe("export", &json!({ "format": "mp4", "artboard": "Launch" })),
