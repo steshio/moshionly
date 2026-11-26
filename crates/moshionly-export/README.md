@@ -165,7 +165,10 @@ written into.
   with a warning.
 
 Exporting the same thing twice gives the same bytes, in every format (for
-WebM, ProRes and sound, with the same `ffmpeg`).
+WebM, ProRes and sound, with the same `ffmpeg`). That includes film grain,
+which the renderer works out from the layer and the moment alone. Moving
+grain changes every pixel it covers on every frame, so a GIF of it stores
+whole frames and comes out larger.
 
 ## Video and sound
 
@@ -214,7 +217,7 @@ is set to the centre of the layer's box, as Moshionly does).
 | Star, pen path | Paths |
 | Fill, stroke | Fills and strokes, solid or linear and radial gradients; blend modes; opacity |
 | Group that only moves its children | A null layer the children are parented to |
-| Group that fades, blends, blurs, casts a shadow or clips | A precomposition, sized to cover all of it that can be seen; a clip is a mask of its rounded box |
+| Group that fades, blends, has effects or clips | A precomposition, sized to cover all of it that can be seen; a clip is a mask of its rounded box |
 | Mask group | A track matte: the mask over a precomposition of the rest |
 | Component | Like a group, where it is placed |
 | Instance | Like a group holding copies of its component's layers and of their animations, later by its time offset (a negative offset cannot start them before 0 ms; see Warnings): the export detaches every instance on a copy of the document first |
@@ -223,6 +226,9 @@ is set to the centre of the layer's box, as Moshionly does).
 | Counter | Each value shown for its stretch of time, its letters placed from compositions drawn once per letter shape |
 | Image | An image layer, with the picture inside the file as base64 PNG or JPEG, or in a folder beside it |
 | Blur, drop shadow | Gaussian Blur and Drop Shadow effects |
+| Glow | A Drop Shadow effect with no distance, before the shadow; its spread is left out |
+| Directional blur | A Gaussian Blur effect that blurs across or down only, whichever is nearer its angle |
+| Noise (film grain) | Left out, with a warning |
 | Reveal | A mask that moves |
 | Hidden layers | Left out |
 
@@ -250,8 +256,9 @@ out, so files stay small; the demo is about 110 kB, most of it letters.
 
 ### Players
 
-Effects follow lottie-web, the most used player: a shadow's softness and a
-blur's blurriness are set so lottie-web draws them as Moshionly does.
+Effects follow lottie-web, the most used player: a shadow's or glow's
+softness and a blur's blurriness are set so lottie-web draws them as
+Moshionly does.
 Skottie and the Android player read shadow softness as a blur radius and
 draw shadows somewhat softer; lottie-web's canvas renderer draws no
 effects, and fades the layers of a faded group one by one rather than
@@ -270,7 +277,11 @@ cannot be read (left out), an instance resized out of proportion (its
 content is stretched like a resized group, keeping stroke widths and font
 sizes), an instance with a negative time offset whose component's
 animations are still running when it starts (the motion before that is
-squeezed into what is left of it). One layer never stops the export.
+squeezed into what is left of it), and of the effects: film grain (left
+out), a glow's spread (left out, so the glow is thinner), a glow together
+with a shadow (Lottie draws the shadow from the glow too), and a directional
+blur whose angle is not across or down (drawn across or down, whichever is
+nearer). One layer never stops the export.
 
 ## The command-line example
 
