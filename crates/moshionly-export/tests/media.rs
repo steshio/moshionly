@@ -320,6 +320,44 @@ fn videos_drawn_on_every_frame_keep_their_processes() {
 
 #[test]
 #[cfg(unix)]
+fn videos_drawn_on_every_frame_keep_their_processes_however_slowly_they_start() {
+    let Some(tools) =
+        tools("videos_drawn_on_every_frame_keep_their_processes_however_slowly_they_start")
+    else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let video = counting_video(&tools, dir.path());
+    let clips: Vec<PathBuf> = (0..8)
+        .map(|clip| {
+            let path = dir.path().join(format!("clip-{clip}.mp4"));
+            std::fs::copy(&video, &path).unwrap();
+            path
+        })
+        .collect();
+    // Every frame reader takes 0.8 s to start, as with large files: when
+    // the last video's starts, the first was asked for 5.6 s ago.
+    let log = dir.path().join("starts.log");
+    let script = format!(
+        "case \" $* \" in *\" -fps_mode \"*) echo start >> '{}' ; sleep 0.8 ;; esac",
+        log.display()
+    );
+    let bin = tempfile::tempdir().unwrap();
+    let decoder = VideoDecoder::new(wrapped(&tools, bin.path(), &script));
+    // Each step a new frame of each video, so none comes from memory.
+    for frame in 0..10 {
+        let time = f64::from(frame) * 100.0;
+        for clip in &clips {
+            let image = decoder.frame_at(clip, time, 32.0, 16.0).unwrap();
+            assert_eq!(i64::from(frame), frame_number(&image));
+        }
+    }
+    let starts = std::fs::read_to_string(&log).unwrap().lines().count();
+    assert_eq!(starts, clips.len(), "one ffmpeg for each video");
+}
+
+#[test]
+#[cfg(unix)]
 fn an_ffmpeg_too_old_to_read_frames_is_said_to_be() {
     let Some(tools) = tools("an_ffmpeg_too_old_to_read_frames_is_said_to_be") else {
         return;

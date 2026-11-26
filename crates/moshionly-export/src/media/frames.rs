@@ -27,8 +27,12 @@
 //!
 //! Processes keep reading every file and size asked for lately, so an
 //! export or playback that draws many videos on every frame reads each
-//! with its own; those not asked for in a while stop when another file
-//! needs one.
+//! with its own. Past a few, those not asked for in a while stop, so sizes
+//! no longer drawn (after a zoom, say) do not keep reading. "A while" is
+//! both a few seconds and many requests: time alone would count the time
+//! slow `ffmpeg` starts for other files take against a video drawn on
+//! every frame, and requests alone would count against it the requests
+//! export threads make together.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -42,6 +46,7 @@ use super::cache::{AFTER_LAST, FrameCache, StreamKey};
 use super::probe::{Probed, Probes};
 use super::stream::Stream;
 use super::{MediaError, MediaTools, micros};
+use crate::frames::MAX_WORKERS;
 
 /// How much memory kept frames may take by default: 256 MB.
 pub const DEFAULT_FRAME_BUDGET: usize = 256 << 20;
@@ -57,9 +62,15 @@ const FILES: usize = 6;
 /// most; past this, the one asked for least recently stops for another.
 const MAX_FILES: usize = 32;
 
-/// How long a file (at one size) goes unasked for before its processes may
-/// stop for another's, when more than [`FILES`] have some.
+/// How long a file (at one size) goes unasked for, as well as
+/// [`IDLE_REQUESTS`] requests, before its processes may stop when more than
+/// [`FILES`] have some.
 const IDLE: Duration = Duration::from_secs(5);
+
+/// How many requests a file (at one size) goes unasked for, as well as
+/// [`IDLE`], before its processes may stop: enough for every export thread
+/// to ask for [`MAX_FILES`] files in between.
+const IDLE_REQUESTS: u64 = (MAX_WORKERS * MAX_FILES) as u64;
 
 /// How far ahead of a process a moment may be for it to read on to it
 /// rather than start again there, in microseconds.
@@ -92,7 +103,27 @@ pub struct VideoDecoder {
 /// asked for a frame.
 #[derive(Default)]
 struct Files {
-    readers: HashMap<Arc<StreamKey>, (Arc<Mutex<Readers>>, Instant)>,
+    readers: HashMap<Arc<StreamKey>, (Arc<Mutex<Readers>>, Asked)>,
+    /// How many requests there have been, those kept frames answered
+    /// included.
+    requests: u64,
+}
+
+/// When a file (at one size) was asked for: the time, and which request
+/// it was.
+#[derive(Clone, Copy, Debug)]
+struct Asked {
+    at: Instant,
+    request: u64,
+}
+
+impl Asked {
+    /// Whether, at `now`, this was long enough ago, in time and in
+    /// requests, for the processes to stop.
+    fn idle(self, now: Asked) -> bool {
+        now.at.saturating_duration_since(self.at) >= IDLE
+            && now.request.saturating_sub(self.request) >= IDLE_REQUESTS
+    }
 }
 
 /// The processes reading one file at one size.
@@ -180,41 +211,55 @@ impl VideoDecoder {
 }
 
 impl Files {
-    /// Notes that `key` was asked for at `now`.
+    /// Notes that `key` was asked for at `now`, which kept frames answered.
     fn used(&mut self, key: &StreamKey, now: Instant) {
+        let now = self.ask(now);
         if let Some((_, used)) = self.readers.get_mut(key) {
             *used = now;
         }
+        self.stop_idle(now);
     }
 
-    /// The processes reading `key`, asked for at `now`, made room for when
-    /// they are new.
+    /// The processes reading `key`, asked for at `now`.
     fn readers(&mut self, key: &Arc<StreamKey>, now: Instant) -> Arc<Mutex<Readers>> {
-        if let Some((readers, used)) = self.readers.get_mut(key) {
-            *used = now;
-            return Arc::clone(readers);
+        let now = self.ask(now);
+        let (readers, used) = self
+            .readers
+            .entry(Arc::clone(key))
+            .or_insert_with(|| (Arc::default(), now));
+        *used = now;
+        let readers = Arc::clone(readers);
+        self.stop_idle(now);
+        readers
+    }
+
+    /// Counts a request made at `now`.
+    fn ask(&mut self, now: Instant) -> Asked {
+        self.requests += 1;
+        Asked {
+            at: now,
+            request: self.requests,
         }
-        // Past FILES, those not asked for in a while stop, least recently
-        // asked for first; those asked for lately keep reading, up to
-        // MAX_FILES. The processes stop once whoever is using them is done.
-        while self.readers.len() >= FILES {
+    }
+
+    /// Past FILES, stops those not asked for in a while, least recently
+    /// asked for first; those asked for lately keep reading, up to
+    /// MAX_FILES. Processes stop once whoever is using them is done.
+    fn stop_idle(&mut self, now: Asked) {
+        while self.readers.len() > FILES {
             let Some((oldest, used)) = self
                 .readers
                 .iter()
-                .min_by_key(|(_, (_, used))| *used)
+                .min_by_key(|(_, (_, used))| used.request)
                 .map(|(key, (_, used))| (Arc::clone(key), *used))
             else {
                 break;
             };
-            if self.readers.len() < MAX_FILES && now.saturating_duration_since(used) < IDLE {
+            if self.readers.len() <= MAX_FILES && !used.idle(now) {
                 break;
             }
             self.readers.remove(&oldest);
         }
-        let readers = Arc::new(Mutex::default());
-        self.readers
-            .insert(Arc::clone(key), (Arc::clone(&readers), now));
-        readers
     }
 }
 
@@ -431,25 +476,94 @@ mod tests {
     #[test]
     fn files_asked_for_lately_keep_their_processes() {
         let start = Instant::now();
-        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let at = |millis: u64| start + Duration::from_millis(millis);
         let mut files = Files::default();
-        // Eight files asked for in turn, over and over: none stops.
-        for second in 0..3 {
-            for name in 0..8 {
-                files.readers(&key(name), at(second) + Duration::from_millis(name as u64));
-            }
+        for name in 0..8 {
+            files.readers(&key(name), at(0));
+        }
+        // Many more than IDLE_REQUESTS requests for the others within a few
+        // seconds, as export threads make together: the first keeps its
+        // processes.
+        for request in 0..2 * IDLE_REQUESTS {
+            files.readers(&key(1 + (request % 7) as usize), at(request * 4));
         }
         assert_eq!(kept(&files), (0..8).collect::<Vec<_>>());
+        // Not asked for in IDLE as well, it stops.
+        files.used(&key(1), at(5000));
+        assert_eq!(kept(&files), (1..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn files_idle_for_a_while_stop_least_recently_asked_for_first() {
+        let start = Instant::now();
+        let mut files = Files::default();
+        for name in 0..9 {
+            files.readers(&key(name), start);
+        }
         // Asked for from kept frames counts too.
-        files.used(&key(0), at(9));
-        // A while later, a new file: those not asked for lately stop, the
-        // least recently asked for first, down to FILES.
-        files.readers(&key(8), at(10));
+        files.used(&key(0), start + Duration::from_secs(1));
+        // Ten seconds of only two files: those idle in time and requests
+        // stop, the least recently asked for first, down to FILES, which
+        // stay even though they are idle too.
+        for frame in 0..300u64 {
+            let at = start + Duration::from_secs(1) + Duration::from_millis(frame * 1000 / 30);
+            files.readers(&key(7), at);
+            files.used(&key(8), at);
+        }
         assert_eq!(kept(&files), [0, 4, 5, 6, 7, 8]);
-        // Much later, another new file takes the place of the least recently
-        // asked for only: FILES stay, even when none was asked for lately.
-        files.readers(&key(9), at(100));
+        // A new file takes the place of the least recently asked for.
+        files.readers(&key(9), start + Duration::from_secs(20));
         assert_eq!(kept(&files), [0, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn slow_starts_do_not_make_files_drawn_on_every_frame_look_idle() {
+        // Eight files drawn on every frame, each process taking 0.8 s to
+        // start: when the last starts, the first was asked for 5.6 s ago.
+        let mut clock = Instant::now();
+        let mut files = Files::default();
+        let mut starts = 0;
+        for _frame in 0..10 {
+            for name in 0..8 {
+                let key = key(name);
+                let new = !files.readers.contains_key(&key);
+                files.readers(&key, clock);
+                if new {
+                    starts += 1;
+                    clock += Duration::from_millis(800);
+                } else {
+                    clock += Duration::from_millis(1);
+                }
+            }
+        }
+        assert_eq!(starts, 8, "one start for each file");
+    }
+
+    #[test]
+    fn sizes_no_longer_drawn_stop_without_a_new_file() {
+        // A zoom: seven videos asked for at three sizes within a second.
+        let start = Instant::now();
+        let mut files = Files::default();
+        for size in 0..3 {
+            for video in 0..7 {
+                let at = start + Duration::from_millis(size * 300 + video as u64);
+                files.readers(&key(size as usize * 7 + video), at);
+            }
+        }
+        assert_eq!(files.readers.len(), 21);
+        // Then ten seconds of playing at the last size, from kept frames
+        // and from processes in turn.
+        for frame in 0..300u64 {
+            let at = start + Duration::from_secs(1) + Duration::from_millis(frame * 1000 / 30);
+            for video in 14..21 {
+                if frame % 2 == 0 {
+                    files.used(&key(video), at);
+                } else {
+                    files.readers(&key(video), at);
+                }
+            }
+        }
+        assert_eq!(kept(&files), (14..21).collect::<Vec<_>>());
     }
 
     #[test]
