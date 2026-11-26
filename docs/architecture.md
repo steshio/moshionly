@@ -200,6 +200,8 @@ Components work like the rest of the editor, through core's build helpers. Creat
 
 Video and sound come in through Import video or sound… (⌥⌘I) or by dropping files on the canvas, only when ffmpeg is found: each file is copied into `assets/` (the agents' `import_media`), probed, and added as a `video` layer or an `audio` item starting at the playhead, growing the artboard if needed, in one undo step. The canvas gets frames from the export crate's ffmpeg frame provider, installed on the editor's asset loader. While playing, the artboard's sound is mixed in the background (the export crate's `SoundDecoder`) and played through the speakers (`cpal`, behind a small `AudioOut` trait with a silent stand-in for tests); while sound is heard, the playhead follows the sound so picture and sound stay together. Clips show as bars on the timeline: dragging moves a clip, its left edge trims the file's start and its right edge moves its end.
 
+The Design tab's Effects section lists a layer's shadow, blur, glow, noise and directional blur as blocks, each with its settings and a remove button, and a + menu offers the effects the selection does not have yet. Edits go to each selected layer's own value (`editor::effects`), so several layers keep their own colours and sizes; artboards get no effects. The Animate tab's Add action menu offers Glow, Noise and Directional blur actions beside Shadow.
+
 The `moshionly` binary is the editor and the command line: `moshionly [file]` opens the window, `moshionly export` and `moshionly mcp` work without one.
 
 All colours, spacing and type sizes come from one theme module so the look can be changed in one place.
