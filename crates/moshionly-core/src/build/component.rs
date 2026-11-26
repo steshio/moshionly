@@ -77,8 +77,9 @@ pub fn make_component(
 /// coordinates.
 ///
 /// The instance is named after the component and has its size, opacity,
-/// blend mode, blur and shadow, so it looks like the component where it is
-/// put. From then on those are the instance's own.
+/// blend mode and effects (blur, shadow, glow, noise, directional blur), so
+/// it looks like the component where it is put. From then on those are the
+/// instance's own.
 ///
 /// Returns the id of the instance with the edits.
 pub fn add_instance(
@@ -117,6 +118,9 @@ pub fn add_instance(
             blend_mode: look.layer.blend_mode,
             blur: look.layer.blur,
             shadow: look.layer.shadow,
+            glow: look.layer.glow,
+            noise: look.layer.noise,
+            directional_blur: look.layer.directional_blur,
             ..LayerProps::default()
         },
         component: component.clone(),

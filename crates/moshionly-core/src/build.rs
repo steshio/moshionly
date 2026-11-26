@@ -971,7 +971,7 @@ pub fn group_animations(
 ///
 /// The children take the group's place among its siblings, in their order.
 /// Layers keep their place, turn and size on the artboard. What the group
-/// itself added is lost with it: its opacity, blur, shadow, clip and mask,
+/// itself added is lost with it: its opacity, effects, clip and mask,
 /// and the animations that targeted it.
 pub fn ungroup(document: &Document, id: &NodeId) -> Result<Vec<Edit>, BuildError> {
     let node = existing(document, id)?;

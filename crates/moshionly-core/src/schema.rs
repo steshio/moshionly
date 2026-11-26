@@ -556,6 +556,9 @@ fn alias(field: &str) -> Option<&'static str> {
         "z" | "z_index" | "order" => "index",
         "parent_id" => "parent",
         "src" | "url" | "path" | "image" => "source",
+        "outer_glow" | "neon" => "glow",
+        "grain" | "film_grain" => "noise",
+        "motion_blur" | "directional" | "linear_blur" => "directional_blur",
         "main" | "master" | "main_component" | "component_id" => "component",
         "offset" | "time_shift" | "stagger" => "time_offset",
         _ => return None,
@@ -704,6 +707,9 @@ mod tests {
                 "blend_mode",
                 "blur",
                 "shadow",
+                "glow",
+                "noise",
+                "directional_blur",
                 "source_id",
                 "fill",
                 "stroke",
@@ -735,6 +741,9 @@ mod tests {
                 "NodeId",
                 "BlendMode",
                 "Shadow",
+                "Glow",
+                "Noise",
+                "DirectionalBlur",
                 "Paint",
                 "Gradient",
                 "GradientStop",
@@ -955,8 +964,8 @@ mod tests {
             problem.message,
             "rect \"cd34\" (Card): \"colour\" is not a field of rect. Did you mean \"fill\"? \
              Besides id, parent, index and type, a rect has: name, x, y, width, height, rotation, \
-             scale, opacity, hidden, locked, blend_mode, blur, shadow, source_id, fill, stroke, \
-             corner_radius."
+             scale, opacity, hidden, locked, blend_mode, blur, shadow, glow, noise, \
+             directional_blur, source_id, fill, stroke, corner_radius."
         );
         let hint = |ty: &str, field: &str| {
             let mut value = json!({ "id": "n", "parent": "p", "index": "a0", "type": ty });
@@ -968,6 +977,9 @@ mod tests {
         assert!(hint("fade_in", "duration").contains("Did you mean \"end\"?"));
         assert!(hint("fade_in", "delay").contains("Did you mean \"start\"?"));
         assert!(hint("text", "text").contains("Did you mean \"content\"?"));
+        assert!(hint("rect", "motion_blur").contains("Did you mean \"directional_blur\"?"));
+        assert!(hint("rect", "grain").contains("Did you mean \"noise\"?"));
+        assert!(hint("rect", "outer_glow").contains("Did you mean \"glow\"?"));
         // An alias for a field the type does not have is not offered.
         assert!(!hint("ellipse", "radius").contains("corner_radius\"?"));
         assert!(!hint("rect", "zzzzzz").contains("Did you mean"));

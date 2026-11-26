@@ -5,6 +5,7 @@
 //! definitions, so a new property is added in exactly one place.
 
 pub mod animation;
+pub mod effect;
 pub mod layer;
 pub mod media;
 pub mod node;
@@ -20,6 +21,7 @@ pub use animation::{
     SizeChange, SlidePreset, SpinPreset, StrokeAnimation, StrokeChange, TextAnimation, TextEffect,
     TextOrder, TextSplit, Timing,
 };
+pub use effect::{DirectionalBlur, Glow, Noise};
 pub use layer::{
     Artboard, Component, EllipseLayer, Group, ImageFit, ImageLayer, Instance, LayerProps,
     MaskGroup, PathLayer, RectLayer, StarLayer, TextLayer,

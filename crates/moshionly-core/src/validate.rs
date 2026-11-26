@@ -20,8 +20,9 @@ use crate::easing::Easing;
 use crate::id::NodeId;
 use crate::index;
 use crate::model::{
-    BlendMode, ClipTiming, CornerRadius, Family, Gradient, LayerProps, Node, NodeData, NodeType,
-    Paint, PathData, Shadow, ShadowChange, SizeChange, Stroke, StrokeChange, Timing,
+    BlendMode, ClipTiming, CornerRadius, DirectionalBlur, Family, Glow, Gradient, LayerProps, Node,
+    NodeData, NodeType, Noise, Paint, PathData, Shadow, ShadowChange, SizeChange, Stroke,
+    StrokeChange, Timing,
 };
 
 /// What kind of rule a [`Problem`] is about.
@@ -406,6 +407,10 @@ impl Values<'_> {
         self.between(field, value, 0.0, 100.0)
     }
 
+    fn fraction(&self, field: &str, value: f64) -> Result<(), Problem> {
+        self.between(field, value, 0.0, 1.0)
+    }
+
     fn optional(
         &self,
         field: &str,
@@ -428,6 +433,18 @@ impl Values<'_> {
             self.finite("shadow.x", x)?;
             self.finite("shadow.y", y)?;
             self.not_negative("shadow.blur", blur)?;
+        }
+        if let Some(Glow { radius, spread, .. }) = layer.glow {
+            self.not_negative("glow.radius", radius)?;
+            self.not_negative("glow.spread", spread)?;
+        }
+        if let Some(Noise { amount, size, .. }) = layer.noise {
+            self.fraction("noise.amount", amount)?;
+            self.more_than_zero("noise.size", size)?;
+        }
+        if let Some(DirectionalBlur { amount, angle }) = layer.directional_blur {
+            self.not_negative("directional_blur.amount", amount)?;
+            self.finite("directional_blur.angle", angle)?;
         }
         Ok(())
     }
@@ -457,13 +474,26 @@ impl Values<'_> {
                 ));
             }
         }
-        if layer.shadow.is_some() {
-            return Err(self.fail(
-                "shadow",
-                "cannot be set on an artboard; remove it, or put the layers in a group and \
-                 give that a shadow"
-                    .into(),
-            ));
+        let effects = [
+            ("shadow", layer.shadow.is_some(), "a shadow"),
+            ("glow", layer.glow.is_some(), "a glow"),
+            ("noise", layer.noise.is_some(), "noise"),
+            (
+                "directional_blur",
+                layer.directional_blur.is_some(),
+                "a directional blur",
+            ),
+        ];
+        for (field, set, effect) in effects {
+            if set {
+                return Err(self.fail(
+                    field,
+                    format!(
+                        "cannot be set on an artboard; remove it, or put the layers in a group \
+                         and give that {effect}"
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -993,6 +1023,30 @@ mod tests {
                 "font.family",
             ),
             (json!({ "type": "image", "source": "" }), "source"),
+            (
+                json!({ "type": "rect", "glow": { "radius": -1 } }),
+                "glow.radius",
+            ),
+            (
+                json!({ "type": "rect", "glow": { "spread": -2 } }),
+                "glow.spread",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "amount": 1.5 } }),
+                "noise.amount",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "amount": -0.1 } }),
+                "noise.amount",
+            ),
+            (
+                json!({ "type": "rect", "noise": { "size": 0 } }),
+                "noise.size",
+            ),
+            (
+                json!({ "type": "text", "directional_blur": { "amount": -4 } }),
+                "directional_blur.amount",
+            ),
         ];
         for (fields, field) in cases {
             let problem = complaint(fields.clone());
@@ -1026,6 +1080,16 @@ mod tests {
             artboard(json!({ "shadow": {} })).field.as_deref(),
             Some("shadow")
         );
+        for effect in ["glow", "noise", "directional_blur"] {
+            let mut fields = json!({});
+            fields[effect] = json!({});
+            let problem = artboard(fields);
+            assert_eq!(problem.field.as_deref(), Some(effect));
+            assert!(
+                problem.message.contains("cannot be set on an artboard"),
+                "{problem}"
+            );
+        }
         assert_eq!(
             artboard(json!({ "blend_mode": "multiply" }))
                 .field

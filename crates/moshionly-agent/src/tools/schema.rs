@@ -417,7 +417,7 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("The value types are: shadow, paint,"),
+            error.contains("The value types are: shadow, glow, noise, directional_blur, paint,"),
             "{error}"
         );
         // Case and stray spaces are forgiven.

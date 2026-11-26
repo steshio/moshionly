@@ -91,6 +91,34 @@ named_default!(
     crate::Color::rgba(0, 0, 0, 0x40)
 );
 named_default!(
+    /// Colour of a new glow: a bright blue at 80% opacity.
+    glow_color,
+    is_glow_color,
+    crate::Color,
+    crate::Color::rgba(0x0D, 0x99, 0xFF, 0xCC)
+);
+named_default!(
+    /// Softness of a new glow, in pixels.
+    glow_radius,
+    is_glow_radius,
+    f64,
+    20.0
+);
+named_default!(
+    /// Strength of new noise, from 0 to 1.
+    noise_amount,
+    is_noise_amount,
+    f64,
+    0.2
+);
+named_default!(
+    /// Amount of a new directional blur, in pixels.
+    directional_blur_amount,
+    is_directional_blur_amount,
+    f64,
+    20.0
+);
+named_default!(
     /// Paint of a new stroke: opaque black.
     stroke_paint,
     is_stroke_paint,

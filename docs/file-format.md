@@ -106,6 +106,9 @@ When a file is loaded, a group of siblings whose indices are not valid or not al
 | `blend_mode` | [blend_mode](#blend_mode) | `"normal"` | How the layer combines with what is behind it. |
 | `blur` | number | `0` | Blur of the whole layer in pixels, 0 or more: twice the standard deviation of the Gaussian. |
 | `shadow` | [shadow](#shadow) | none | Drop shadow. |
+| `glow` | [glow](#glow) | none | Outer glow, behind the layer. |
+| `noise` | [noise](#noise) | none | Film grain over the layer's pixels. |
+| `directional_blur` | [directional_blur](#directional_blur) | none | Blur along one direction, on top of `blur`. |
 | `source_id` | string | none | Where an imported layer came from, for example `figma:<file key>:<node id>`. Re-importing a design matches layers by this value to keep their animations. |
 
 ### Layer types
@@ -638,6 +641,35 @@ A drop shadow behind a layer.
 | `y` | number | `4` | Vertical offset in pixels, positive downward. |
 | `blur` | number | `12` | Blur in pixels, 0 or more: twice the standard deviation of the Gaussian. |
 
+#### `glow`
+
+An outer glow: a soft halo of colour around what a layer draws, behind it.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `color` | colour | `"#0D99FFCC"` | Glow colour; its alpha is the glow's strength. |
+| `radius` | number | `20` | Softness in pixels, 0 or more: like `blur`, twice the standard deviation of the Gaussian. |
+| `spread` | number | `0` | How far the shape grows on every side before it is softened, in pixels, 0 or more. |
+
+#### `noise`
+
+Film grain over what a layer draws. It stays inside the layer's shape: the grain lightens and darkens the layer's pixels and keeps their alpha. The grain is the same every time the same frame is drawn: it depends only on the layer's id and, when it moves, the time.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | `0.2` | How strong the grain is, from 0 (none) to 1. |
+| `size` | number | `1` | Size of one grain in pixels, more than 0. |
+| `animated` | boolean | `true` | Whether the grain changes on every frame; when false it stays fixed. |
+
+#### `directional_blur`
+
+A blur along one direction only, like a fast movement smears a photo.
+
+| Field | Value | Default | Meaning |
+|---|---|---|---|
+| `amount` | number | `20` | Blur along the direction in pixels, 0 or more: like `blur`, twice the standard deviation of the Gaussian. |
+| `angle` | number | `0` | Direction of the smear in degrees, clockwise: 0 smears left and right, 90 up and down. |
+
 #### `paint`
 
 What an area or an outline is painted with: one colour, or a gradient. In files a paint is either a colour string (`"#0D99FF"`) or a gradient object (`{ "type": "linear_gradient", "stops": [...] }`).
@@ -1137,8 +1169,8 @@ A `component` is a main component: a box of layers that can be shown again elsew
 What an instance shows at a moment is what the component's own type draws (its fill, stroke, corner radius and clip) and the layers inside it, with every animation that targets a layer inside it, as the component looks `time_offset` milliseconds earlier. So editing the component, its layers or their animations changes every instance, and instances with growing offsets play the same motion one after another. Before its offset has passed, an instance shows the component as it is before its animations start; a negative offset plays them earlier.
 
 - The animations of the layers inside a component live in the component's own artboard, like any animation; instances in other artboards play them too.
-- The component's own placement and effects (position, size, rotation, scale, opacity, blend mode, blur, shadow) and the animations that target the component itself belong to where the component is placed. They are not part of what instances show.
-- An instance is a layer of its own: its position, size, rotation, scale, opacity, blend mode, blur, shadow and the animations that target it are its own, and it is selected and moved as one layer.
+- The component's own placement and effects (position, size, rotation, scale, opacity, blend mode, blur, shadow, glow, noise, directional blur) and the animations that target the component itself belong to where the component is placed. They are not part of what instances show.
+- An instance is a layer of its own: its position, size, rotation, scale, opacity, blend mode, effects and the animations that target it are its own, and it is selected and moved as one layer.
 - When an instance's box is not the size of the component's, what it shows is scaled to fill its box: `width` divided by the component's width across, `height` divided by its height down. A `resize` animation on the instance changes its box the way it changes a group's: the component's fill, stroke and clip follow the box, and the layers keep the scale of the instance's resting `width` and `height`. When the editor or an agent's `update` resizes a component, an instance that was its size takes the new size in the same step, each side on its own, so what it shows is not squeezed; an instance resized by hand keeps its size.
 - Instances hold no layers, and there are no per-instance changes (overrides) yet.
 
