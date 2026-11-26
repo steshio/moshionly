@@ -155,7 +155,7 @@ mod tests {
     fn renderer() -> Renderer {
         Renderer::new(FontLibrary::bundled(), AssetLoader::default())
     }
-    use moshionly_core::model::{BlendMode, Glow, GradientStop, ImageFit, Shadow};
+    use moshionly_core::model::{BlendMode, Glow, GradientStop, ImageFit, Noise, Shadow};
     use moshionly_core::scene::{Clip, Content, SceneNode, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId, Point, Rect};
 
@@ -569,6 +569,85 @@ mod tests {
         let far = pixel(&frame, 11, 10);
         assert!(near[0] > far[0] && far[0] > 0, "{near:?} {far:?}");
         assert_eq!((near[1], near[2]), (0, 0), "red, not mixed with the shadow");
+    }
+
+    #[test]
+    fn grain_stays_inside_and_is_the_same_for_the_same_frame() {
+        let grey = Color::rgb(128, 128, 128);
+        let grainy = |id: &str, animated: bool| {
+            let mut node = square(id, 10.0, 0.0, 20.0, grey);
+            node.noise = Some(Noise {
+                amount: 1.0,
+                size: 1.0,
+                animated,
+            });
+            node
+        };
+        let at = |node: SceneNode, time_ms: f64| {
+            let mut scene = scene(None);
+            scene.time_ms = time_ms;
+            scene.nodes = vec![node];
+            renderer().render(&scene, &RenderOptions::new()).unwrap()
+        };
+        let frame = at(grainy("n", true), 40.0);
+        let mut shades = std::collections::HashSet::new();
+        for y in 0..20 {
+            for x in 0..40 {
+                let [r, g, b, a] = frame.premultiplied_pixel(x, y).unwrap();
+                let inside = (10..30).contains(&x);
+                assert_eq!(a, if inside { 255 } else { 0 }, "alpha kept at {x},{y}");
+                assert!(r == g && g == b, "grey grain");
+                if inside {
+                    shades.insert(r);
+                }
+            }
+        }
+        assert!(shades.len() > 100, "{} shades", shades.len());
+
+        let bytes = |frame: Frame| frame.into_premultiplied();
+        let first = bytes(at(grainy("n", true), 40.0));
+        assert_eq!(first, bytes(at(grainy("n", true), 40.0)), "same frame");
+        assert_ne!(first, bytes(at(grainy("n", true), 80.0)), "moving grain");
+        assert_ne!(
+            first,
+            bytes(at(grainy("other", true), 40.0)),
+            "another layer"
+        );
+        assert_eq!(
+            bytes(at(grainy("n", false), 40.0)),
+            bytes(at(grainy("n", false), 80.0)),
+            "still grain"
+        );
+    }
+
+    #[test]
+    fn grain_scales_with_the_layer() {
+        let mut grainy = square("n", 0.0, 0.0, 16.0, Color::rgb(128, 128, 128));
+        grainy.noise = Some(Noise {
+            amount: 1.0,
+            size: 4.0,
+            animated: false,
+        });
+        let mut scene = scene(None);
+        scene.nodes = vec![grainy];
+        let renderer = renderer();
+        let one = renderer.render(&scene, &RenderOptions::new()).unwrap();
+        let two = renderer
+            .render(&scene, &RenderOptions::new().with_scale(2.0))
+            .unwrap();
+        let mut differ = 0;
+        for cell_y in 0..4 {
+            for cell_x in 0..4 {
+                let small = one.premultiplied_pixel(cell_x * 4 + 2, cell_y * 4 + 2);
+                assert_eq!(small, one.premultiplied_pixel(cell_x * 4, cell_y * 4 + 3));
+                assert_eq!(
+                    small,
+                    two.premultiplied_pixel(cell_x * 8 + 5, cell_y * 8 + 3)
+                );
+                differ += usize::from(small != one.premultiplied_pixel(2, 2));
+            }
+        }
+        assert!(differ > 10, "cells differ from each other: {differ}");
     }
 
     #[test]

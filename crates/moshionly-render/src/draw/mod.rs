@@ -8,6 +8,7 @@ pub(crate) mod effects;
 pub(crate) mod geometry;
 mod glow;
 mod image;
+mod noise;
 mod paint;
 pub(crate) mod stroke;
 mod text;
@@ -29,6 +30,8 @@ pub(crate) struct Painter<'a> {
     fonts: &'a FontLibrary,
     assets: &'a AssetLoader,
     warnings: Vec<RenderWarning>,
+    /// The time of the scene being drawn, which moving grain depends on.
+    time_ms: f64,
 }
 
 impl<'a> Painter<'a> {
@@ -45,6 +48,7 @@ impl<'a> Painter<'a> {
             fonts,
             assets,
             warnings: Vec::new(),
+            time_ms: 0.0,
         }
     }
 
@@ -59,6 +63,7 @@ impl<'a> Painter<'a> {
     /// artboard only partly covers, and a region reaching past the
     /// artboard, are not left see-through.
     pub(crate) fn scene(&mut self, scene: &Scene, background: Background) {
+        self.time_ms = scene.time_ms;
         let canvas = self.canvas;
         let artboard = convert::rect(&Rect::new(0.0, 0.0, scene.width, scene.height));
         if let Background::Over(color) = background {
@@ -102,14 +107,22 @@ impl<'a> Painter<'a> {
     }
 
     /// Draws a node's content with its effects, in the order of
-    /// `docs/architecture.md`, innermost first: content, shadow, blur, mask
-    /// and clip, blend mode, opacity. Each effect that needs one gets an
-    /// offscreen layer, and the layers nest the other way round.
+    /// `docs/architecture.md`, innermost first: content, grain, shadow and
+    /// glow, blur, mask and clip, blend mode, opacity.
+    /// Each effect that needs one gets an offscreen layer, and the layers
+    /// nest the other way round.
     fn effects(&mut self, node: &SceneNode, opacity: f32) {
         let canvas = self.canvas;
         let filter = effects::filter(node);
+        let grain = node
+            .noise
+            .as_ref()
+            .and_then(|grain| noise::paint(grain, &node.id, self.time_ms));
         let blend = effects::blend_mode(node.blend_mode);
-        let plain = filter.is_none() && node.mask.is_none() && blend == sk::BlendMode::SrcOver;
+        let plain = filter.is_none()
+            && grain.is_none()
+            && node.mask.is_none()
+            && blend == sk::BlendMode::SrcOver;
         if plain && (opacity >= 1.0 || is_flat(node)) {
             // Nothing needs a layer: fading the one thing drawn is fading
             // the node.
@@ -147,12 +160,14 @@ impl<'a> Painter<'a> {
             // The mask cuts into this layer only, not into what is behind.
             canvas.save_layer(&sk::canvas::SaveLayerRec::default().bounds(&visual));
         }
-        if let Some(filter) = filter {
-            // The filter's layer holds the content; the shadow and blur
-            // it adds may reach past it.
-            let content = geometry
-                .content(node, Precision::Quick)
-                .map(|content| layer_bounds(&content));
+        // What the content draws bounds the layers of the filters.
+        let content = (filter.is_some() || grain.is_some())
+            .then(|| geometry.content(node, Precision::Quick))
+            .flatten();
+        if filter.is_some() || grain.is_some() {
+            // The layer holds the content and its grain; the shadow, glow
+            // and blur the filter adds may reach past it.
+            let content = content.map(|content| layer_bounds(&content));
             let mut paint = sk::Paint::default();
             paint.set_image_filter(filter);
             let mut layer = sk::canvas::SaveLayerRec::default().paint(&paint);
@@ -161,6 +176,9 @@ impl<'a> Painter<'a> {
             }
             canvas.save_layer(&layer);
             self.content(node, 1.0);
+            if let (Some(grain), Some(content)) = (&grain, &content) {
+                canvas.draw_rect(content, grain);
+            }
             canvas.restore();
         } else {
             self.content(node, 1.0);

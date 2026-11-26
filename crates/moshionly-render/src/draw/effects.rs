@@ -1,5 +1,6 @@
 //! A node's effects as Skia objects: its drop shadow, glow and blur as one
-//! image filter, and its blend mode.
+//! image filter, and its blend mode. Its grain is a paint, in
+//! [`super::noise`].
 //!
 //! Blur amounts in the scene are twice the standard deviation of the
 //! Gaussian, so Skia's sigma is half of them. Everything here is in the
@@ -108,7 +109,8 @@ fn is_visible(shadow: &Shadow) -> bool {
 
 /// How far `node`'s shadow, glow and blur reach past what it draws, as a
 /// margin on each side: left, top, right, bottom. Three standard deviations
-/// hold all of a Gaussian that can be seen in 8 bits.
+/// hold all of a Gaussian that can be seen in 8 bits. Grain stays inside
+/// the node's alpha.
 pub(crate) fn reach(node: &SceneNode) -> [f64; 4] {
     let spread_of = |blur: f64| sigma(blur).map_or(0.0, |sigma| 3.0 * f64::from(sigma));
     let mut margin = [0.0; 4];
@@ -133,7 +135,7 @@ pub(crate) fn reach(node: &SceneNode) -> [f64; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moshionly_core::model::Glow;
+    use moshionly_core::model::{Glow, Noise};
     use moshionly_core::scene::{Content, ScenePaint};
     use moshionly_core::{Affine, Color, NodeId};
 
@@ -213,6 +215,13 @@ mod tests {
             ..Glow::default()
         });
         assert!(filter(&glowing).is_none());
+
+        // Grain is drawn by the painter, not the filter, and stays inside
+        // the shape.
+        let mut grainy = node(0.0, None);
+        grainy.noise = Some(Noise::default());
+        assert!(filter(&grainy).is_none());
+        assert_eq!(reach(&grainy), [0.0; 4]);
     }
 
     #[test]
