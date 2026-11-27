@@ -254,6 +254,44 @@ fn a_marquee_selects_what_it_touches() {
     assert_eq!(selection(&harness), ["card"]);
 }
 
+#[test]
+fn shape_shortcuts_update_the_toolbar_shape() {
+    let mut harness = harness();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    harness.key_press(Key::O);
+    harness.run();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Ellipse);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Ellipse
+    );
+    // Back to select: the button keeps the ellipse.
+    harness.key_press(Key::V);
+    harness.run();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Ellipse
+    );
+    harness.key_press(Key::S);
+    harness.run();
+    assert_eq!(harness.state().shape_tool(), moshionly_app::shell::Tool::Star);
+    harness.key_press(Key::R);
+    harness.run();
+    assert_eq!(
+        harness.state().tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+}
+
 /// The layers of the demo's artboard of `kind`, by id.
 fn layers_of(harness: &Harness<'_, Shell>, kind: moshionly_core::NodeType) -> Vec<NodeId> {
     harness
