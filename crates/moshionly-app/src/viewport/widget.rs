@@ -73,6 +73,17 @@ pub enum ViewportEvent {
         /// The modifier keys held.
         modifiers: Modifiers,
     },
+    /// A drag began on the name above an artboard. `world` is where the
+    /// button went down. Later movement of the same drag is reported as
+    /// [`Dragged`](Self::Dragged) and [`DragStopped`](Self::DragStopped).
+    ArtboardNameDragStarted {
+        /// The artboard.
+        key: Key,
+        /// Where the button went down.
+        world: Pos2,
+        /// The modifier keys held.
+        modifiers: Modifiers,
+    },
     /// A drag with the primary button began. `world` is where the button
     /// went down, not where the pointer is by now.
     DragStarted {
@@ -365,9 +376,7 @@ impl<'a> Viewport<'a> {
                     painter.rect_filled(screen, 0.0, artboard.fill);
                 }
             }
-            if let Some(event) = artboard_name(ui, rect, screen, artboard, modifiers) {
-                events.push(event);
-            }
+            events.extend(artboard_name(ui, rect, screen, artboard, camera, modifiers));
         }
         if let Some(overlays) = self.overlays {
             overlay::paint(ui, rect, camera, overlays);
@@ -419,19 +428,20 @@ fn rotate_badge(ui: &Ui, id: egui::Id, pointer: Pos2) {
     icons::paint(&painter, center, icons::ARROW_CLOCKWISE, 12.0, c.text);
 }
 
-/// Draws the name above an artboard and reports a click on it.
+/// Draws the name above an artboard and reports a click or a drag on it.
 fn artboard_name(
     ui: &Ui,
     viewport: Rect,
     screen: Rect,
     artboard: &Artboard<'_>,
+    camera: &Camera,
     modifiers: Modifiers,
-) -> Option<ViewportEvent> {
+) -> Vec<ViewportEvent> {
     let theme = Theme::of(ui);
     let c = &theme.color;
     // No room for a name above a tiny artboard.
     if screen.width() < 32.0 {
-        return None;
+        return Vec::new();
     }
     let line = Rect::from_min_max(
         pos2(screen.left(), screen.top() - 20.0),
@@ -451,7 +461,7 @@ fn artboard_name(
         Some(ui.interact(
             hit,
             ui.make_persistent_id(("artboard-name", artboard.key.as_str())),
-            Sense::click(),
+            Sense::click_and_drag(),
         ))
     } else {
         None
@@ -466,12 +476,46 @@ fn artboard_name(
     };
     ui.painter_at(viewport)
         .galley(paint::snap(text_rect.min), galley, ink);
-    response
-        .is_some_and(|r| r.clicked())
-        .then(|| ViewportEvent::ArtboardNameClicked {
+    let Some(response) = response else {
+        return Vec::new();
+    };
+    let world_at = |screen: Pos2| camera.screen_to_world(viewport, screen);
+    let mut events = Vec::new();
+    if response.drag_started() {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .unwrap_or_else(|| response.interact_pointer_pos().unwrap_or(hit.center()));
+        events.push(ViewportEvent::ArtboardNameDragStarted {
+            key: artboard.key.clone(),
+            world: world_at(origin),
+            modifiers,
+        });
+    }
+    if response.dragged()
+        && let Some(screen) = response.interact_pointer_pos()
+    {
+        events.push(ViewportEvent::Dragged {
+            world: world_at(screen),
+            modifiers,
+        });
+    }
+    if response.drag_stopped() {
+        let screen = response.interact_pointer_pos().unwrap_or_else(|| {
+            ui.input(|i| i.pointer.press_origin())
+                .unwrap_or(hit.center())
+        });
+        events.push(ViewportEvent::DragStopped {
+            world: world_at(screen),
+            modifiers,
+        });
+    }
+    if response.clicked() {
+        events.push(ViewportEvent::ArtboardNameClicked {
             key: artboard.key.clone(),
             modifiers,
-        })
+        });
+    }
+    events
 }
 
 /// Moves a rectangle so its top-left corner is on a whole point, which keeps

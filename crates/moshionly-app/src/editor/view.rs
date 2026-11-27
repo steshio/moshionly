@@ -61,6 +61,21 @@ impl Editor {
             .cloned()
     }
 
+    /// The scene a drag should move when it hits no layer: the unlocked
+    /// scene under `world`. `None` off every scene, and on a locked one,
+    /// which stays put so the drag can draw a marquee instead.
+    ///
+    /// A scene is moved by its body the way a frame is. Layers on top of it
+    /// are still what [`layer_at`](Self::layer_at) returns; the caller asks
+    /// this only when that finds nothing.
+    pub fn scene_to_move(&self, world: Pos2) -> Option<NodeId> {
+        let id = self.artboard_at(world)?;
+        if selection::is_held(&self.document, &id) {
+            return None;
+        }
+        Some(id)
+    }
+
     /// The rectangle around every artboard, or `None` for a document
     /// without one.
     pub fn content_bounds(&self) -> Option<Rect> {
@@ -306,6 +321,11 @@ pub(crate) mod tests {
         assert_eq!(second.bounds().min, pos2(1100.0, 0.0));
         assert_eq!(editor.artboard_at(pos2(1200.0, 10.0)), Some(id("ab2")));
         assert_eq!(editor.artboard_at(pos2(1050.0, 10.0)), None);
+        // Dragging a scene's body, empty or not, targets the scene. A
+        // locked scene and the gap between scenes do not.
+        assert_eq!(editor.scene_to_move(pos2(1300.0, 200.0)), Some(id("ab2")));
+        assert_eq!(editor.scene_to_move(pos2(50.0, 50.0)), Some(id("ab")));
+        assert_eq!(editor.scene_to_move(pos2(1050.0, 10.0)), None);
         assert_eq!(
             editor.content_bounds(),
             Some(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 1000.0)))
@@ -404,6 +424,7 @@ pub(crate) mod tests {
             .unwrap();
         editor.click(pos2(1300.0, 200.0), Modifiers::NONE, 1.0);
         assert!(editor.selection.is_empty());
+        assert_eq!(editor.scene_to_move(pos2(1300.0, 200.0)), None);
     }
 
     #[test]
