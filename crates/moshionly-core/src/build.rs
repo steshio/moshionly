@@ -577,6 +577,31 @@ pub fn add_artboard(
     Ok((node.id.clone(), vec![Edit::add(node)]))
 }
 
+/// A name for a copy that does not collide with `taken`. An empty name
+/// stays empty. `"Scene 1"` with `"Scene 1"` already taken becomes
+/// `"Scene 2"`; a name with no number, `"Hero"`, becomes `"Hero 1"`.
+fn unique_copy_name(name: &str, taken: &[String]) -> String {
+    if name.is_empty() || !taken.iter().any(|other| other == name) {
+        return name.to_owned();
+    }
+    let base = match name.rsplit_once(' ') {
+        Some((base, suffix)) if !base.is_empty() && suffix.parse::<u32>().is_ok() => base,
+        _ => name,
+    };
+    let highest = taken
+        .iter()
+        .filter_map(|other| {
+            other
+                .strip_prefix(base)?
+                .strip_prefix(' ')?
+                .parse::<u32>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    format!("{base} {}", highest + 1)
+}
+
 /// Where the next artboard goes on the canvas: right of the rightmost one,
 /// level with the first.
 pub(crate) fn free_canvas_spot(document: &Document) -> (f64, f64) {
@@ -1059,6 +1084,14 @@ pub fn clone_subtree(
         top.index = last_index(document, None, Family::Layer)?;
         if let Some(layer) = top.data.layer_mut() {
             (layer.x, layer.y) = free_canvas_spot(document);
+            // A second "Scene 1" is how two scenes end up with the same
+            // name. The copy takes the next free number.
+            let taken: Vec<String> = document
+                .artboards()
+                .iter()
+                .filter_map(|id| Some(document.get(id)?.name().to_owned()))
+                .collect();
+            layer.name = unique_copy_name(&layer.name, &taken);
         }
     } else {
         check_holds(existing(document, parent)?, top.node_type(), source.label())?;
@@ -1883,5 +1916,26 @@ mod tests {
             "same target as the original"
         );
         assert_eq!(result.animations_targeting(&id("r1")).len(), 2);
+    }
+
+    #[test]
+    fn duplicating_a_scene_takes_the_next_name() {
+        let mut document = Document::new("Names");
+        let (first, edits) = add_artboard(&document, "Scene 1", 200.0, 200.0).unwrap();
+        document.apply(&edits).unwrap();
+        let (edits, map) = duplicate(&document, std::slice::from_ref(&first)).unwrap();
+        document.apply(&edits).unwrap();
+        let second = map[&first].clone();
+        assert_eq!(document.get(&second).unwrap().name(), "Scene 2");
+        let (edits, map) = duplicate(&document, std::slice::from_ref(&second)).unwrap();
+        document.apply(&edits).unwrap();
+        assert_eq!(document.get(&map[&second]).unwrap().name(), "Scene 3");
+
+        // A name that is not numbered still gets a number once it collides.
+        let (hero, edits) = add_artboard(&document, "Hero", 200.0, 200.0).unwrap();
+        document.apply(&edits).unwrap();
+        let (edits, map) = duplicate(&document, std::slice::from_ref(&hero)).unwrap();
+        document.apply(&edits).unwrap();
+        assert_eq!(document.get(&map[&hero]).unwrap().name(), "Hero 1");
     }
 }
