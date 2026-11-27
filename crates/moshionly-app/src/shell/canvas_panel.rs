@@ -16,7 +16,9 @@ use crate::{
         inspect::{artboard_of, text_of},
         motion::MoveDrag,
         pen::{Pen, PenPress},
+        selection,
     },
+    key::Key,
     theme::Theme,
     viewport::{Artboard, Overlays, Viewport, ViewportEvent},
     widgets::Toast,
@@ -100,7 +102,7 @@ impl Shell {
                 .overlays(&overlays)
                 .cursor(tool_cursor(tool))
                 .show(ui, canvas);
-            (viewport, tool_bar::tool_bar(ui, canvas, tool))
+            (viewport, tool_bar::tool_bar(ui, canvas, tool, self.shape))
         });
         drop(artboards);
 
@@ -221,6 +223,7 @@ impl Shell {
                     | ViewportEvent::DragStarted { .. }
                     | ViewportEvent::HandleDragStarted { .. }
                     | ViewportEvent::ArtboardNameClicked { .. }
+                    | ViewportEvent::ArtboardNameDragStarted { .. }
             )
         {
             self.finish_text_edit();
@@ -247,14 +250,13 @@ impl Shell {
                 }
             }
             ViewportEvent::ArtboardNameClicked { key, modifiers } => {
-                let id = NodeId::from(key.as_str());
-                if modifiers.shift {
-                    self.editor.selection.toggle(id.clone());
-                } else {
-                    self.editor.selection.select(id.clone());
-                }
-                self.editor.set_artboard(Some(id));
+                self.select_named_scene(&key, modifiers);
             }
+            ViewportEvent::ArtboardNameDragStarted {
+                key,
+                world,
+                modifiers,
+            } => self.start_scene_drag(&key, world, modifiers),
             ViewportEvent::SecondaryClicked { world, .. } => {
                 // A right click on something not selected selects it first.
                 let target = self.editor.layer_at(world, Pick::Normal, zoom);
@@ -469,9 +471,43 @@ impl Shell {
         }
     }
 
+    /// Selects the scene named by a click on its title.
+    fn select_named_scene(&mut self, key: &Key, modifiers: Modifiers) {
+        let id = NodeId::from(key.as_str());
+        if !self.editor.document().contains(&id) {
+            return;
+        }
+        if modifiers.shift {
+            self.editor.selection.toggle(id.clone());
+        } else {
+            self.editor.selection.select(id.clone());
+        }
+        self.editor.set_artboard(Some(id));
+    }
+
+    /// Starts moving the scene named by a drag on its title. A locked scene
+    /// is selected and left where it is.
+    fn start_scene_drag(&mut self, key: &Key, world: Pos2, modifiers: Modifiers) {
+        let id = NodeId::from(key.as_str());
+        if !self.editor.document().contains(&id) {
+            return;
+        }
+        let held = selection::is_held(self.editor.document(), &id);
+        if !self.editor.selection.contains(&id) {
+            self.select_named_scene(key, modifiers);
+        } else {
+            self.editor.set_artboard(Some(id.clone()));
+        }
+        if held || self.editor.selection.is_empty() {
+            return;
+        }
+        self.begin_selection_drag(world, modifiers);
+    }
+
     /// Starts a drag at `world`: on the selection it moves the selection, on
-    /// another layer it selects and moves that layer, and elsewhere it draws
-    /// a marquee. Alt moves a copy.
+    /// another layer it selects and moves that layer, on a scene's body it
+    /// selects and moves the scene, and elsewhere it draws a marquee. Alt
+    /// moves a copy.
     fn start_drag(&mut self, world: Pos2, modifiers: Modifiers, zoom: f32) {
         let pick = if modifiers.command {
             Pick::Deep
@@ -480,42 +516,72 @@ impl Shell {
         };
         let target = self.editor.layer_at(world, pick, zoom);
         let document = std::sync::Arc::clone(self.editor.document());
-        let selected = |id: &NodeId, editor: &crate::editor::Editor| {
-            editor.selection.contains(id)
-                || editor
-                    .selection
-                    .ids()
-                    .iter()
-                    .any(|s| document.is_ancestor(s, id))
+        let ids = self.editor.selection.ids().to_vec();
+        let selected = |id: &NodeId| {
+            ids.contains(id) || ids.iter().any(|other| document.is_ancestor(other, id))
         };
         let moves = match target {
-            Some(target) if selected(&target, &self.editor) => true,
+            Some(target) if selected(&target) => true,
             Some(target) => {
-                if modifiers.shift {
-                    self.editor.selection.toggle(target);
-                } else {
-                    self.editor.selection.select(target);
-                }
+                self.select_for_drag(target, modifiers);
                 true
             }
-            None => self
+            None if self
                 .editor
                 .selection_box()
-                .is_some_and(|b| b.contains(world)),
-        };
-        if moves && !self.editor.selection.is_empty() && self.editor.is_animating() {
-            match self.editor.begin_animate_move(world) {
-                Ok(drag) => self.drag = drag.map(CanvasDrag::Animate),
-                Err(error) => self.toasts.push(Toast::error(error.to_string())),
+                .is_some_and(|b| b.contains(world)) =>
+            {
+                true
             }
-        } else if moves && !self.editor.selection.is_empty() {
-            self.drag = self
-                .editor
-                .begin_move(world, modifiers.alt)
-                .map(CanvasDrag::Selection);
+            // No layer under the pointer: the scene itself, like a frame.
+            None => match self.editor.scene_to_move(world) {
+                Some(scene) => {
+                    self.select_for_drag(scene.clone(), modifiers);
+                    self.editor.set_artboard(Some(scene));
+                    true
+                }
+                None => false,
+            },
+        };
+        if moves && !self.editor.selection.is_empty() {
+            self.begin_selection_drag(world, modifiers);
         } else {
             self.start_marquee(world, modifiers);
         }
+    }
+
+    /// Selects `id` for a drag that started on it. Shift adds or removes it.
+    fn select_for_drag(&mut self, id: NodeId, modifiers: Modifiers) {
+        if modifiers.shift {
+            self.editor.selection.toggle(id);
+        } else {
+            self.editor.selection.select(id);
+        }
+    }
+
+    /// Opens a move of whatever is selected. In the Animate tab a layer's
+    /// drag makes a move action; a scene has no such action, so it moves on
+    /// the canvas either way.
+    fn begin_selection_drag(&mut self, world: Pos2, modifiers: Modifiers) {
+        if self.editor.is_animating() {
+            match self.editor.begin_animate_move(world) {
+                // A layer's drag in the Animate tab makes or edits a move.
+                Ok(Some(drag)) => {
+                    self.drag = Some(CanvasDrag::Animate(drag));
+                    return;
+                }
+                // Nothing but scenes: they move on the canvas, as in Design.
+                Ok(None) => {}
+                Err(error) => {
+                    self.toasts.push(Toast::error(error.to_string()));
+                    return;
+                }
+            }
+        }
+        self.drag = self
+            .editor
+            .begin_move(world, modifiers.alt)
+            .map(CanvasDrag::Selection);
     }
 
     /// Carries a drag on to `world`.

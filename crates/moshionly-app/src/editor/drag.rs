@@ -586,6 +586,30 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_scene_moves_it_and_undoes() {
+        let mut editor = editor();
+        editor.selection.select(id("ab2"));
+        let drag = editor.begin_move(pos2(1300.0, 200.0), false).unwrap();
+        editor
+            .drag_to(&drag, pos2(1360.0, 230.0), Modifiers::CTRL, 1.0)
+            .unwrap();
+        editor.end_drag();
+        assert_eq!(
+            (frame(&editor, "ab2").0, frame(&editor, "ab2").1),
+            (1160.0, 30.0)
+        );
+        // The Design panel reads the same x and y.
+        let layer = editor.document().get(&id("ab2")).unwrap().layer().unwrap();
+        assert_eq!((layer.x, layer.y), (1160.0, 30.0));
+        assert_eq!(editor.undo_label().as_deref(), Some("Undo Move"));
+        editor.undo().unwrap();
+        assert_eq!(
+            (frame(&editor, "ab2").0, frame(&editor, "ab2").1),
+            (1100.0, 0.0)
+        );
+    }
+
+    #[test]
     fn a_locked_artboard_stays_where_it_is() {
         let mut editor = editor();
         editor

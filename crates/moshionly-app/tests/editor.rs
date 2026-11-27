@@ -247,11 +247,96 @@ fn arrow_keys_nudge_and_delete_removes() {
 #[test]
 fn a_marquee_selects_what_it_touches() {
     let mut harness = harness();
-    // From the empty top-left of the artboard into the card.
-    let from = screen(&harness, pos2(40.0, 40.0));
-    let to = screen(&harness, pos2(300.0, 400.0));
+    // From the canvas beside the scene, across its empty edge and into the
+    // card. A drag that starts on the scene itself moves the scene.
+    let from = screen(&harness, pos2(-20.0, 400.0));
+    let to = screen(&harness, pos2(400.0, 550.0));
     drag(&mut harness, from, to);
     assert_eq!(selection(&harness), ["card"]);
+    assert_eq!(position(&harness, "scene"), (0.0, 0.0), "the scene stayed");
+}
+
+#[test]
+fn a_scene_moves_by_its_body_and_by_its_name() {
+    let mut harness = harness();
+    // The empty corner of the demo scene.
+    let from = screen(&harness, pos2(40.0, 40.0));
+    let to = screen(&harness, pos2(90.0, 70.0));
+    drag(&mut harness, from, to);
+    assert_eq!(selection(&harness), ["scene"]);
+    let moved = position(&harness, "scene");
+    assert!(
+        moved.0 > 20.0 && moved.1 > 10.0,
+        "the scene moved: {moved:?}"
+    );
+    assert_eq!(
+        harness.state().editor().undo_label().as_deref(),
+        Some("Undo Move")
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "scene"), (0.0, 0.0));
+
+    // The name above the scene, like a frame's title.
+    let canvas = harness.state().canvas_rect().unwrap();
+    let rect = harness
+        .state()
+        .editor()
+        .artboard_rect(&NodeId::from("scene"))
+        .unwrap();
+    let on_screen = harness.state().camera().rect_to_screen(canvas, rect);
+    let name = pos2(on_screen.left() + 24.0, on_screen.top() - 12.0);
+    drag(&mut harness, name, name + vec2(36.0, 20.0));
+    assert_eq!(selection(&harness), ["scene"]);
+    let by_name = position(&harness, "scene");
+    assert!(
+        by_name.0 > 10.0 || by_name.1 > 10.0,
+        "dragging the name moved it: {by_name:?}"
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run();
+    assert_eq!(position(&harness, "scene"), (0.0, 0.0));
+}
+
+#[test]
+fn shape_shortcuts_update_the_toolbar_shape() {
+    let mut harness = harness();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    harness.key_press(Key::O);
+    harness.run();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Ellipse);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Ellipse
+    );
+    // Back to select: the button keeps the ellipse.
+    harness.key_press(Key::V);
+    harness.run();
+    assert_eq!(harness.state().tool(), moshionly_app::shell::Tool::Select);
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Ellipse
+    );
+    harness.key_press(Key::S);
+    harness.run();
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Star
+    );
+    harness.key_press(Key::R);
+    harness.run();
+    assert_eq!(
+        harness.state().tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
+    assert_eq!(
+        harness.state().shape_tool(),
+        moshionly_app::shell::Tool::Rectangle
+    );
 }
 
 /// The layers of the demo's artboard of `kind`, by id.

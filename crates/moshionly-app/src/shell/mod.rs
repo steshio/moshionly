@@ -89,6 +89,9 @@ pub struct Shell {
     title_inset: Option<f32>,
     /// The open document and the editor's state around it.
     editor: Editor,
+    /// The primitive shape last chosen, shown on the shape button while
+    /// some other tool is active. Rectangle until one is chosen.
+    shape: Tool,
     /// The pictures of the artboards.
     pictures: CanvasRenderer,
     /// Which rows of the layer list are open.
@@ -237,6 +240,7 @@ impl Shell {
             fitted: false,
             title_inset: None,
             editor: Editor::new(session, renderer),
+            shape: Tool::Rectangle,
             pictures,
             tree: TreeState::default(),
             layer_query: String::new(),
@@ -333,6 +337,12 @@ impl Shell {
     /// The active tool.
     pub fn tool(&self) -> Tool {
         self.editor.tool
+    }
+
+    /// The primitive shape the toolbar button shows when a shape tool is
+    /// not the active tool.
+    pub fn shape_tool(&self) -> Tool {
+        Tool::shown_shape(self.editor.tool, self.shape)
     }
 
     /// The canvas camera.
@@ -1165,6 +1175,9 @@ impl Shell {
         }
         if self.text_edit.is_some() {
             self.finish_text_edit();
+        }
+        if tool.is_shape() {
+            self.shape = tool;
         }
         if tool == Tool::Image {
             self.import_image_dialog();
